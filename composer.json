@@ -1,0 +1,54 @@
+{
+    "name": "pagina/pagina",
+    "description": "A zero-dependency PHP library for generating, parsing and converting documents (PDF, HTML, CSV)",
+    "type": "library",
+    "license": "proprietary",
+    "keywords": [
+        "laravel",
+        "pdf",
+        "html",
+        "csv",
+        "document",
+        "writer",
+        "parser",
+        "converter"
+    ],
+    "authors": [
+        {
+            "name": "Pagina",
+            "email": "support@pagina.dev"
+        }
+    ],
+    "homepage": "https://pagina.dev",
+    "require": {
+        "php": "^8.2",
+        "ext-dom": "*",
+        "ext-mbstring": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "suggest": {
+        "illuminate/support": "^11.0|^12.0 Required for Laravel integration (ServiceProvider, Facade)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Pagina\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Pagina\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Pagina\\PaginaServiceProvider"
+            ],
+            "aliases": {
+                "Pagina": "Pagina\\Facades\\Pagina"
+            }
+        }
+    }
+}
