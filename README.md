@@ -1,6 +1,7 @@
 # Paperdoc Library
 
 [![Latest Version](https://img.shields.io/packagist/v/paperdoc-dev/paperdoc-lib.svg?style=flat-square)](https://packagist.org/packages/paperdoc-dev/paperdoc-lib)
+[![Pre-release](https://img.shields.io/badge/stability-unstable-orange?style=flat-square)](https://github.com/paperdoc-dev/paperdoc-lib/releases)
 [![PHP Version](https://img.shields.io/badge/php-%5E8.2-blue?style=flat-square)](https://www.php.net)
 [![License](https://img.shields.io/badge/license-proprietary-red?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/paperdoc-dev/paperdoc-lib/tests.yml?label=tests&style=flat-square)](https://github.com/paperdoc-dev/paperdoc-lib/actions)
