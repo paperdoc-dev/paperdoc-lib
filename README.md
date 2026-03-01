@@ -110,9 +110,9 @@ $docs = Paperdoc::openBatch([
 | PPTX   | ✅    | ✅              |
 | CSV    | ✅    | ✅              |
 | Markdown | ✅  | ✅              |
-| DOC    | ✅    | —               |
-| XLS    | ✅    | —               |
-| PPT    | ✅    | —               |
+| DOC    | ✅    | ✅              |
+| XLS    | ✅    | ✅              |
+| PPT    | ✅    | ✅              |
 
 ---
 

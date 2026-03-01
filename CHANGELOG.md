@@ -12,6 +12,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.2.0] — 2026-03-01
+
+### Added
+- **DocRenderer** — native Word 97-2003 (.doc) generation via OLE2 + FIB + piece table
+- **XlsRenderer** — native Excel 97-2003 (.xls) BIFF8 generation with SST, multi-sheets
+- **PptRenderer** — native PowerPoint 97-2003 (.ppt) generation with SlideListWithText
+- **Ole2Writer** — OLE2 Compound Binary File writer for legacy Office formats
+- DOC, XLS, PPT now support both parse and render (see README Supported Formats table)
+- DOCX fallback renderer (HTML) in DocumentFactory
+
+### Changed
+- `DocumentFactory` — register dedicated renderers for doc, xls, ppt (no longer fallback to docx/xlsx/pptx)
+- `DocumentFactoryTest` — unsupported format test uses `bmp` instead of `docx`
+
+---
+
 ## [0.1.0] — 2026-03-01
 
 > ⚠️ Early-stage release — API is not yet stable and may change between minor versions.
@@ -42,5 +58,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.2.0
 [0.1.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.1.0

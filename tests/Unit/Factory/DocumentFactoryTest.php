@@ -68,7 +68,7 @@ class DocumentFactoryTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Format non supporté');
 
-        DocumentFactory::getRenderer('docx');
+        DocumentFactory::getRenderer('bmp');
     }
 
     public function test_register_renderer(): void

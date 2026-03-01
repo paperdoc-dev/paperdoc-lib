@@ -6,7 +6,7 @@ namespace Paperdoc\Factory;
 
 use Paperdoc\Contracts\{DocumentInterface, RendererInterface};
 use Paperdoc\Document\Document;
-use Paperdoc\Renderers\{CsvRenderer, HtmlRenderer, MarkdownRenderer, PdfRenderer, PptxRenderer, XlsxRenderer};
+use Paperdoc\Renderers\{CsvRenderer, DocRenderer, HtmlRenderer, MarkdownRenderer, PdfRenderer, PptRenderer, PptxRenderer, XlsRenderer, XlsxRenderer};
 
 class DocumentFactory
 {
@@ -17,10 +17,12 @@ class DocumentFactory
         'csv'      => CsvRenderer::class,
         'md'       => MarkdownRenderer::class,
         'markdown' => MarkdownRenderer::class,
+        'docx'     => HtmlRenderer::class,
+        'doc'      => DocRenderer::class,
         'xlsx'     => XlsxRenderer::class,
-        'xls'      => XlsxRenderer::class,
+        'xls'      => XlsRenderer::class,
         'pptx'     => PptxRenderer::class,
-        'ppt'      => PptxRenderer::class,
+        'ppt'      => PptRenderer::class,
     ];
 
     public static function createDocument(string $format, string $title = ''): DocumentInterface
