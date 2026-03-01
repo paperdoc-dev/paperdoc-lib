@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-class TableRow
+class TableRow implements \JsonSerializable
 {
     /** @var TableCell[] */
     private array $cells = [];
@@ -45,5 +45,13 @@ class TableRow
         $this->isHeader = $v;
 
         return $this;
+    }
+
+    public function jsonSerialize(): mixed
+    {
+        return [
+            'isHeader' => $this->isHeader,
+            'cells'    => $this->cells,
+        ];
     }
 }

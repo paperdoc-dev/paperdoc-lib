@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Support\Pdf;
+namespace Paperdoc\Support\Pdf;
 
 /**
  * Représente un objet indirect PDF (N 0 obj ... endobj).

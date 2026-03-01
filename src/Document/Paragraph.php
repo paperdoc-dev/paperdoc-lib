@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-use Pagina\Contracts\DocumentElementInterface;
-use Pagina\Document\Style\ParagraphStyle;
+use Paperdoc\Contracts\DocumentElementInterface;
+use Paperdoc\Document\Style\ParagraphStyle;
 
-class Paragraph implements DocumentElementInterface
+class Paragraph implements DocumentElementInterface, \JsonSerializable
 {
     /** @var TextRun[] */
     private array $runs = [];
@@ -63,5 +63,19 @@ class Paragraph implements DocumentElementInterface
     public function getPlainText(): string
     {
         return implode('', array_map(fn (TextRun $r) => $r->getText(), $this->runs));
+    }
+
+    /* -------------------------------------------------------------
+     | JsonSerializable
+     |------------------------------------------------------------- */
+
+    public function jsonSerialize(): mixed
+    {
+        return [
+            'type'  => 'paragraph',
+            'text'  => $this->getPlainText(),
+            'runs'  => $this->runs,
+            'style' => $this->style,
+        ];
     }
 }

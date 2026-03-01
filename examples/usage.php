@@ -2,10 +2,10 @@
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use Pagina\Support\DocumentManager;
-use Pagina\Document\{Section, Paragraph, TextRun, Table, Image};
-use Pagina\Document\Style\{TextStyle, ParagraphStyle, TableStyle};
-use Pagina\Enum\Alignment;
+use Paperdoc\Support\DocumentManager;
+use Paperdoc\Document\{Section, Paragraph, TextRun, Table, Image};
+use Paperdoc\Document\Style\{TextStyle, ParagraphStyle, TableStyle};
+use Paperdoc\Enum\Alignment;
 
 // ──────────────────────────────────────────────
 // 1. Créer un PDF depuis zéro
@@ -93,9 +93,34 @@ DocumentManager::convert(
 echo "CSV converti en HTML\n";
 
 // ──────────────────────────────────────────────
-// 6. Extensibilité : enregistrer un nouveau format
+// 6. Thumbnails dynamiques (sans sauvegarde)
 // ──────────────────────────────────────────────
 
-// DocumentManager::registerWriter('odt', \App\Writers\OdtWriter::class);
+$imgDoc = DocumentManager::create('html', 'Avec image');
+$imgSection = Section::make('cover');
+$imgSection->addElement(Image::make('/path/to/photo.jpg', 1920, 1080, 'Cover'));
+$imgDoc->addSection($imgSection);
+
+// Thumbnail always reflects the current image — change the image, thumbnail updates
+$dataUri = $imgDoc->getThumbnailDataUri(200, 200);
+if ($dataUri !== null) {
+    echo "<img src=\"{$dataUri}\" alt=\"thumbnail\">\n";
+}
+
+// Swap the image → thumbnail automatically returns the new version
+$imgDoc->getFirstImage()?->setData(file_get_contents('/path/to/new-photo.png'), 'image/png');
+$newUri = $imgDoc->getThumbnailDataUri(200, 200);
+
+// Via DocumentManager static API
+$thumb = DocumentManager::thumbnail($imgDoc, 150, 150);
+if ($thumb !== null) {
+    echo "Thumbnail: {$thumb['width']}x{$thumb['height']} ({$thumb['mimeType']})\n";
+}
+
+// ──────────────────────────────────────────────
+// 7. Extensibilité : enregistrer un nouveau format
+// ──────────────────────────────────────────────
+
+// DocumentManager::registerRenderer('odt', \App\Renderers\OdtRenderer::class);
 // DocumentManager::registerParser(new \App\Parsers\OdtParser());
 // DocumentManager::convert('document.odt', 'output.pdf', 'pdf');

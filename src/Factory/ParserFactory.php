@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Factory;
+namespace Paperdoc\Factory;
 
-use Pagina\Contracts\ParserInterface;
-use Pagina\Parsers\{CsvParser, HtmlParser};
+use Paperdoc\Contracts\ParserInterface;
+use Paperdoc\Parsers\{CsvParser, DocParser, DocxParser, HtmlParser, MarkdownParser, PdfParser, PptParser, PptxParser, XlsParser, XlsxParser};
 
 class ParserFactory
 {
@@ -19,6 +19,14 @@ class ParserFactory
             self::$parsers = [
                 new HtmlParser(),
                 new CsvParser(),
+                new DocxParser(),
+                new DocParser(),
+                new PdfParser(),
+                new MarkdownParser(),
+                new XlsxParser(),
+                new XlsParser(),
+                new PptxParser(),
+                new PptParser(),
             ];
         }
 
@@ -54,7 +62,7 @@ class ParserFactory
         $extensions = [];
 
         foreach (self::getParsers() as $parser) {
-            foreach (['html', 'htm', 'csv', 'tsv'] as $ext) {
+            foreach (['html', 'htm', 'csv', 'tsv', 'docx', 'doc', 'pdf', 'md', 'markdown', 'xlsx', 'xls', 'pptx', 'ppt'] as $ext) {
                 if ($parser->supports($ext)) {
                     $extensions[] = $ext;
                 }

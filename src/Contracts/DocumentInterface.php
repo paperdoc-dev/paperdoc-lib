@@ -2,10 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Contracts;
+namespace Paperdoc\Contracts;
 
-use Pagina\Document\Section;
-use Pagina\Document\Style\TextStyle;
+use Paperdoc\Document\Image;
+use Paperdoc\Document\Section;
+use Paperdoc\Document\Style\TextStyle;
 
 interface DocumentInterface
 {
@@ -34,4 +35,13 @@ interface DocumentInterface
     public function getDefaultTextStyle(): TextStyle;
 
     public function setDefaultTextStyle(TextStyle $style): static;
+
+    public function getFirstImage(): ?Image;
+
+    /**
+     * @return array{data: string, mimeType: string, width: int, height: int}|null
+     */
+    public function getThumbnail(int $maxWidth = 300, int $maxHeight = 300, int $quality = 85): ?array;
+
+    public function getThumbnailDataUri(int $maxWidth = 300, int $maxHeight = 300, int $quality = 85): ?string;
 }

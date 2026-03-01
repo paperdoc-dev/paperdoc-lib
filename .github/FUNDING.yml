@@ -1,0 +1,18 @@
+# Funding / Sponsors Configuration
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+# GitHub Sponsors (replace with your GitHub username or org)
+github: [paperdoc]
+
+# Open Collective
+# open_collective: paperdoc
+
+# Ko-fi
+# ko_fi: paperdoc
+
+# Patreon
+# patreon: paperdoc
+
+# Custom sponsorship URL (e.g. your website's sponsor page)
+custom:
+  - https://paperdoc.dev/sponsor

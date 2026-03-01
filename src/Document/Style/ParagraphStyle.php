@@ -2,17 +2,18 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document\Style;
+namespace Paperdoc\Document\Style;
 
-use Pagina\Contracts\StyleInterface;
-use Pagina\Enum\Alignment;
+use Paperdoc\Contracts\StyleInterface;
+use Paperdoc\Enum\Alignment;
 
-class ParagraphStyle implements StyleInterface
+class ParagraphStyle implements StyleInterface, \JsonSerializable
 {
-    private Alignment $alignment   = Alignment::LEFT;
-    private float     $spaceBefore = 0.0;
-    private float     $spaceAfter  = 6.0;
-    private float     $lineSpacing = 1.15;
+    private Alignment $alignment    = Alignment::LEFT;
+    private float     $spaceBefore  = 0.0;
+    private float     $spaceAfter   = 6.0;
+    private float     $lineSpacing  = 1.15;
+    private ?int      $headingLevel = null;
 
     /* -------------------------------------------------------------
      | Static Factories
@@ -31,6 +32,7 @@ class ParagraphStyle implements StyleInterface
     public function getSpaceBefore(): float   { return $this->spaceBefore; }
     public function getSpaceAfter(): float    { return $this->spaceAfter; }
     public function getLineSpacing(): float   { return $this->lineSpacing; }
+    public function getHeadingLevel(): ?int   { return $this->headingLevel; }
 
     /* -------------------------------------------------------------
      | Fluent Setters
@@ -40,6 +42,7 @@ class ParagraphStyle implements StyleInterface
     public function setSpaceBefore(float $v): static    { $this->spaceBefore = $v; return $this; }
     public function setSpaceAfter(float $v): static     { $this->spaceAfter = $v; return $this; }
     public function setLineSpacing(float $v): static    { $this->lineSpacing = $v; return $this; }
+    public function setHeadingLevel(?int $v): static    { $this->headingLevel = $v; return $this; }
 
     /* -------------------------------------------------------------
      | Serialization
@@ -48,10 +51,16 @@ class ParagraphStyle implements StyleInterface
     public function toArray(): array
     {
         return [
-            'alignment'   => $this->alignment->value,
-            'spaceBefore' => $this->spaceBefore,
-            'spaceAfter'  => $this->spaceAfter,
-            'lineSpacing' => $this->lineSpacing,
+            'alignment'    => $this->alignment->value,
+            'spaceBefore'  => $this->spaceBefore,
+            'spaceAfter'   => $this->spaceAfter,
+            'lineSpacing'  => $this->lineSpacing,
+            'headingLevel' => $this->headingLevel,
         ];
+    }
+
+    public function jsonSerialize(): mixed
+    {
+        return $this->toArray();
     }
 }

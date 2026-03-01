@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-use Pagina\Contracts\DocumentElementInterface;
+use Paperdoc\Contracts\DocumentElementInterface;
 
-class TableCell
+class TableCell implements \JsonSerializable
 {
     /** @var DocumentElementInterface[] */
     private array $elements = [];
@@ -62,5 +62,15 @@ class TableCell
         }
 
         return implode(' ', $parts);
+    }
+
+    public function jsonSerialize(): mixed
+    {
+        return [
+            'text'     => $this->getPlainText(),
+            'elements' => $this->elements,
+            'colspan'  => $this->colspan,
+            'rowspan'  => $this->rowspan,
+        ];
     }
 }

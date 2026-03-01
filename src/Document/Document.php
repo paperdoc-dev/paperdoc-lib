@@ -2,12 +2,13 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-use Pagina\Contracts\DocumentInterface;
-use Pagina\Document\Style\TextStyle;
+use Paperdoc\Contracts\DocumentInterface;
+use Paperdoc\Document\Style\TextStyle;
+use Paperdoc\Support\ThumbnailGenerator;
 
-class Document implements DocumentInterface
+class Document implements DocumentInterface, \JsonSerializable
 {
     /** @var Section[] */
     private array $sections = [];
@@ -84,6 +85,73 @@ class Document implements DocumentInterface
     }
 
     /* -------------------------------------------------------------
+     | Thumbnail (dynamic – scans sections for the first image)
+     |------------------------------------------------------------- */
+
+    public function getFirstImage(): ?Image
+    {
+        foreach ($this->sections as $section) {
+            foreach ($section->getElements() as $element) {
+                if ($element instanceof Image) {
+                    return $element;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{data: string, mimeType: string, width: int, height: int}|null
+     */
+    public function getThumbnail(
+        int $maxWidth = ThumbnailGenerator::DEFAULT_WIDTH,
+        int $maxHeight = ThumbnailGenerator::DEFAULT_HEIGHT,
+        int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
+    ): ?array {
+        $image = $this->getFirstImage();
+
+        if ($image !== null) {
+            $result = $image->getThumbnail($maxWidth, $maxHeight, $quality);
+            if ($result !== null) {
+                return $result;
+            }
+        }
+
+        return $this->thumbnailFromSourceFile($maxWidth, $maxHeight, $quality);
+    }
+
+    public function getThumbnailDataUri(
+        int $maxWidth = ThumbnailGenerator::DEFAULT_WIDTH,
+        int $maxHeight = ThumbnailGenerator::DEFAULT_HEIGHT,
+        int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
+    ): ?string {
+        $thumb = $this->getThumbnail($maxWidth, $maxHeight, $quality);
+
+        if ($thumb === null) {
+            return null;
+        }
+
+        return 'data:' . $thumb['mimeType'] . ';base64,' . base64_encode($thumb['data']);
+    }
+
+    /**
+     * Fallback: render the first page of the source file as a thumbnail.
+     *
+     * @return array{data: string, mimeType: string, width: int, height: int}|null
+     */
+    private function thumbnailFromSourceFile(int $maxWidth, int $maxHeight, int $quality): ?array
+    {
+        $sourceFile = $this->metadata['source_file'] ?? null;
+
+        if ($sourceFile === null || ! is_string($sourceFile) || ! file_exists($sourceFile)) {
+            return null;
+        }
+
+        return ThumbnailGenerator::fromFile($sourceFile, $maxWidth, $maxHeight, $quality);
+    }
+
+    /* -------------------------------------------------------------
      | Default Text Style
      |------------------------------------------------------------- */
 
@@ -94,5 +162,19 @@ class Document implements DocumentInterface
         $this->defaultTextStyle = $style;
 
         return $this;
+    }
+
+    /* -------------------------------------------------------------
+     | JsonSerializable
+     |------------------------------------------------------------- */
+
+    public function jsonSerialize(): mixed
+    {
+        return [
+            'format'   => $this->format,
+            'title'    => $this->title,
+            'metadata' => $this->metadata,
+            'sections' => $this->sections,
+        ];
     }
 }

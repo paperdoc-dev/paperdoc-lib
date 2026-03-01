@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document\Style;
+namespace Paperdoc\Document\Style;
 
-use Pagina\Contracts\StyleInterface;
+use Paperdoc\Contracts\StyleInterface;
 
-class TextStyle implements StyleInterface
+class TextStyle implements StyleInterface, \JsonSerializable
 {
     private string $fontFamily = 'Helvetica';
     private float  $fontSize   = 12.0;
@@ -60,6 +60,11 @@ class TextStyle implements StyleInterface
             'italic'     => $this->italic,
             'underline'  => $this->underline,
         ];
+    }
+
+    public function jsonSerialize(): mixed
+    {
+        return $this->toArray();
     }
 
     /**

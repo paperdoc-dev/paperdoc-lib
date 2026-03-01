@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Enum;
+namespace Paperdoc\Enum;
 
 enum BorderStyle: string
 {

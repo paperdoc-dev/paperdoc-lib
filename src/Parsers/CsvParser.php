@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Parsers;
+namespace Paperdoc\Parsers;
 
-use Pagina\Contracts\{DocumentInterface, ParserInterface};
-use Pagina\Document\{Document, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
+use Paperdoc\Document\{Document, Paragraph, Section, Table, TableCell, TableRow, TextRun};
 
 /**
  * Parser CSV natif utilisant les fonctions fgetcsv de PHP.
@@ -79,7 +79,7 @@ class CsvParser extends AbstractParser implements ParserInterface
             rewind($handle);
         }
 
-        while (($data = fgetcsv($handle, 0, $this->delimiter, $this->enclosure)) !== false) {
+        while (($data = fgetcsv($handle, 0, $this->delimiter, $this->enclosure, '')) !== false) {
             $row = new TableRow();
 
             if ($isFirst && $this->firstRowIsHeader) {

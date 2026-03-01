@@ -1,0 +1,51 @@
+# CODEOWNERS — paperdoc-lib
+#
+# Each line maps a path pattern to one or more GitHub teams or users who must
+# review pull requests touching those paths.
+#
+# Syntax: <pattern>  @<owner> [@<owner2> ...]
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ─── Default owner for everything not matched below ───────────────────────────
+*                               @paperdoc/maintainers
+
+# ─── Core document model ──────────────────────────────────────────────────────
+/src/Document/                  @paperdoc/maintainers
+/src/Contracts/                 @paperdoc/maintainers
+/src/Enum/                      @paperdoc/maintainers
+
+# ─── Parsers ──────────────────────────────────────────────────────────────────
+/src/Parsers/                   @paperdoc/parsers-team
+
+# ─── Renderers ────────────────────────────────────────────────────────────────
+/src/Renderers/                 @paperdoc/renderers-team
+
+# ─── Laravel integration ──────────────────────────────────────────────────────
+/src/PaperdocServiceProvider.php    @paperdoc/maintainers
+/src/Facades/                       @paperdoc/maintainers
+/src/Console/                       @paperdoc/maintainers
+/config/                            @paperdoc/maintainers
+
+# ─── AI / LLM ─────────────────────────────────────────────────────────────────
+/src/Llm/                       @paperdoc/ai-team
+/src/Ocr/                       @paperdoc/ai-team
+
+# ─── Factory & Support ────────────────────────────────────────────────────────
+/src/Factory/                   @paperdoc/maintainers
+/src/Support/                   @paperdoc/maintainers
+/src/Concerns/                  @paperdoc/maintainers
+
+# ─── Tests ────────────────────────────────────────────────────────────────────
+/tests/                         @paperdoc/maintainers
+
+# ─── CI / GitHub configuration ────────────────────────────────────────────────
+/.github/                       @paperdoc/maintainers
+
+# ─── Dependency management ────────────────────────────────────────────────────
+/composer.json                  @paperdoc/maintainers
+/composer.lock                  @paperdoc/maintainers
+
+# ─── Documentation ────────────────────────────────────────────────────────────
+/README.md                      @paperdoc/maintainers
+/CONTRIBUTING.md                @paperdoc/maintainers
+/CHANGELOG.md                   @paperdoc/maintainers

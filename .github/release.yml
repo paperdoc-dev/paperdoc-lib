@@ -1,0 +1,71 @@
+# GitHub Auto-Release Notes Configuration
+# Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+
+changelog:
+  exclude:
+    # Exclude bot-generated and trivial commits from release notes
+    labels:
+      - ignore-for-release
+      - dependencies
+    authors:
+      - dependabot
+      - github-actions[bot]
+
+  categories:
+    - title: "🚀 New Features"
+      labels:
+        - feat
+        - feature
+        - enhancement
+
+    - title: "🐛 Bug Fixes"
+      labels:
+        - fix
+        - bug
+        - bugfix
+
+    - title: "⚡ Performance"
+      labels:
+        - perf
+        - performance
+
+    - title: "📄 Parsers"
+      labels:
+        - parser
+        - parsers
+
+    - title: "🖨️ Renderers"
+      labels:
+        - renderer
+        - renderers
+
+    - title: "🤖 AI / LLM / OCR"
+      labels:
+        - ai
+        - llm
+        - ocr
+
+    - title: "🔒 Security"
+      labels:
+        - security
+
+    - title: "🧪 Tests"
+      labels:
+        - test
+        - tests
+
+    - title: "📚 Documentation"
+      labels:
+        - docs
+        - documentation
+
+    - title: "🔧 Maintenance & Chores"
+      labels:
+        - chore
+        - refactor
+        - ci
+        - build
+
+    - title: "⬆️ Dependency Updates"
+      labels:
+        - dependencies

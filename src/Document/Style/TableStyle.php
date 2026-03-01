@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document\Style;
+namespace Paperdoc\Document\Style;
 
-use Pagina\Contracts\StyleInterface;
-use Pagina\Enum\Alignment;
-use Pagina\Enum\BorderStyle;
+use Paperdoc\Contracts\StyleInterface;
+use Paperdoc\Enum\Alignment;
+use Paperdoc\Enum\BorderStyle;
 
-class TableStyle implements StyleInterface
+class TableStyle implements StyleInterface, \JsonSerializable
 {
     private Alignment   $alignment   = Alignment::LEFT;
     private BorderStyle $borderStyle = BorderStyle::SOLID;
@@ -66,5 +66,10 @@ class TableStyle implements StyleInterface
             'headerBg'    => $this->headerBg,
             'stripedBg'   => $this->stripedBg,
         ];
+    }
+
+    public function jsonSerialize(): mixed
+    {
+        return $this->toArray();
     }
 }

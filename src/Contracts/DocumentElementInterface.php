@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Contracts;
+namespace Paperdoc\Contracts;
 
 interface DocumentElementInterface
 {

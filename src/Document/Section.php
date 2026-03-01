@@ -2,15 +2,18 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-use Pagina\Contracts\DocumentElementInterface;
-use Pagina\Document\Style\TextStyle;
+use Paperdoc\Contracts\DocumentElementInterface;
+use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 
-class Section
+class Section implements \JsonSerializable
 {
     /** @var DocumentElementInterface[] */
     private array $elements = [];
+
+    /** @var array<string, mixed> */
+    private array $metadata = [];
 
     public function __construct(private string $name = '') {}
 
@@ -50,6 +53,27 @@ class Section
         return $this;
     }
 
+    public function clearElements(): static
+    {
+        $this->elements = [];
+
+        return $this;
+    }
+
+    /* -------------------------------------------------------------
+     | Metadata
+     |------------------------------------------------------------- */
+
+    /** @return array<string, mixed> */
+    public function getMetadata(): array { return $this->metadata; }
+
+    public function setMetadata(string $key, mixed $value): static
+    {
+        $this->metadata[$key] = $value;
+
+        return $this;
+    }
+
     /* -------------------------------------------------------------
      | Shortcut : Text
      |------------------------------------------------------------- */
@@ -69,7 +93,7 @@ class Section
 
     public function addHeading(string $text, int $level = 1): Paragraph
     {
-        $style = TextStyle::make()
+        $textStyle = TextStyle::make()
             ->setFontSize(match ($level) {
                 1 => 24.0,
                 2 => 20.0,
@@ -78,7 +102,13 @@ class Section
             })
             ->setBold();
 
-        return $this->addText($text, $style);
+        $paragraphStyle = ParagraphStyle::make()->setHeadingLevel($level);
+
+        $paragraph = new Paragraph($paragraphStyle);
+        $paragraph->addRun(new TextRun($text, $textStyle));
+        $this->addElement($paragraph);
+
+        return $paragraph;
     }
 
     /* -------------------------------------------------------------
@@ -90,5 +120,23 @@ class Section
         $this->addElement(new PageBreak());
 
         return $this;
+    }
+
+    /* -------------------------------------------------------------
+     | JsonSerializable
+     |------------------------------------------------------------- */
+
+    public function jsonSerialize(): mixed
+    {
+        $result = [
+            'name'     => $this->name,
+            'elements' => $this->elements,
+        ];
+
+        if (! empty($this->metadata)) {
+            $result['metadata'] = $this->metadata;
+        }
+
+        return $result;
     }
 }

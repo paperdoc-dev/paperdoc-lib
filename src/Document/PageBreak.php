@@ -2,11 +2,16 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-use Pagina\Contracts\DocumentElementInterface;
+use Paperdoc\Contracts\DocumentElementInterface;
 
-class PageBreak implements DocumentElementInterface
+class PageBreak implements DocumentElementInterface, \JsonSerializable
 {
     public function getType(): string { return 'page_break'; }
+
+    public function jsonSerialize(): mixed
+    {
+        return ['type' => 'page_break'];
+    }
 }

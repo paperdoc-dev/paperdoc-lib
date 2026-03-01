@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Support\Pdf;
+namespace Paperdoc\Support\Pdf;
 
 /**
  * Moteur PDF natif sans dépendance tierce.
@@ -55,7 +55,7 @@ class PdfEngine
     private int $imageCounter = 0;
 
     private string $title   = '';
-    private string $creator = 'Pagina';
+    private string $creator = 'Paperdoc';
 
     /** Approximate character widths for standard fonts (per 1000 units) */
     private const CHAR_WIDTHS = [
@@ -377,7 +377,7 @@ class PdfEngine
 
         $infoObj = $this->allocateObject();
         $this->objects[$infoObj] = new PdfObject($infoObj, sprintf(
-            "<< /Title (%s) /Creator (%s) /Producer (Pagina PHP Library) /CreationDate (D:%s) >>",
+            "<< /Title (%s) /Creator (%s) /Producer (Paperdoc PHP Library) /CreationDate (D:%s) >>",
             $this->escapePdfString($this->title),
             $this->escapePdfString($this->creator),
             date('YmdHis')

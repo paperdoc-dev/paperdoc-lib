@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Parsers;
+namespace Paperdoc\Parsers;
 
 abstract class AbstractParser
 {

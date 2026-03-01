@@ -1,6 +1,6 @@
 {
-    "name": "pagina/pagina",
-    "description": "A zero-dependency PHP library for generating, parsing and converting documents (PDF, HTML, CSV)",
+    "name": "paperdoc-dev/paperdoc-lib",
+    "description": "A zero-dependency PHP library for generating, parsing and converting documents (PDF, HTML, CSV, DOCX)",
     "type": "library",
     "license": "proprietary",
     "keywords": [
@@ -8,6 +8,7 @@
         "pdf",
         "html",
         "csv",
+        "docx",
         "document",
         "writer",
         "parser",
@@ -15,15 +16,18 @@
     ],
     "authors": [
         {
-            "name": "Pagina",
-            "email": "support@pagina.dev"
+            "name": "Paperdoc",
+            "email": "support@paperdoc.dev"
         }
     ],
-    "homepage": "https://pagina.dev",
+    "homepage": "https://paperdoc.dev",
     "require": {
         "php": "^8.2",
         "ext-dom": "*",
-        "ext-mbstring": "*"
+        "ext-mbstring": "*",
+        "ext-zip": "*",
+        "ext-zlib": "*",
+        "neuron-core/neuron-ai": "^3.0"
     },
     "require-dev": {
         "phpunit/phpunit": "^11.0"
@@ -33,21 +37,21 @@
     },
     "autoload": {
         "psr-4": {
-            "Pagina\\": "src/"
+            "Paperdoc\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Pagina\\Tests\\": "tests/"
+            "Paperdoc\\Tests\\": "tests/"
         }
     },
     "extra": {
         "laravel": {
             "providers": [
-                "Pagina\\PaginaServiceProvider"
+                "Paperdoc\\PaperdocServiceProvider"
             ],
             "aliases": {
-                "Pagina": "Pagina\\Facades\\Pagina"
+                "Paperdoc": "Paperdoc\\Facades\\Paperdoc"
             }
         }
     }

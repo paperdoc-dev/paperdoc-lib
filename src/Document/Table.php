@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Document;
+namespace Paperdoc\Document;
 
-use Pagina\Contracts\DocumentElementInterface;
-use Pagina\Document\Style\TableStyle;
+use Paperdoc\Contracts\DocumentElementInterface;
+use Paperdoc\Document\Style\TableStyle;
 
-class Table implements DocumentElementInterface
+class Table implements DocumentElementInterface, \JsonSerializable
 {
     /** @var TableRow[] */
     private array $rows = [];
@@ -120,5 +120,15 @@ class Table implements DocumentElementInterface
         }
 
         return max(array_map(fn (TableRow $r) => count($r->getCells()), $this->rows));
+    }
+
+    public function jsonSerialize(): mixed
+    {
+        return [
+            'type'         => 'table',
+            'rows'         => $this->rows,
+            'columnWidths' => $this->columnWidths,
+            'style'        => $this->style,
+        ];
     }
 }

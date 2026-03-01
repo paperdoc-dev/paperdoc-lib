@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Pagina\Parsers;
+namespace Paperdoc\Parsers;
 
-use Pagina\Contracts\{DocumentInterface, ParserInterface};
-use Pagina\Document\{Document, Image, Paragraph, Section, Table, TableCell, TableRow, TextRun};
-use Pagina\Document\Style\{ParagraphStyle, TextStyle};
-use Pagina\Enum\Alignment;
+use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
+use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
+use Paperdoc\Enum\Alignment;
 
 /**
  * Parser HTML natif utilisant l'extension DOM de PHP.
@@ -30,7 +30,12 @@ class HtmlParser extends AbstractParser implements ParserInterface
 
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
-        $dom->loadHTML(mb_convert_encoding($html, 'HTML-ENTITIES', 'UTF-8'), LIBXML_NOWARNING);
+
+        if (stripos($html, '<meta charset') === false && stripos($html, 'encoding') === false) {
+            $html = '<?xml encoding="UTF-8">' . $html;
+        }
+
+        $dom->loadHTML($html, LIBXML_NOWARNING | LIBXML_NOERROR);
         libxml_clear_errors();
 
         $title = $dom->getElementsByTagName('title')->item(0);
@@ -79,10 +84,13 @@ class HtmlParser extends AbstractParser implements ParserInterface
                 'h1'         => $section->addHeading($node->textContent, 1),
                 'h2'         => $section->addHeading($node->textContent, 2),
                 'h3'         => $section->addHeading($node->textContent, 3),
-                'h4', 'h5', 'h6' => $section->addHeading($node->textContent, 4),
+                'h4'         => $section->addHeading($node->textContent, 4),
+                'h5'         => $section->addHeading($node->textContent, 5),
+                'h6'         => $section->addHeading($node->textContent, 6),
                 'table'      => $this->parseTable($node, $section),
                 'img'        => $this->parseImage($node, $section),
                 'figure'     => $this->parseFigure($node, $section),
+                'hr'         => $section->addPageBreak(),
                 'div', 'article', 'main', 'header', 'footer', 'nav'
                              => $this->parseChildNodes($node, $section),
                 default      => $this->parseFallbackElement($node, $section),
@@ -112,7 +120,7 @@ class HtmlParser extends AbstractParser implements ParserInterface
             if ($child->nodeType === XML_TEXT_NODE) {
                 $text = $child->textContent;
 
-                if ($text !== '') {
+                if (trim($text) !== '') {
                     $paragraph->addRun(new TextRun($text));
                 }
 
@@ -155,6 +163,11 @@ class HtmlParser extends AbstractParser implements ParserInterface
     private function parseTable(\DOMElement $node, Section $section): void
     {
         $table = new Table();
+
+        $tableStyle = $this->extractTableStyle($node);
+        if ($tableStyle) {
+            $table->setStyle($tableStyle);
+        }
 
         $rows = [];
         foreach ($node->getElementsByTagName('tr') as $tr) {
@@ -250,6 +263,40 @@ class HtmlParser extends AbstractParser implements ParserInterface
     /* -------------------------------------------------------------
      | Style Extraction
      |------------------------------------------------------------- */
+
+    private function extractTableStyle(\DOMElement $node): ?TableStyle
+    {
+        $css = $node->getAttribute('style');
+
+        if (! $css) {
+            return null;
+        }
+
+        $props = $this->parseCssProperties($css);
+        $style = TableStyle::make();
+        $hasProps = false;
+
+        if (isset($props['border-color'])) {
+            $style->setBorderColor($props['border-color']);
+            $hasProps = true;
+        }
+
+        if (isset($props['border-width'])) {
+            $style->setBorderWidth($this->parsePtValue($props['border-width']));
+            $hasProps = true;
+        }
+
+        if (isset($props['border-style'])) {
+            $bs = \Paperdoc\Enum\BorderStyle::tryFrom($props['border-style']);
+
+            if ($bs) {
+                $style->setBorderStyle($bs);
+                $hasProps = true;
+            }
+        }
+
+        return $hasProps ? $style : null;
+    }
 
     private function extractParagraphStyle(\DOMElement $node): ?ParagraphStyle
     {
