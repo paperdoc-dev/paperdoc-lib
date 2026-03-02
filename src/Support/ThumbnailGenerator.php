@@ -49,6 +49,7 @@ final class ThumbnailGenerator
     private const PDF_MIN_JPEG_SIZE = 1000;
     private const PDF_MIN_PNG_SIZE = 500;
     private const PDF_MAX_TEXT_LENGTH = 2000;
+    private const PDF_MIN_IMAGE_AREA = 40000;
 
     private const OOXML_THUMBNAIL_PATHS = [
         'docProps/thumbnail.jpeg',
@@ -277,7 +278,7 @@ final class ThumbnailGenerator
     }
 
     /**
-     * Pure-PHP PDF thumbnail: extract embedded images or parse text, render via GD.
+     * Pure-PHP PDF thumbnail: parse text first, fall back to large embedded images.
      *
      * @return array{data: string, mimeType: string, width: int, height: int}|null
      */
@@ -289,19 +290,23 @@ final class ThumbnailGenerator
             return null;
         }
 
-        $result = self::extractPdfEmbeddedImage($content, $maxW, $maxH, $quality);
-
-        if ($result !== null) {
-            return $result;
-        }
-
         $paragraphs = self::extractPdfParagraphs($content, $page);
 
-        return $paragraphs !== [] ? self::renderTextPreview($paragraphs, $maxW, $maxH, $quality, 'PDF') : null;
+        if ($paragraphs !== []) {
+            return self::renderStyledPreview(
+                array_map(static fn (string $p) => ['text' => $p, 'style' => 'body'], $paragraphs),
+                $maxW,
+                $maxH,
+                $quality,
+                'PDF',
+            );
+        }
+
+        return self::extractPdfEmbeddedImage($content, $maxW, $maxH, $quality);
     }
 
     /**
-     * Scan PDF binary for an embedded JPEG or PNG image.
+     * Scan PDF binary for a large embedded JPEG or PNG (skip small logos).
      *
      * @return array{data: string, mimeType: string, width: int, height: int}|null
      */
@@ -312,33 +317,46 @@ final class ThumbnailGenerator
             ["\x89PNG\r\n\x1a\n", 'IEND', 8, self::PDF_MIN_PNG_SIZE],
         ];
 
+        $bestResult = null;
+        $bestArea = 0;
+
         foreach ($signatures as [$header, $footer, $footerExtra, $minSize]) {
-            $pos = strpos($content, $header);
+            $offset = 0;
 
-            if ($pos === false) {
-                continue;
-            }
+            while (($pos = strpos($content, $header, $offset)) !== false) {
+                $end = strpos($content, $footer, $pos + strlen($header));
 
-            $end = strpos($content, $footer, $pos);
+                if ($end === false) {
+                    break;
+                }
 
-            if ($end === false) {
-                continue;
-            }
+                $imgData = substr($content, $pos, $end - $pos + strlen($footer) + $footerExtra);
+                $offset = $end + strlen($footer) + $footerExtra;
 
-            $imgData = substr($content, $pos, $end - $pos + strlen($footer) + $footerExtra);
+                if (strlen($imgData) < $minSize) {
+                    continue;
+                }
 
-            if (strlen($imgData) < $minSize) {
-                continue;
-            }
+                $size = @getimagesizefromstring($imgData);
 
-            $result = self::resize($imgData, $maxW, $maxH, $quality);
+                if ($size === false) {
+                    continue;
+                }
 
-            if ($result !== null) {
-                return $result;
+                $area = $size[0] * $size[1];
+
+                if ($area < self::PDF_MIN_IMAGE_AREA) {
+                    continue;
+                }
+
+                if ($area > $bestArea) {
+                    $bestArea = $area;
+                    $bestResult = $imgData;
+                }
             }
         }
 
-        return null;
+        return $bestResult !== null ? self::resize($bestResult, $maxW, $maxH, $quality) : null;
     }
 
     /**
@@ -630,9 +648,103 @@ final class ThumbnailGenerator
             return null;
         }
 
-        $paragraphs = self::extractXmlTextNodes($xml, self::OOXML_NS_WP, 'p', 't');
+        $styledParagraphs = self::parseDocxStyledParagraphs($xml);
 
-        return $paragraphs !== [] ? self::renderTextPreview($paragraphs, $maxW, $maxH, $quality, 'DOCX') : null;
+        return $styledParagraphs !== []
+            ? self::renderStyledPreview($styledParagraphs, $maxW, $maxH, $quality, 'DOCX')
+            : null;
+    }
+
+    /**
+     * Parse DOCX XML into styled paragraph descriptors.
+     *
+     * @return array<int, array{text: string, style: string, bold: bool, italic: bool}>
+     */
+    private static function parseDocxStyledParagraphs(string $xml): array
+    {
+        $dom = new \DOMDocument();
+        @$dom->loadXML($xml);
+
+        $ns = self::OOXML_NS_WP;
+        $paragraphs = [];
+
+        foreach ($dom->getElementsByTagNameNS($ns, 'p') as $pNode) {
+            $style = 'body';
+            $pBold = false;
+            $pItalic = false;
+
+            $pPr = $pNode->getElementsByTagNameNS($ns, 'pPr');
+
+            if ($pPr->length > 0) {
+                $pStyle = $pPr->item(0)->getElementsByTagNameNS($ns, 'pStyle');
+
+                if ($pStyle->length > 0) {
+                    $styleVal = strtolower($pStyle->item(0)->getAttribute('w:val'));
+
+                    if (str_contains($styleVal, 'heading') || str_contains($styleVal, 'titre')) {
+                        if (str_contains($styleVal, '1')) {
+                            $style = 'h1';
+                        } elseif (str_contains($styleVal, '2')) {
+                            $style = 'h2';
+                        } else {
+                            $style = 'h3';
+                        }
+                    } elseif (str_contains($styleVal, 'title') || str_contains($styleVal, 'title')) {
+                        $style = 'h1';
+                    } elseif (str_contains($styleVal, 'subtitle') || str_contains($styleVal, 'sous')) {
+                        $style = 'h2';
+                    }
+                }
+
+                $rPr = $pPr->item(0)->getElementsByTagNameNS($ns, 'rPr');
+
+                if ($rPr->length > 0) {
+                    $pBold = $rPr->item(0)->getElementsByTagNameNS($ns, 'b')->length > 0;
+                    $pItalic = $rPr->item(0)->getElementsByTagNameNS($ns, 'i')->length > 0;
+                }
+            }
+
+            $text = '';
+            $runBold = $pBold;
+            $runItalic = $pItalic;
+
+            foreach ($pNode->getElementsByTagNameNS($ns, 'r') as $run) {
+                $runRPr = $run->getElementsByTagNameNS($ns, 'rPr');
+
+                if ($runRPr->length > 0) {
+                    if ($runRPr->item(0)->getElementsByTagNameNS($ns, 'b')->length > 0) {
+                        $runBold = true;
+                    }
+
+                    if ($runRPr->item(0)->getElementsByTagNameNS($ns, 'i')->length > 0) {
+                        $runItalic = true;
+                    }
+                }
+
+                foreach ($run->getElementsByTagNameNS($ns, 't') as $t) {
+                    $text .= $t->textContent;
+                }
+            }
+
+            $trimmed = trim($text);
+
+            if ($trimmed === '') {
+                continue;
+            }
+
+            if ($style === 'body' && $runBold) {
+                $style = 'bold';
+            }
+
+            $paragraphs[] = [
+                'text' => $trimmed,
+                'style' => $style,
+                'bold' => $runBold,
+                'italic' => $runItalic,
+            ];
+        }
+
+        return $paragraphs;
     }
 
     /**
@@ -744,17 +856,33 @@ final class ThumbnailGenerator
         $dom = new \DOMDocument();
         @$dom->loadXML($xml);
 
-        $paragraphs = [];
+        $styled = [];
+        $isFirst = true;
 
-        foreach ($dom->getElementsByTagNameNS(self::OOXML_NS_DML, 't') as $tNode) {
-            $text = trim($tNode->textContent);
+        foreach ($dom->getElementsByTagNameNS(self::OOXML_NS_DML, 'p') as $pNode) {
+            $text = '';
 
-            if ($text !== '') {
-                $paragraphs[] = $text;
+            foreach ($pNode->getElementsByTagNameNS(self::OOXML_NS_DML, 't') as $tNode) {
+                $text .= $tNode->textContent;
             }
+
+            $trimmed = trim($text);
+
+            if ($trimmed === '') {
+                continue;
+            }
+
+            $styled[] = [
+                'text' => $trimmed,
+                'style' => $isFirst ? 'h1' : 'body',
+                'bold' => $isFirst,
+                'italic' => false,
+            ];
+
+            $isFirst = false;
         }
 
-        return $paragraphs !== [] ? self::renderTextPreview($paragraphs, $maxW, $maxH, $quality, 'PPTX') : null;
+        return $styled !== [] ? self::renderStyledPreview($styled, $maxW, $maxH, $quality, 'PPTX') : null;
     }
 
     /* =============================================================
@@ -833,12 +961,32 @@ final class ThumbnailGenerator
      |============================================================= */
 
     /**
-     * Render text paragraphs as a document-like preview image.
+     * Style configuration for GD rendering of document previews.
      *
-     * @param  string[]  $paragraphs
+     * Each entry: [GD font size, line height, top margin, color key, underline]
+     *
+     * @return array<string, array{font: int, lineH: int, gap: int, color: string, underline: bool}>
+     */
+    private static function paragraphStyles(): array
+    {
+        return [
+            'h1'   => ['font' => 4, 'lineH' => 22, 'gap' => 10, 'color' => 'fg', 'underline' => true],
+            'h2'   => ['font' => 3, 'lineH' => 18, 'gap' => 8,  'color' => 'fg', 'underline' => false],
+            'h3'   => ['font' => 3, 'lineH' => 17, 'gap' => 6,  'color' => 'fg', 'underline' => false],
+            'bold' => ['font' => 2, 'lineH' => 15, 'gap' => 5,  'color' => 'fg', 'underline' => false],
+            'body' => ['font' => 2, 'lineH' => 14, 'gap' => 4,  'color' => 'muted', 'underline' => false],
+        ];
+    }
+
+    /**
+     * Render styled paragraphs as a document-like preview image.
+     *
+     * Each paragraph is an array with keys: text, style (h1/h2/h3/bold/body).
+     *
+     * @param  array<int, array{text: string, style: string}>  $paragraphs
      * @return array{data: string, mimeType: string, width: int, height: int}|null
      */
-    private static function renderTextPreview(array $paragraphs, int $maxW, int $maxH, int $quality, string $badge = ''): ?array
+    private static function renderStyledPreview(array $paragraphs, int $maxW, int $maxH, int $quality, string $badge = ''): ?array
     {
         $w = min($maxW, self::PREVIEW_MAX_W);
         $h = min($maxH, self::PREVIEW_MAX_H);
@@ -850,31 +998,42 @@ final class ThumbnailGenerator
         }
 
         $colors = self::previewColors($img);
+        $styles = self::paragraphStyles();
         $y = self::PREVIEW_HEADER_HEIGHT + self::PREVIEW_PADDING;
         $contentW = $w - (self::PREVIEW_PADDING * 2);
-        $charsPerLine = max(10, (int) floor($contentW / imagefontwidth(self::PREVIEW_FONT_SIZE)));
         $maxY = $h - self::PREVIEW_PADDING;
 
-        foreach ($paragraphs as $i => $para) {
-            if ($y + self::PREVIEW_LINE_HEIGHT > $maxY) {
+        foreach ($paragraphs as $para) {
+            $text = $para['text'] ?? '';
+            $styleKey = $para['style'] ?? 'body';
+            $ps = $styles[$styleKey] ?? $styles['body'];
+
+            if ($y + $ps['lineH'] > $maxY) {
                 imagestring($img, 1, self::PREVIEW_PADDING, $y, '...', $colors['muted']);
 
                 break;
             }
 
-            $color = $i === 0 ? $colors['fg'] : $colors['muted'];
-            $fontSize = $i === 0 ? 3 : self::PREVIEW_FONT_SIZE;
+            $color = $colors[$ps['color']] ?? $colors['muted'];
+            $charsPerLine = max(10, (int) floor($contentW / imagefontwidth($ps['font'])));
+            $wrapped = wordwrap($text, $charsPerLine, "\n", true);
 
-            foreach (explode("\n", wordwrap($para, $charsPerLine, "\n", true)) as $line) {
-                if ($y + self::PREVIEW_LINE_HEIGHT > $maxY) {
+            foreach (explode("\n", $wrapped) as $line) {
+                if ($y + $ps['lineH'] > $maxY) {
                     break 2;
                 }
 
-                imagestring($img, $fontSize, self::PREVIEW_PADDING, $y, $line, $color);
-                $y += self::PREVIEW_LINE_HEIGHT;
+                imagestring($img, $ps['font'], self::PREVIEW_PADDING, $y, $line, $color);
+                $y += $ps['lineH'];
             }
 
-            $y += self::PREVIEW_PARAGRAPH_GAP;
+            if ($ps['underline']) {
+                $lineW = min(strlen($text) * imagefontwidth($ps['font']), $contentW);
+                imageline($img, self::PREVIEW_PADDING, $y, self::PREVIEW_PADDING + $lineW, $y, $colors['border']);
+                $y += 3;
+            }
+
+            $y += $ps['gap'];
         }
 
         return self::gdToPngAndResize($img, $maxW, $maxH, $quality);
