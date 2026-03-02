@@ -11,9 +11,10 @@ use Paperdoc\Document\Image;
  *
  * Pipeline (per format):
  *   1. Image (jpg, png, gif, webp, bmp, tiff, svg) → GD resize
- *   2. PDF → native text/image extract + GD → Imagick → Ghostscript
- *   3. OOXML (docx, xlsx, pptx) → embedded thumbnail → GD content render → LibreOffice
- *   4. Other Office/text → LibreOffice headless → PDF → step 2
+ *   2. PDF → Imagick → Ghostscript → native text/image + GD (real rendering first for correct fonts)
+ *   3. OOXML (docx, xlsx, pptx) → LibreOffice → embedded thumbnail → GD content render
+ *   4. CSV/TSV → LibreOffice → native grid preview (GD)
+ *   5. Other Office → LibreOffice headless → PDF → step 2
  */
 final class ThumbnailGenerator
 {
@@ -26,17 +27,28 @@ final class ThumbnailGenerator
     private const OOXML_EXTENSIONS = ['docx', 'xlsx', 'pptx'];
 
     private const OFFICE_EXTENSIONS = [
-        'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-        'odt', 'ods', 'odp', 'odg',
-        'rtf', 'txt', 'html', 'htm',
-        'csv', 'tsv', 'md', 'markdown',
+        'doc',
+        'docx',
+        'xls',
+        'xlsx',
+        'ppt',
+        'pptx',
+        'odt',
+        'ods',
+        'odp',
+        'odg',
+        'rtf',
+        'txt',
+        'html',
+        'htm',
+        'csv',
+        'tsv',
+        'md',
+        'markdown',
     ];
 
     private const PREVIEW_HEADER_HEIGHT = 24;
     private const PREVIEW_PADDING = 16;
-    private const PREVIEW_LINE_HEIGHT = 16;
-    private const PREVIEW_PARAGRAPH_GAP = 6;
-    private const PREVIEW_FONT_SIZE = 2;
     private const PREVIEW_MAX_W = 400;
     private const PREVIEW_MAX_H = 500;
 
@@ -50,6 +62,8 @@ final class ThumbnailGenerator
     private const PDF_MIN_PNG_SIZE = 500;
     private const PDF_MAX_TEXT_LENGTH = 2000;
     private const PDF_MIN_IMAGE_AREA = 40000;
+    private const PDF_MIN_TEXT_CHARS = 30;
+    private const OOXML_THUMB_MIN_BRIGHTNESS = 10;
 
     private const OOXML_THUMBNAIL_PATHS = [
         'docProps/thumbnail.jpeg',
@@ -136,8 +150,13 @@ final class ThumbnailGenerator
         }
 
         if (in_array($ext, self::OOXML_EXTENSIONS, true)) {
-            return self::thumbnailFromOoxml($filePath, $ext, $maxWidth, $maxHeight, $quality)
-                ?? self::thumbnailViaLibreOffice($filePath, $page, $maxWidth, $maxHeight, $quality);
+            return self::thumbnailViaLibreOffice($filePath, $page, $maxWidth, $maxHeight, $quality)
+                ?? self::thumbnailFromOoxml($filePath, $ext, $maxWidth, $maxHeight, $quality);
+        }
+
+        if (in_array($ext, ['csv', 'tsv'], true)) {
+            return self::thumbnailViaLibreOffice($filePath, $page, $maxWidth, $maxHeight, $quality)
+                ?? self::renderCsvPreview($filePath, $maxWidth, $maxHeight, $quality);
         }
 
         if (in_array($ext, self::OFFICE_EXTENSIONS, true)) {
@@ -250,7 +269,8 @@ final class ThumbnailGenerator
     }
 
     /* =============================================================
-     | Strategy: PDF (native → Imagick → Ghostscript)
+     | Strategy: PDF (Imagick → Ghostscript → native)
+     | Real rendering first for correct fonts and layout.
      |============================================================= */
 
     /**
@@ -258,14 +278,6 @@ final class ThumbnailGenerator
      */
     private static function thumbnailFromPdf(string $path, int $page, int $maxW, int $maxH, int $quality): ?array
     {
-        if (extension_loaded('gd')) {
-            $result = self::renderPdfNative($path, $page, $maxW, $maxH, $quality);
-
-            if ($result !== null) {
-                return $result;
-            }
-        }
-
         if (extension_loaded('imagick')) {
             $result = self::renderWithImagick($path, $page, $maxW, $maxH, $quality);
 
@@ -274,7 +286,17 @@ final class ThumbnailGenerator
             }
         }
 
-        return self::renderWithGhostscript($path, $page, $maxW, $maxH, $quality);
+        $result = self::renderWithGhostscript($path, $page, $maxW, $maxH, $quality);
+
+        if ($result !== null) {
+            return $result;
+        }
+
+        if (extension_loaded('gd')) {
+            return self::renderPdfNative($path, $page, $maxW, $maxH, $quality);
+        }
+
+        return null;
     }
 
     /**
@@ -291,10 +313,11 @@ final class ThumbnailGenerator
         }
 
         $paragraphs = self::extractPdfParagraphs($content, $page);
+        $totalChars = array_sum(array_map('mb_strlen', $paragraphs));
 
-        if ($paragraphs !== []) {
+        if ($totalChars >= self::PDF_MIN_TEXT_CHARS) {
             return self::renderStyledPreview(
-                array_map(static fn (string $p) => ['text' => $p, 'style' => 'body'], $paragraphs),
+                array_map(static fn(string $p) => ['text' => $p, 'style' => 'body'], $paragraphs),
                 $maxW,
                 $maxH,
                 $quality,
@@ -374,7 +397,7 @@ final class ThumbnailGenerator
 
         return array_values(array_filter(
             preg_split('/\n{2,}/', $text),
-            static fn (string $p): bool => trim($p) !== '',
+            static fn(string $p): bool => trim($p) !== '',
         ));
     }
 
@@ -567,6 +590,7 @@ final class ThumbnailGenerator
 
     /**
      * Extract the pre-rendered thumbnail stored in OOXML files.
+     * Validates that the image is not mostly black/empty before using it.
      *
      * @return array{data: string, mimeType: string, width: int, height: int}|null
      */
@@ -594,9 +618,69 @@ final class ThumbnailGenerator
 
         $zip->close();
 
-        return ($data !== null && $data !== '' && $data !== false)
-            ? self::resize($data, $maxW, $maxH, $quality)
-            : null;
+        if ($data === null || $data === '' || $data === false) {
+            return null;
+        }
+
+        if (! self::isUsableThumbnail($data)) {
+            return null;
+        }
+
+        return self::resize($data, $maxW, $maxH, $quality);
+    }
+
+    /**
+     * Check that an image is not mostly black, white, or single-color (unusable as thumbnail).
+     */
+    private static function isUsableThumbnail(string $imageData): bool
+    {
+        if (! extension_loaded('gd')) {
+            return true;
+        }
+
+        $img = @imagecreatefromstring($imageData);
+
+        if ($img === false) {
+            return false;
+        }
+
+        $w = imagesx($img);
+        $h = imagesy($img);
+
+        if ($w < 10 || $h < 10) {
+            return false;
+        }
+
+        $sampleSize = min(200, $w * $h);
+        $totalR = 0;
+        $totalG = 0;
+        $totalB = 0;
+        $distinctColors = [];
+
+        for ($i = 0; $i < $sampleSize; $i++) {
+            $sx = ($i * 7) % $w;
+            $sy = (int) (($i * 13) / $w) % $h;
+            $rgb = imagecolorat($img, $sx, $sy);
+            $r = ($rgb >> 16) & 0xFF;
+            $g = ($rgb >> 8) & 0xFF;
+            $b = $rgb & 0xFF;
+            $totalR += $r;
+            $totalG += $g;
+            $totalB += $b;
+            $distinctColors[($r >> 4) . '-' . ($g >> 4) . '-' . ($b >> 4)] = true;
+        }
+
+        $avgBrightness = ($totalR + $totalG + $totalB) / ($sampleSize * 3);
+
+        if ($avgBrightness < self::OOXML_THUMB_MIN_BRIGHTNESS) {
+            return false;
+        }
+
+        if (count($distinctColors) < 3) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -707,8 +791,48 @@ final class ThumbnailGenerator
             $text = '';
             $runBold = $pBold;
             $runItalic = $pItalic;
+            $inFieldCode = false;
 
-            foreach ($pNode->getElementsByTagNameNS($ns, 'r') as $run) {
+            foreach ($pNode->childNodes as $child) {
+                if ($child->nodeType !== XML_ELEMENT_NODE) {
+                    continue;
+                }
+
+                $localName = $child->localName;
+
+                if ($localName === 'fldSimple') {
+                    continue;
+                }
+
+                if ($localName !== 'r') {
+                    continue;
+                }
+
+                /** @var \DOMElement $run */
+                $run = $child;
+
+                $fldChar = $run->getElementsByTagNameNS($ns, 'fldChar');
+
+                if ($fldChar->length > 0) {
+                    $fldType = $fldChar->item(0)->getAttribute('w:fldCharType');
+
+                    if ($fldType === 'begin') {
+                        $inFieldCode = true;
+                    } elseif ($fldType === 'end') {
+                        $inFieldCode = false;
+                    }
+
+                    continue;
+                }
+
+                if ($inFieldCode) {
+                    continue;
+                }
+
+                if ($run->getElementsByTagNameNS($ns, 'instrText')->length > 0) {
+                    continue;
+                }
+
                 $runRPr = $run->getElementsByTagNameNS($ns, 'rPr');
 
                 if ($runRPr->length > 0) {
@@ -1040,12 +1164,54 @@ final class ThumbnailGenerator
     }
 
     /**
+     * Native CSV/TSV preview when LibreOffice is not available.
+     *
+     * @return array{data: string, mimeType: string, width: int, height: int}|null
+     */
+    private static function renderCsvPreview(string $path, int $maxW, int $maxH, int $quality): ?array
+    {
+        if (! extension_loaded('gd')) {
+            return null;
+        }
+
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $delimiter = $ext === 'tsv' ? "\t" : ',';
+        $content = @file_get_contents($path);
+
+        if ($content === false || $content === '') {
+            return null;
+        }
+
+        $content = preg_replace('/^\xEF\xBB\xBF/', '', $content);
+        $lines = preg_split('/\r\n|\r|\n/', $content, self::GRID_MAX_ROWS + 1);
+        $rows = [];
+        $maxCols = 0;
+
+        foreach ($lines as $line) {
+            $cells = str_getcsv($line, $delimiter);
+
+            if ($cells === [] || (count($cells) === 1 && trim($cells[0] ?? '') === '')) {
+                continue;
+            }
+
+            $rows[] = array_map('trim', $cells);
+            $maxCols = max($maxCols, count($cells));
+        }
+
+        if ($rows === []) {
+            return null;
+        }
+
+        return self::renderGridPreview($rows, $maxCols, $maxW, $maxH, $quality, 'CSV');
+    }
+
+    /**
      * Render spreadsheet data as a grid preview image.
      *
      * @param  array<int, array<int, string>>  $rows
      * @return array{data: string, mimeType: string, width: int, height: int}|null
      */
-    private static function renderGridPreview(array $rows, int $maxCols, int $maxW, int $maxH, int $quality): ?array
+    private static function renderGridPreview(array $rows, int $maxCols, int $maxW, int $maxH, int $quality, string $badge = 'XLSX'): ?array
     {
         $maxCols = min($maxCols, self::GRID_MAX_COLS);
         $rowCount = min(count($rows), self::GRID_MAX_ROWS);
@@ -1053,7 +1219,7 @@ final class ThumbnailGenerator
         $w = min($maxW, self::PREVIEW_PADDING * 2 + $maxCols * self::GRID_CELL_W);
         $h = min($maxH, self::PREVIEW_HEADER_HEIGHT + self::PREVIEW_PADDING + $rowCount * self::GRID_CELL_H + self::PREVIEW_PADDING);
 
-        $img = self::createPreviewCanvas($w, $h, 'XLSX');
+        $img = self::createPreviewCanvas($w, $h, $badge);
 
         if ($img === null) {
             return null;

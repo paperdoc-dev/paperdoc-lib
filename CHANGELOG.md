@@ -12,6 +12,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.2] — 2026-03-02
+
+### Changed
+- **Thumbnail pipeline** — real rendering is now preferred for correct fonts and layout:
+  - **PDF**: Imagick → Ghostscript → native (text/image) fallback (was: native first). Enables proper page rendering when Imagick or Ghostscript is installed.
+  - **OOXML (DOCX, XLSX, PPTX)**: LibreOffice first (convert to PDF, then thumbnail), then embedded thumbnail or GD preview. **LibreOffice is required** for high-quality Office thumbnails.
+  - **CSV/TSV**: LibreOffice first; when unavailable, new native `renderCsvPreview()` shows first rows as a grid (badge "CSV").
+- **ThumbnailGenerator** class docblock updated to describe the new pipeline order.
+- **renderGridPreview()** — added optional `$badge` parameter (default `'XLSX'`) for CSV grid preview.
+
+### Added
+- **renderCsvPreview()** — native CSV/TSV thumbnail when LibreOffice is not available: reads first lines, parses delimiter (`,` or tab), renders via existing grid preview.
+
+### Documentation
+- Thumbnail requirements clarified: **LibreOffice** required for DOCX, XLSX, PPTX, CSV; **Imagick** or **Ghostscript** required for PDF thumbnails with correct rendering.
+
+---
+
 ## [0.3.1] — 2026-03-02
 
 ### Changed
@@ -100,7 +118,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.2
 [0.3.1]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.1
 [0.3.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.0
 [0.2.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.2.0
