@@ -12,6 +12,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.0] — 2026-03-02
+
+### Added
+- **Thumbnail base64 API** — generate thumbnails without saving to disk, as raw base64 strings:
+  - `ThumbnailGenerator::fromFileBase64()` — from any supported file path
+  - `ThumbnailGenerator::generateBase64()` — from an `Image` element
+  - `DocumentInterface::getThumbnailBase64()` — on documents and images
+  - `DocumentManager::thumbnailBase64()` — static helper
+  - `InteractsWithPaperdoc::documentThumbnailBase64()` — trait helper
+  - `Paperdoc` Facade PHPDoc updated with `thumbnail`, `thumbnailDataUri`, `thumbnailBase64`
+- **Native thumbnail generation (no third-party binaries)** for PDF, DOCX, XLSX, PPTX:
+  - PDF: extract embedded JPEG/PNG or parse text operators (Tj, TJ), render preview via GD
+  - OOXML: extract embedded `docProps/thumbnail.*` from ZIP, or render text/grid preview via GD (DOCX paragraphs, XLSX sheet grid, PPTX slide text)
+  - LibreOffice, Imagick, Ghostscript remain optional fallbacks when native path fails
+- **ThumbnailGeneratorTest** — 28 unit tests for resize, fromFile (image/PDF/DOCX/XLSX), fromFileDataUri, fromFileBase64, generate/generateBase64, capabilities, edge cases
+
+### Changed
+- **ThumbnailGenerator** — code quality improvements:
+  - Class marked `final`
+  - Magic numbers replaced by named constants (preview/grid dimensions, PDF limits, OOXML namespaces)
+  - DRY helpers: `openZip()`, `readFromZip()`, `createPreviewCanvas()`, `previewColors()`, `gdToPng()`, `gdToPngAndResize()`, `extractXmlTextNodes()`, `decompressStream()`, `extractPdfParagraphs()`
+  - `extractPdfEmbeddedImage()` — unified JPEG/PNG detection via signature list
+  - `findBinary()` — use `escapeshellarg($name)` for safe shell invocation
+  - `tempPath()` — remove orphan temp file created by `tempnam()` before adding extension
+  - Removed all `imagedestroy()` calls (deprecated in PHP 8.5; GD resources are now `GdImage` objects)
+- **PDF test fixtures** — valid xref/startxref so Ghostscript does not emit errors when used as fallback
+
+---
+
 ## [0.2.0] — 2026-03-01
 
 ### Added
@@ -58,6 +87,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.0
 [0.2.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.2.0
 [0.1.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.1.0

@@ -135,6 +135,16 @@ class Document implements DocumentInterface, \JsonSerializable
         return 'data:' . $thumb['mimeType'] . ';base64,' . base64_encode($thumb['data']);
     }
 
+    public function getThumbnailBase64(
+        int $maxWidth = ThumbnailGenerator::DEFAULT_WIDTH,
+        int $maxHeight = ThumbnailGenerator::DEFAULT_HEIGHT,
+        int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
+    ): ?string {
+        $thumb = $this->getThumbnail($maxWidth, $maxHeight, $quality);
+
+        return $thumb !== null ? base64_encode($thumb['data']) : null;
+    }
+
     /**
      * Fallback: render the first page of the source file as a thumbnail.
      *

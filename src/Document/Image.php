@@ -129,6 +129,14 @@ class Image implements DocumentElementInterface, \JsonSerializable
         return ThumbnailGenerator::generateDataUri($this, $maxWidth, $maxHeight, $quality);
     }
 
+    public function getThumbnailBase64(
+        int $maxWidth = ThumbnailGenerator::DEFAULT_WIDTH,
+        int $maxHeight = ThumbnailGenerator::DEFAULT_HEIGHT,
+        int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
+    ): ?string {
+        return ThumbnailGenerator::generateBase64($this, $maxWidth, $maxHeight, $quality);
+    }
+
     /* -------------------------------------------------------------
      | Persistence
      |------------------------------------------------------------- */

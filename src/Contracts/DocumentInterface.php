@@ -44,4 +44,6 @@ interface DocumentInterface
     public function getThumbnail(int $maxWidth = 300, int $maxHeight = 300, int $quality = 85): ?array;
 
     public function getThumbnailDataUri(int $maxWidth = 300, int $maxHeight = 300, int $quality = 85): ?string;
+
+    public function getThumbnailBase64(int $maxWidth = 300, int $maxHeight = 300, int $quality = 85): ?string;
 }

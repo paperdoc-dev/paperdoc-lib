@@ -57,4 +57,12 @@ trait InteractsWithPaperdoc
     ): ?string {
         return DocumentManager::thumbnailDataUri($document, $maxWidth, $maxHeight);
     }
+
+    protected function documentThumbnailBase64(
+        DocumentInterface $document,
+        int $maxWidth = 300,
+        int $maxHeight = 300,
+    ): ?string {
+        return DocumentManager::thumbnailBase64($document, $maxWidth, $maxHeight);
+    }
 }

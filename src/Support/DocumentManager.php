@@ -6,7 +6,6 @@ namespace Paperdoc\Support;
 
 use Paperdoc\Contracts\DocumentInterface;
 use Paperdoc\Contracts\LlmAugmenterInterface;
-use Paperdoc\Contracts\OcrProcessorInterface;
 use Paperdoc\Document\{Paragraph, Section, Table, TableCell, TableRow, TextRun};
 use Paperdoc\Factory\{DocumentFactory, ParserFactory};
 use Paperdoc\Llm\LlmAugmenter;
@@ -253,6 +252,18 @@ class DocumentManager
         int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
     ): ?string {
         return $document->getThumbnailDataUri($maxWidth, $maxHeight, $quality);
+    }
+
+    /**
+     * Get a thumbnail as a raw base64 string (no data URI prefix).
+     */
+    public static function thumbnailBase64(
+        DocumentInterface $document,
+        int $maxWidth = ThumbnailGenerator::DEFAULT_WIDTH,
+        int $maxHeight = ThumbnailGenerator::DEFAULT_HEIGHT,
+        int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
+    ): ?string {
+        return $document->getThumbnailBase64($maxWidth, $maxHeight, $quality);
     }
 
     /* -------------------------------------------------------------
