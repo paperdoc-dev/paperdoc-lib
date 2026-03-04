@@ -12,6 +12,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.3] — 2026-03-03
+
+### Added
+- **PdfParser — ToUnicode CMap + hex text operators**: PDFs using hex string text (`<XXXX> Tj` / `<XXXX> TJ`) with ToUnicode CMaps (e.g. Chrome/Electron-generated PDFs) are now decoded correctly. New helpers: `buildFontCMaps()`, `parseCMapStream()`, `resolvePageFontMap()`, `decodeHexViaCMap()`; `parseTextBlockWithCtm()` tracks current font and decodes hex via CMap.
+- **PdfParser — recursive image extraction**: `findImageXObjectRefs()` now recurses into Form XObjects (depth limit 5) so images inside nested Form XObjects (e.g. scanned ID cards, diplomas) are extracted.
+- **PdfParser — garbage text filter**: `isGarbageText()` rejects text that is mostly binary/noise (misidentified image streams or garbled OCR). Uses ratio of ASCII letter sequences (2+ chars) and digit sequences (2+ chars) vs total length; threshold 0.15. Applied in `sortAndBuildElements()` after CID spacing collapse.
+- **CsvParser — row limit**: `MAX_ROWS = 10_000` to avoid OOM on very large CSV files (e.g. hundreds of MB).
+- **XlsxParser — sheet size limit**: `MAX_SHEET_SIZE = 50 * 1024 * 1024` bytes per sheet (compressed) to avoid OOM when decompressing huge worksheets.
+
+### Changed
+- **PdfParser**: `extractTextLines()` and `parseTextBlockWithCtm()` accept optional `$fontMap`; `extractTJText()` accepts optional `$cmap` for hex strings in TJ arrays. Combined Y-group text is passed through `collapseCidSpacing()` before adding to the section; garbage text is skipped.
+
+---
+
 ## [0.3.2] — 2026-03-02
 
 ### Changed
@@ -118,7 +132,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.3
 [0.3.2]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.2
 [0.3.1]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.1
 [0.3.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.0

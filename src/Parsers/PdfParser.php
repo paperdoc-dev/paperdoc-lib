@@ -31,6 +31,9 @@ class PdfParser extends AbstractParser implements ParserInterface
 
     private string $rawContent = '';
 
+    /** @var array<int, array<string, string>> font obj num → glyph→unicode map */
+    private array $fontCMaps = [];
+
     public function supports(string $extension): bool
     {
         return strtolower($extension) === 'pdf';
@@ -53,6 +56,7 @@ class PdfParser extends AbstractParser implements ParserInterface
         }
 
         $this->parseObjects();
+        $this->buildFontCMaps();
         $this->extractMetadata($document);
 
         $pages = $this->findPages();
@@ -62,11 +66,12 @@ class PdfParser extends AbstractParser implements ParserInterface
             $sectionIndex++;
             $section = new Section("page-{$sectionIndex}");
 
+            $fontMap = $this->resolvePageFontMap($pageObjNum);
             $streams = $this->getAllPageStreams($pageObjNum);
             $allLines = [];
 
             foreach ($streams as $streamData) {
-                $lines = $this->extractTextLines($streamData);
+                $lines = $this->extractTextLines($streamData, $fontMap);
                 array_push($allLines, ...$lines);
             }
 
@@ -81,6 +86,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
         $this->objects = [];
         $this->rawContent = '';
+        $this->fontCMaps = [];
 
         return $document;
     }
@@ -143,6 +149,172 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function getRawObject(int $objNum): ?string
     {
         return $this->objects[$objNum] ?? null;
+    }
+
+    /* =============================================================
+     | Font / CMap Parsing
+     |============================================================= */
+
+    private function buildFontCMaps(): void
+    {
+        $this->fontCMaps = [];
+
+        foreach ($this->objects as $objNum => $data) {
+            if (! preg_match('/\/ToUnicode\s+(\d+)\s+\d+\s+R/', $data, $tm)) {
+                continue;
+            }
+
+            $cmapStream = $this->extractStreamFromObjNum((int) $tm[1]);
+
+            if ($cmapStream === '') {
+                continue;
+            }
+
+            $map = $this->parseCMapStream($cmapStream);
+
+            if (! empty($map)) {
+                $this->fontCMaps[$objNum] = $map;
+            }
+        }
+    }
+
+    /**
+     * @return array<string, string> hex glyph code (uppercase) → UTF-8 character(s)
+     */
+    private function parseCMapStream(string $stream): array
+    {
+        $map = [];
+
+        if (preg_match_all('/beginbfchar\s*\n(.*?)endbfchar/s', $stream, $charBlocks)) {
+            foreach ($charBlocks[1] as $block) {
+                preg_match_all('/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/', $block, $entries);
+
+                foreach ($entries[1] as $i => $src) {
+                    $map[strtoupper($src)] = $this->hexToUtf8($entries[2][$i]);
+                }
+            }
+        }
+
+        if (preg_match_all('/beginbfrange\s*\n(.*?)endbfrange/s', $stream, $rangeBlocks)) {
+            foreach ($rangeBlocks[1] as $block) {
+                preg_match_all('/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(?:<([0-9A-Fa-f]+)>|\[([^\]]+)\])/', $block, $entries);
+
+                foreach ($entries[1] as $i => $lo) {
+                    $hi = $entries[2][$i];
+                    $loInt = hexdec($lo);
+                    $hiInt = hexdec($hi);
+                    $srcLen = strlen($lo);
+
+                    if ($entries[3][$i] !== '') {
+                        $dstInt = hexdec($entries[3][$i]);
+                        $dstLen = strlen($entries[3][$i]);
+
+                        for ($code = $loInt; $code <= $hiInt; $code++) {
+                            $srcHex = strtoupper(str_pad(dechex($code), $srcLen, '0', STR_PAD_LEFT));
+                            $dstHex = str_pad(dechex($dstInt + ($code - $loInt)), $dstLen, '0', STR_PAD_LEFT);
+                            $map[$srcHex] = $this->hexToUtf8($dstHex);
+                        }
+                    } elseif ($entries[4][$i] !== '') {
+                        preg_match_all('/<([0-9A-Fa-f]+)>/', $entries[4][$i], $arr);
+
+                        for ($j = 0, $code = $loInt; $code <= $hiInt && $j < count($arr[1]); $code++, $j++) {
+                            $srcHex = strtoupper(str_pad(dechex($code), $srcLen, '0', STR_PAD_LEFT));
+                            $map[$srcHex] = $this->hexToUtf8($arr[1][$j]);
+                        }
+                    }
+                }
+            }
+        }
+
+        return $map;
+    }
+
+    private function hexToUtf8(string $hex): string
+    {
+        if (strlen($hex) <= 4) {
+            $cp = hexdec($hex);
+
+            return $cp > 0 ? mb_chr($cp, 'UTF-8') : '';
+        }
+
+        $bytes = hex2bin($hex);
+
+        return $bytes !== false ? mb_convert_encoding($bytes, 'UTF-8', 'UTF-16BE') : '';
+    }
+
+    /**
+     * @return array<string, array<string, string>> fontName → CMap
+     */
+    private function resolvePageFontMap(int $pageObjNum): array
+    {
+        $obj = $this->objects[$pageObjNum] ?? '';
+        $fontMap = [];
+        $fontDicts = [];
+
+        if (preg_match('/\/Font\s*<<([^>]+)>>/s', $obj, $m)) {
+            $fontDicts[] = $m[1];
+        }
+
+        if (preg_match('/\/Resources\s+(\d+)\s+\d+\s+R/', $obj, $resRef)) {
+            $resObj = $this->getRawObject((int) $resRef[1]) ?? '';
+
+            if (preg_match('/\/Font\s*<<([^>]+)>>/s', $resObj, $m)) {
+                $fontDicts[] = $m[1];
+            }
+        }
+
+        foreach ($fontDicts as $dict) {
+            preg_match_all('/\/(\w+)\s+(\d+)\s+\d+\s+R/', $dict, $refs);
+
+            foreach ($refs[1] as $i => $name) {
+                $objNum = (int) $refs[2][$i];
+
+                if (isset($this->fontCMaps[$objNum])) {
+                    $fontMap[$name] = $this->fontCMaps[$objNum];
+                }
+            }
+        }
+
+        return $fontMap;
+    }
+
+    /**
+     * @param array<string, string> $cmap glyph hex → UTF-8 character
+     */
+    private function decodeHexViaCMap(string $hex, array $cmap): string
+    {
+        $hex = strtoupper(trim($hex));
+
+        if (empty($cmap)) {
+            $bytes = hex2bin($hex);
+
+            return $bytes !== false ? $this->decodePdfString($bytes) : '';
+        }
+
+        $charLen = strlen(array_key_first($cmap));
+
+        if ($charLen < 2) {
+            $charLen = 2;
+        }
+
+        $result = '';
+        $len = strlen($hex);
+
+        for ($i = 0; $i < $len; $i += $charLen) {
+            $code = substr($hex, $i, $charLen);
+
+            if (isset($cmap[$code])) {
+                $result .= $cmap[$code];
+            } else {
+                $cp = hexdec($code);
+
+                if ($cp >= 0x20) {
+                    $result .= mb_chr($cp, 'UTF-8');
+                }
+            }
+        }
+
+        return $result;
     }
 
     /* =============================================================
@@ -338,13 +510,10 @@ class PdfParser extends AbstractParser implements ParserInterface
     private const CTM_IDENTITY = ['a' => 1.0, 'b' => 0.0, 'c' => 0.0, 'd' => 1.0, 'e' => 0.0, 'f' => 0.0];
 
     /**
-     * Processes the stream sequentially, tracking the graphics state
-     * (q/Q save/restore and cm matrix concatenation) so that text
-     * coordinates are transformed to absolute page positions.
-     *
+     * @param  array<string, array<string, string>> $fontMap font name → CMap
      * @return array<int, array{text: string, x: float, y: float}>
      */
-    private function extractTextLines(string $stream): array
+    private function extractTextLines(string $stream, array $fontMap = []): array
     {
         $lines = [];
         $ctmStack = [self::CTM_IDENTITY];
@@ -360,30 +529,19 @@ class PdfParser extends AbstractParser implements ParserInterface
             }
 
             if (! $inBT) {
-                if ($opLine === 'q') {
-                    $ctmStack[] = end($ctmStack);
-                } elseif ($opLine === 'Q') {
-                    if (count($ctmStack) > 1) {
-                        array_pop($ctmStack);
-                    }
-                } elseif (preg_match('/([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+cm\b/', $opLine, $m)) {
-                    $newMatrix = [
-                        'a' => (float) $m[1], 'b' => (float) $m[2],
-                        'c' => (float) $m[3], 'd' => (float) $m[4],
-                        'e' => (float) $m[5], 'f' => (float) $m[6],
-                    ];
-                    $key = array_key_last($ctmStack);
-                    $ctmStack[$key] = $this->multiplyCtm($newMatrix, $ctmStack[$key]);
-                } elseif (preg_match('/BT\b(.*?)ET\b/s', $opLine, $singleLine)) {
-                    $this->parseTextBlockWithCtm($singleLine[1], end($ctmStack), $lines);
-                } elseif (str_starts_with($opLine, 'BT')) {
+                $this->processGraphicsOps($opLine, $ctmStack);
+
+                if (preg_match('/\bBT\b(.*?)\bET\b/s', $opLine, $singleLine)) {
+                    $this->parseTextBlockWithCtm($singleLine[1], end($ctmStack), $lines, $fontMap);
+                } elseif (preg_match('/\bBT\b(.*)$/s', $opLine, $btMatch)) {
                     $inBT = true;
-                    $btContent = substr($opLine, 2) . "\n";
+                    $btContent = $btMatch[1] . "\n";
                 }
             } else {
-                if ($opLine === 'ET' || str_ends_with($opLine, ' ET')) {
+                if (preg_match('/^(.*?)\bET\b/', $opLine, $etMatch)) {
+                    $btContent .= $etMatch[1] . "\n";
                     $inBT = false;
-                    $this->parseTextBlockWithCtm($btContent, end($ctmStack), $lines);
+                    $this->parseTextBlockWithCtm($btContent, end($ctmStack), $lines, $fontMap);
                 } else {
                     $btContent .= $opLine . "\n";
                 }
@@ -391,6 +549,34 @@ class PdfParser extends AbstractParser implements ParserInterface
         }
 
         return $lines;
+    }
+
+    /**
+     * Process graphics state operators (q, Q, cm) from a line.
+     *
+     * @param array<int, array{a: float, b: float, c: float, d: float, e: float, f: float}> $ctmStack
+     */
+    private function processGraphicsOps(string $opLine, array &$ctmStack): void
+    {
+        if (str_contains($opLine, 'q') && preg_match('/(?:^|\s)q(?:\s|$)/', $opLine)) {
+            $ctmStack[] = end($ctmStack);
+        }
+
+        if (str_contains($opLine, 'Q') && preg_match('/(?:^|\s)Q(?:\s|$)/', $opLine)) {
+            if (count($ctmStack) > 1) {
+                array_pop($ctmStack);
+            }
+        }
+
+        if (preg_match('/([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+cm\b/', $opLine, $m)) {
+            $newMatrix = [
+                'a' => (float) $m[1], 'b' => (float) $m[2],
+                'c' => (float) $m[3], 'd' => (float) $m[4],
+                'e' => (float) $m[5], 'f' => (float) $m[6],
+            ];
+            $key = array_key_last($ctmStack);
+            $ctmStack[$key] = $this->multiplyCtm($newMatrix, $ctmStack[$key]);
+        }
     }
 
     /**
@@ -429,11 +615,13 @@ class PdfParser extends AbstractParser implements ParserInterface
     /**
      * @param array{a: float, b: float, c: float, d: float, e: float, f: float} $ctm
      * @param array<int, array{text: string, x: float, y: float}>               $lines
+     * @param array<string, array<string, string>>                               $fontMap
      */
-    private function parseTextBlockWithCtm(string $block, array $ctm, array &$lines): void
+    private function parseTextBlockWithCtm(string $block, array $ctm, array &$lines, array $fontMap = []): void
     {
         $localX = 0.0;
         $localY = 0.0;
+        $currentFont = '';
 
         $blockLines = preg_split('/\r?\n/', $block);
 
@@ -442,6 +630,10 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             if ($bLine === '') {
                 continue;
+            }
+
+            if (preg_match('/\/(\w+)\s+[\d.]+\s+Tf\b/', $bLine, $fm)) {
+                $currentFont = $fm[1];
             }
 
             if (preg_match('/([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+Tm\b/', $bLine, $m)) {
@@ -455,10 +647,11 @@ class PdfParser extends AbstractParser implements ParserInterface
             }
 
             [$pageX, $pageY] = $this->transformPoint($localX, $localY, $ctm);
+            $cmap = $fontMap[$currentFont] ?? [];
 
             if (preg_match_all('/\[([^\]]*)\]\s*TJ\b/s', $bLine, $tjMatches)) {
                 foreach ($tjMatches[1] as $tjContent) {
-                    $text = $this->extractTJText($tjContent);
+                    $text = $this->extractTJText($tjContent, $cmap);
 
                     if ($text !== '') {
                         $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
@@ -469,6 +662,16 @@ class PdfParser extends AbstractParser implements ParserInterface
             if (preg_match_all('/\(([^)]*)\)\s*Tj\b/s', $bLine, $tjSimple)) {
                 foreach ($tjSimple[1] as $str) {
                     $text = $this->decodePdfString($str);
+
+                    if ($text !== '') {
+                        $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
+                    }
+                }
+            }
+
+            if (preg_match_all('/<([0-9A-Fa-f]+)>\s*Tj\b/', $bLine, $hexTj)) {
+                foreach ($hexTj[1] as $hex) {
+                    $text = $this->decodeHexViaCMap($hex, $cmap);
 
                     if ($text !== '') {
                         $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
@@ -524,8 +727,9 @@ class PdfParser extends AbstractParser implements ParserInterface
             }
 
             $text = trim(implode(' ', array_column($group, 'text')));
+            $text = $this->collapseCidSpacing($text);
 
-            if ($text !== '') {
+            if ($text !== '' && ! $this->isGarbageText($text)) {
                 $section->addText($text);
             }
 
@@ -801,8 +1005,12 @@ class PdfParser extends AbstractParser implements ParserInterface
     /**
      * @return int[]
      */
-    private function findImageXObjectRefs(string $obj): array
+    private function findImageXObjectRefs(string $obj, int $depth = 0): array
     {
+        if ($depth > 5) {
+            return [];
+        }
+
         $refs = [];
 
         $xobjectDefs = [];
@@ -822,8 +1030,16 @@ class PdfParser extends AbstractParser implements ParserInterface
             foreach ($r[1] as $refNum) {
                 $num = (int) $refNum;
                 $xObj = $this->objects[$num] ?? null;
-                if ($xObj !== null && preg_match('/\/Subtype\s*\/Image\b/', $xObj)) {
+
+                if ($xObj === null) {
+                    continue;
+                }
+
+                if (preg_match('/\/Subtype\s*\/Image\b/', $xObj)) {
                     $refs[] = $num;
+                } elseif (preg_match('/\/Subtype\s*\/Form\b/', $xObj)) {
+                    $nested = $this->findImageXObjectRefs($xObj, $depth + 1);
+                    array_push($refs, ...$nested);
                 }
             }
         }
@@ -961,6 +1177,40 @@ class PdfParser extends AbstractParser implements ParserInterface
         return ob_get_clean() ?: null;
     }
 
+    /**
+     * Rejects text that is mostly non-printable / binary data,
+     * typical of misidentified image streams or garbled OCR.
+     *
+     * Uses ASCII letter sequences (2+ chars) as the primary signal —
+     * Unicode letter matching is too lenient because random binary
+     * bytes in the Latin-1 Supplement range (0x80–0xFF) are valid
+     * Unicode letters but not readable text.
+     */
+    private function isGarbageText(string $text): bool
+    {
+        $totalChars = mb_strlen($text, 'UTF-8');
+
+        if ($totalChars < 5) {
+            return false;
+        }
+
+        $readableChars = 0;
+
+        if (preg_match_all('/[a-zA-Z]{2,}/', $text, $words)) {
+            foreach ($words[0] as $w) {
+                $readableChars += strlen($w);
+            }
+        }
+
+        if (preg_match_all('/\d{2,}/', $text, $nums)) {
+            foreach ($nums[0] as $n) {
+                $readableChars += strlen($n);
+            }
+        }
+
+        return ($readableChars / max(1, $totalChars)) < 0.15;
+    }
+
     /* =============================================================
      | String Decoding
      |============================================================= */
@@ -1015,17 +1265,22 @@ class PdfParser extends AbstractParser implements ParserInterface
         return $nullHighBytes >= ($len / 2) * 0.7;
     }
 
-    private function extractTJText(string $content): string
+    /**
+     * @param array<string, string> $cmap
+     */
+    private function extractTJText(string $content, array $cmap = []): string
     {
         $text = '';
 
-        preg_match_all('/\(([^)]*)\)|(-?\d+)/', $content, $parts, PREG_SET_ORDER);
+        preg_match_all('/\(([^)]*)\)|<([0-9A-Fa-f]+)>|(-?\d+)/', $content, $parts, PREG_SET_ORDER);
 
         foreach ($parts as $part) {
             if (isset($part[1]) && $part[1] !== '') {
                 $text .= $this->decodePdfString($part[1]);
-            } elseif (isset($part[2])) {
-                $kern = (int) $part[2];
+            } elseif (isset($part[2]) && $part[2] !== '') {
+                $text .= $this->decodeHexViaCMap($part[2], $cmap);
+            } elseif (isset($part[3])) {
+                $kern = (int) $part[3];
                 if ($kern < -100) {
                     $text .= ' ';
                 }

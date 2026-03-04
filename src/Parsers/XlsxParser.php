@@ -148,8 +148,16 @@ class XlsxParser extends AbstractParser implements ParserInterface
      | Sheet Parsing
      |============================================================= */
 
+    private const MAX_SHEET_SIZE = 50 * 1024 * 1024;
+
     private function parseSheet(\ZipArchive $zip, string $sheetName, string $sheetPath): ?Section
     {
+        $stat = $zip->statName($sheetPath);
+
+        if ($stat !== false && $stat['size'] > self::MAX_SHEET_SIZE) {
+            return null;
+        }
+
         $xml = $zip->getFromName($sheetPath);
 
         if ($xml === false) {

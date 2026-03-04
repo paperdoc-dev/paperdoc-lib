@@ -15,6 +15,8 @@ use Paperdoc\Document\{Document, Paragraph, Section, Table, TableCell, TableRow,
  */
 class CsvParser extends AbstractParser implements ParserInterface
 {
+    private const MAX_ROWS = 10_000;
+
     private string $delimiter = ',';
     private string $enclosure = '"';
     private bool   $firstRowIsHeader = true;
@@ -79,7 +81,13 @@ class CsvParser extends AbstractParser implements ParserInterface
             rewind($handle);
         }
 
+        $rowCount = 0;
+
         while (($data = fgetcsv($handle, 0, $this->delimiter, $this->enclosure, '')) !== false) {
+            if (++$rowCount > self::MAX_ROWS) {
+                break;
+            }
+
             $row = new TableRow();
 
             if ($isFirst && $this->firstRowIsHeader) {
