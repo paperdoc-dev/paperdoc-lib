@@ -12,6 +12,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.5] — 2026-03-04
+
+### Changed
+- **Document::getThumbnail()** — thumbnail from source file (Imagick/Ghostscript/LibreOffice) is now tried **first**; embedded document images (e.g. signature/cachet) are used only as fallback when the source file is unavailable. Fixes thumbnails showing only the signature instead of the full page for PDFs opened via `DocumentManager::open()` when using `getThumbnailDataUri()` or `documentThumbnailDataUri()`.
+
+---
+
 ## [0.3.4] — 2026-03-04
 
 ### Added
@@ -139,7 +146,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.5
 [0.3.4]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.4
 [0.3.3]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.3
 [0.3.2]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.2

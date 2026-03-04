@@ -109,6 +109,12 @@ class Document implements DocumentInterface, \JsonSerializable
         int $maxHeight = ThumbnailGenerator::DEFAULT_HEIGHT,
         int $quality = ThumbnailGenerator::DEFAULT_QUALITY,
     ): ?array {
+        $fromFile = $this->thumbnailFromSourceFile($maxWidth, $maxHeight, $quality);
+
+        if ($fromFile !== null) {
+            return $fromFile;
+        }
+
         $image = $this->getFirstImage();
 
         if ($image !== null) {
@@ -118,7 +124,7 @@ class Document implements DocumentInterface, \JsonSerializable
             }
         }
 
-        return $this->thumbnailFromSourceFile($maxWidth, $maxHeight, $quality);
+        return null;
     }
 
     public function getThumbnailDataUri(
