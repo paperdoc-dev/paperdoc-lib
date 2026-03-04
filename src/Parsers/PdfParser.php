@@ -144,6 +144,65 @@ class PdfParser extends AbstractParser implements ParserInterface
                 $endPos + 6 - $startOffset
             );
         }
+
+        $this->unpackObjectStreams();
+    }
+
+    /**
+     * Unpacks objects stored inside ObjStm (Object Streams, PDF 1.5+).
+     *
+     * ObjStm format: /N <count> /First <byteOffset>
+     * Header (before /First): pairs of "objNum offset" separated by whitespace.
+     * Body (from /First): concatenated object dictionaries.
+     */
+    private function unpackObjectStreams(): void
+    {
+        $objStmKeys = [];
+
+        foreach ($this->objects as $objNum => $data) {
+            if (preg_match('/\/Type\s*\/ObjStm\b/', $data)) {
+                $objStmKeys[] = $objNum;
+            }
+        }
+
+        foreach ($objStmKeys as $stmObjNum) {
+            $data = $this->objects[$stmObjNum];
+
+            if (! preg_match('/\/N\s+(\d+)/', $data, $nm) || ! preg_match('/\/First\s+(\d+)/', $data, $fm)) {
+                continue;
+            }
+
+            $n = (int) $nm[1];
+            $first = (int) $fm[1];
+
+            $decoded = $this->extractStreamFromObject($data);
+
+            if ($decoded === '' || $first > strlen($decoded)) {
+                continue;
+            }
+
+            $header = substr($decoded, 0, $first);
+            $body = substr($decoded, $first);
+            $pairs = preg_split('/\s+/', trim($header));
+
+            for ($i = 0; $i < $n && ($i * 2 + 1) < count($pairs); $i++) {
+                $embeddedObjNum = (int) $pairs[$i * 2];
+                $offset = (int) $pairs[$i * 2 + 1];
+
+                if (isset($this->objects[$embeddedObjNum])) {
+                    continue;
+                }
+
+                $nextOffset = ($i + 1 < $n && ($i * 2 + 3) < count($pairs))
+                    ? (int) $pairs[($i + 1) * 2 + 1]
+                    : strlen($body);
+
+                $objBody = substr($body, $offset, $nextOffset - $offset);
+                $objBody = trim($objBody);
+
+                $this->objects[$embeddedObjNum] = "{$embeddedObjNum} 0 obj\n{$objBody}\nendobj";
+            }
+        }
     }
 
     private function getRawObject(int $objNum): ?string

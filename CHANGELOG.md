@@ -12,6 +12,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.4] — 2026-03-04
+
+### Added
+- **PdfParser — Object Streams (ObjStm)**: PDFs using compressed object streams (PDF 1.5+, `/Type /ObjStm`) are now parsed correctly. Pages and other objects stored inside ObjStm were previously invisible to the parser (0 sections). New `unpackObjectStreams()` runs after `parseObjects()`, decompresses each ObjStm, parses the header (objNum/offset pairs), and injects embedded objects into the object table so page discovery and content extraction work as usual.
+
+---
+
 ## [0.3.3] — 2026-03-03
 
 ### Added
@@ -132,7 +139,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.4
 [0.3.3]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.3
 [0.3.2]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.2
 [0.3.1]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.1
