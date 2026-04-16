@@ -21,7 +21,15 @@ interface DocumentInterface
      */
     public function getSections(): array;
 
-    public function addSection(Section $section): static;
+    /**
+     * Append a section. When $section is null, an unnamed section is created.
+     */
+    public function addSection(?Section $section = null): static;
+
+    /**
+     * Append a section and return it for fluent content helpers (e.g. addParagraph).
+     */
+    public function openSection(?Section $section = null): Section;
 
     public function removeSection(int $index): static;
 

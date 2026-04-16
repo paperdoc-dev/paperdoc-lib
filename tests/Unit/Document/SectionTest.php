@@ -83,6 +83,16 @@ class SectionTest extends TestCase
         $this->assertSame('Hello world', $paragraph->getPlainText());
     }
 
+    public function test_add_paragraph_alias_matches_add_text(): void
+    {
+        $section = new Section();
+        $paragraph = $section->addParagraph('Hello world');
+
+        $this->assertInstanceOf(Paragraph::class, $paragraph);
+        $this->assertCount(1, $section->getElements());
+        $this->assertSame('Hello world', $paragraph->getPlainText());
+    }
+
     public function test_add_text_with_style(): void
     {
         $section = new Section();

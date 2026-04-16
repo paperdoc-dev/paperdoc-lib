@@ -54,20 +54,20 @@ The `PaperdocServiceProvider` and `Paperdoc` facade are registered automatically
 
 ## Quick Start
 
+`DocumentManager` uses **static** methods (`create`, `save`, `open`, …). A document is built from **`Section`** instances: use `addSection($section)` or `addSection()` to append an empty section, or **`openSection()`** when you want a fluent chain (`addParagraph`, `addHeading`, …) on the new section. Bold and other run styles live on **`TextStyle`** (see `examples/usage.php` for tables and advanced composition).
+
 ### Standalone PHP
 
 ```php
 use Paperdoc\Support\DocumentManager;
+use Paperdoc\Document\Style\TextStyle;
 
-$manager = new DocumentManager();
+$doc = DocumentManager::create('pdf', 'My Report');
 
-// Create a PDF document
-$doc = $manager->create('pdf', 'My Report');
-$doc->addSection()
-    ->addParagraph('Hello, Paperdoc!')
-    ->setBold(true);
+$doc->openSection()
+    ->addParagraph('Hello, Paperdoc!', TextStyle::make()->setBold());
 
-$manager->save($doc, 'output/report.pdf');
+DocumentManager::save($doc, 'output/report.pdf');
 ```
 
 ### Laravel (via Facade)
@@ -77,7 +77,7 @@ use Paperdoc\Facades\Paperdoc;
 
 // Create
 $doc = Paperdoc::create('docx', 'Invoice #1042');
-$doc->addSection()->addParagraph('Amount due: $500');
+$doc->openSection()->addParagraph('Amount due: $500');
 Paperdoc::save($doc, storage_path('invoices/1042.docx'));
 
 // Parse an existing file

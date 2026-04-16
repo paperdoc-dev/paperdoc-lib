@@ -64,6 +64,30 @@ class DocumentTest extends TestCase
         $this->assertSame($section, $doc->getSections()[0]);
     }
 
+    public function test_add_section_without_argument_appends_empty_section(): void
+    {
+        $doc = new Document('pdf');
+
+        $result = $doc->addSection();
+
+        $this->assertSame($doc, $result);
+        $this->assertCount(1, $doc->getSections());
+        $this->assertSame('', $doc->getSections()[0]->getName());
+    }
+
+    public function test_open_section_returns_section_for_fluent_content(): void
+    {
+        $doc = new Document('pdf');
+        $section = $doc->openSection(Section::make('body'));
+
+        $this->assertInstanceOf(Section::class, $section);
+        $this->assertCount(1, $doc->getSections());
+        $this->assertSame('body', $doc->getSections()[0]->getName());
+        $paragraph = $section->addParagraph('Hello');
+        $this->assertSame('Hello', $paragraph->getPlainText());
+        $this->assertSame($paragraph, $doc->getSections()[0]->getElements()[0]);
+    }
+
     public function test_add_multiple_sections(): void
     {
         $doc = new Document('pdf');

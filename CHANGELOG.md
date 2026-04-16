@@ -8,7 +8,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-> Changes merged into `develop` but not yet released.
+> Changes merged into `main` but not yet tagged.
+
+---
+
+## [0.3.6] — 2026-04-16
+
+### Added
+- **`Document::openSection(?Section $section = null): Section`** — appends a section and returns it so callers can chain `addParagraph()`, `addHeading()`, `addElement()`, etc., without manually wiring `Section::make()` then `addSection()`.
+- **`Section::addParagraph(string $text, ?TextStyle $style = null): Paragraph`** — alias of `addText()` for clearer quick-start style code.
+
+### Changed
+- **`Document::addSection()`** — the `Section` argument is now optional (`null` appends an unnamed empty section via `Section::make()`). Existing calls that pass a `Section` instance are unchanged.
+- **`DocumentInterface`** — signatures updated for optional `addSection` and new `openSection`.
+
+### Documentation
+- **README** — Quick Start aligned with the real API: static `DocumentManager::create` / `save`, `openSection()` + `addParagraph()` with `TextStyle` for bold, Laravel facade example updated; short note on the document vs section model and link to `examples/usage.php`.
 
 ---
 
@@ -146,7 +161,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.6
 [0.3.5]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.5
 [0.3.4]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.4
 [0.3.3]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.3

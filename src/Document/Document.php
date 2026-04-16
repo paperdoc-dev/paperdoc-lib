@@ -55,11 +55,19 @@ class Document implements DocumentInterface, \JsonSerializable
     /** @return Section[] */
     public function getSections(): array { return $this->sections; }
 
-    public function addSection(Section $section): static
+    public function addSection(?Section $section = null): static
     {
-        $this->sections[] = $section;
+        $this->sections[] = $section ?? Section::make();
 
         return $this;
+    }
+
+    public function openSection(?Section $section = null): Section
+    {
+        $section ??= Section::make();
+        $this->sections[] = $section;
+
+        return $section;
     }
 
     public function removeSection(int $index): static

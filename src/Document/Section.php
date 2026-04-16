@@ -87,6 +87,12 @@ class Section implements \JsonSerializable
         return $paragraph;
     }
 
+    /** @see addText() — same behaviour, alternative name for readability */
+    public function addParagraph(string $text, ?TextStyle $style = null): Paragraph
+    {
+        return $this->addText($text, $style);
+    }
+
     /* -------------------------------------------------------------
      | Shortcut : Heading
      |------------------------------------------------------------- */
