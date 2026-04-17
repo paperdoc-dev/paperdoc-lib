@@ -12,6 +12,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.7] — 2026-04-17
+
+### Fixed
+- **DOCX generation — "Word experienced an error trying to open the file"**: `DocumentFactory` mapped the `docx` format to `HtmlRenderer`, so `DocumentManager::save($doc, 'file.docx')` wrote HTML bytes into a file with a `.docx` extension. Word, LibreOffice and any OOXML reader rejected the result because it was not a valid ZIP/OOXML package.
+
+### Added
+- **`Paperdoc\Renderers\DocxRenderer`** — native Office Open XML (WordprocessingML) renderer built on `ZipArchive`, with **zero third-party dependencies**. Produces a valid `.docx` package (`[Content_Types].xml`, `_rels/.rels`, `word/document.xml`, `word/_rels/document.xml.rels`, `word/styles.xml`, `docProps/core.xml`, `docProps/app.xml`).
+- Run styling: bold, italic, underline, color, font family, font size (half-points).
+- Paragraph styling: alignment (`left`/`center`/`right`/`both`), spacing before/after, line spacing, heading levels (`Heading1`..`Heading4` via `pStyle` + `outlineLvl`).
+- Tables: rows, cells, header rows (`tblHeader`), `gridSpan` (colspan), single-line borders.
+- Page break support via the `PageBreak` element.
+- Proper XML escaping and `xml:space="preserve"` for whitespace-sensitive runs; line breaks inside a run become `<w:br/>`.
+- Round-trip safe with `DocxParser` (text content is preserved).
+
+### Changed
+- **`DocumentFactory`**: `'docx' => DocxRenderer::class` (was `HtmlRenderer`).
+
+---
+
 ## [0.3.6] — 2026-04-16
 
 ### Added
@@ -161,7 +180,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.7
 [0.3.6]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.6
 [0.3.5]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.5
 [0.3.4]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.4

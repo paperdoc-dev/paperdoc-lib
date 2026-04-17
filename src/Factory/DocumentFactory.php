@@ -6,7 +6,7 @@ namespace Paperdoc\Factory;
 
 use Paperdoc\Contracts\{DocumentInterface, RendererInterface};
 use Paperdoc\Document\Document;
-use Paperdoc\Renderers\{CsvRenderer, DocRenderer, HtmlRenderer, MarkdownRenderer, PdfRenderer, PptRenderer, PptxRenderer, XlsRenderer, XlsxRenderer};
+use Paperdoc\Renderers\{CsvRenderer, DocRenderer, DocxRenderer, HtmlRenderer, MarkdownRenderer, PdfRenderer, PptRenderer, PptxRenderer, XlsRenderer, XlsxRenderer};
 
 class DocumentFactory
 {
@@ -17,7 +17,7 @@ class DocumentFactory
         'csv'      => CsvRenderer::class,
         'md'       => MarkdownRenderer::class,
         'markdown' => MarkdownRenderer::class,
-        'docx'     => HtmlRenderer::class,
+        'docx'     => DocxRenderer::class,
         'doc'      => DocRenderer::class,
         'xlsx'     => XlsxRenderer::class,
         'xls'      => XlsRenderer::class,
