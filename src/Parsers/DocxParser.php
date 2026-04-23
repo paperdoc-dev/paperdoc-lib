@@ -6,6 +6,7 @@ namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
 use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 
@@ -58,6 +59,8 @@ class DocxParser extends AbstractParser implements ParserInterface
         $this->loadRelationships($zip);
         $this->loadStyles($zip);
         $this->extractMetadata($zip, $document);
+
+
 
         $xml = $zip->getFromName('word/document.xml');
 
@@ -345,7 +348,6 @@ class DocxParser extends AbstractParser implements ParserInterface
             if ($localName === 'r') {
                 $this->parseRun($child, $paragraph, $xpath, $zip, $section);
             } elseif ($localName === 'hyperlink') {
-                $this->parseRuns($child, $paragraph, $xpath, $zip, $section);
             }
         }
     }
@@ -389,12 +391,42 @@ class DocxParser extends AbstractParser implements ParserInterface
             return;
         }
 
+        $link = $this->extractRunHyperlink($run, $xpath);
+        if ($link) {
+            $paragraph->addRun(new TextRun($run->childNodes[1]->nodeValue, null, $link));
+            return;
+        }
+
         if ($text === '') {
             return;
         }
 
         $style = $this->extractRunStyle($run, $xpath);
         $paragraph->addRun(new TextRun($text, $style));
+    }
+
+    private function extractRunHyperlink(\DOMNode $run, \DOMXPath $xpath): ?TextLink
+    {
+
+        $wHyperlink = $xpath->query('w:hyperlink', $run);
+
+        if (! $wHyperlink->length) {
+            return null;
+        }
+
+        $rId = $wHyperlink->item(0)->getAttributeNS(self::NS_REL, 'id');
+
+        if (! $rId || ! isset($this->relationships[$rId])) {
+            return null;
+        }
+
+        $linkTarget = $this->relationships[$rId];
+
+
+        $link = TextLink::make()->setUrl($linkTarget);
+
+        return $link;
+
     }
 
     private function extractRunStyle(\DOMNode $run, \DOMXPath $xpath): ?TextStyle

@@ -87,6 +87,11 @@ class MarkdownRenderer extends AbstractRenderer
                 continue;
             }
 
+            $link = $run->getLink();
+            if ( $link ){
+                $text = sprintf('[%s](%s)', $text, $link->getUrl());
+            }
+
             $style = $run->getStyle();
 
             if ($style === null) {
@@ -104,9 +109,6 @@ class MarkdownRenderer extends AbstractRenderer
                 $text = '*' . $text . '*';
             }
 
-            if ($style->isUnderline()) {
-                $text = '<u>' . $text . '</u>';
-            }
 
             $md .= $text;
         }

@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
 use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
+use Paperdoc\Document\Link\{TextLink};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Renderers\HtmlRenderer;
 
@@ -108,6 +109,17 @@ class HtmlRendererTest extends TestCase
         $html = (new HtmlRenderer())->render($doc);
         $this->assertStringContainsString('font-style:italic', $html);
         $this->assertStringContainsString('text-decoration:underline', $html);
+    }
+    public function test_renders_hyperlink(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('s1');
+        $link = TextLink::make()->setUrl('https://example.com');
+        $section->addText('Example Link', null, $link);
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+        $this->assertStringContainsString('href="https://example.com"', $html);
     }
 
     public function test_renders_paragraph_style(): void
