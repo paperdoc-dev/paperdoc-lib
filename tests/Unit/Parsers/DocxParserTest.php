@@ -60,31 +60,29 @@ class DocxParserTest extends TestCase
     }
     public function test_parse_real_docx_with_hyperlink(): void
     {
-        $test_document_path = dirname(__DIR__, 3)."/real-docx-with-hyperlink.docx";
+        $test_document_path = dirname(__DIR__, 3).'/real-docx-with-hyperlink.docx';
 
-        if( file_exists($test_document_path) ){
+        if (! file_exists($test_document_path)) {
+            $this->markTestSkipped('Fixture real-docx-with-hyperlink.docx not shipped with the repo.');
+        }
 
-            $doc = DocumentManager::open(dirname(__DIR__, 3)."/real-docx-with-hyperlink.docx");
+        $doc = DocumentManager::open($test_document_path);
 
-            $elements = $doc->getSections()[0]->getElements();
+        $elements   = $doc->getSections()[0]->getElements();
+        $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
 
-            $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
+        $this->assertNotEmpty($paragraphs);
 
-            $this->assertNotEmpty($paragraphs);
-
-            $hasLink = false;
-            foreach ($paragraphs as $p) {
-                foreach ($p->getRuns() as $run) {
-
-                    if ($run->getLink() !== null) {
-                        $hasLink = true;
-                    }
+        $hasLink = false;
+        foreach ($paragraphs as $p) {
+            foreach ($p->getRuns() as $run) {
+                if ($run->getLink() !== null) {
+                    $hasLink = true;
                 }
             }
-
-            $this->assertTrue($hasLink, 'Au moins un run avec un lien devrait exister');
-
         }
+
+        $this->assertTrue($hasLink, 'Au moins un run avec un lien devrait exister');
     }
 
     private function createDocxWithHyperlink(): string

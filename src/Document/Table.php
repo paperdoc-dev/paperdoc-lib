@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Paperdoc\Document;
 
-use Paperdoc\Contracts\DocumentElementInterface;
+use Paperdoc\Contracts\BlockElementInterface;
 use Paperdoc\Document\Style\TableStyle;
 
-class Table implements DocumentElementInterface, \JsonSerializable
+class Table implements BlockElementInterface, \JsonSerializable
 {
     /** @var TableRow[] */
     private array $rows = [];

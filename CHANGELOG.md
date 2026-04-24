@@ -12,6 +12,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.4.0] — 2026-04-24
+
+> First milestone on the road to **1.0**: a richer, strongly-typed document
+> model. This release is **non-breaking** — existing parsers/renderers keep
+> working; the new elements become natively rendered in later releases.
+
+### Added — Document model (road to 1.0)
+- **`Paperdoc\Document\ListBlock`** + **`ListItem`** — first-class ordered/unordered lists with nested lists, custom starting number, styled item labels (runs + link support). Wraps `DocumentElementInterface` so it can be added anywhere a block element is expected.
+- **`Paperdoc\Document\Heading`** — typed heading element (levels 1–6, optional `id` anchor, styled runs). Replaces the bancal "Paragraph + ParagraphStyle::headingLevel" pattern while remaining backward-compatible: the legacy pattern still works.
+- **`Paperdoc\Document\Bookmark`** — named landmark element completing the v0.3.8 hyperlink feature: `TextLink::anchor` can now point to a declared `Bookmark::id`.
+- **`Paperdoc\Document\CodeBlock`** — verbatim source block with optional language hint (maps cleanly to Markdown fences and `<pre><code class="language-…">`).
+- **`Paperdoc\Document\Blockquote`** — nested-aware quoted block.
+- **`Paperdoc\Document\Metadata`** — typed document properties (author / subject / description / keywords / created-at / modified-at / language), exposed on `Document::getProperties()` / `setProperties()`. Separate from the existing loose `metadata` key/value bag.
+- **Marker interfaces** — `Paperdoc\Contracts\BlockElementInterface` and `InlineElementInterface`, both extending `DocumentElementInterface`. Existing `Paragraph`, `Image`, `PageBreak`, `Table` are retrofitted to `BlockElementInterface` (non-breaking).
+- **Typed exceptions** — new `Paperdoc\Exceptions\` namespace: `PaperdocException` (base), `ParserException`, `RendererException`, `UnsupportedFormatException`, `InvalidDocumentException`. Factory helpers (`ParserException::forFile()`, `UnsupportedFormatException::forFormat()`, …) for readable error messages.
+
+### Added — Section fluent API
+- `Section::addList($style, $start)`, `addBulletList()`, `addOrderedList($start)` — return the created `ListBlock` so items can be added fluently.
+- `Section::addBookmark($id)` — returns the created `Bookmark`.
+- `Section::addCodeBlock($code, $language)` — returns the created `CodeBlock`.
+- `Section::addBlockquote()` — returns the created `Blockquote`.
+
+### Tests
+- 80+ new unit tests across `tests/Unit/Document/{ListBlock,ListItem,Heading,Bookmark,CodeBlock,Blockquote,Metadata}Test.php` and `tests/Unit/Exceptions/ExceptionsTest.php`, plus additional coverage for the new `Section`/`Document` shortcuts.
+- Fixed a previously risky test (`DocxParserTest::test_parse_real_docx_with_hyperlink`) so it now explicitly skips when the optional fixture is missing.
+
+---
+
 ## [0.3.8] — 2026-04-24
 
 ### Added
@@ -201,7 +229,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.4.0
 [0.3.8]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.8
 [0.3.7]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.7
 [0.3.6]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.6

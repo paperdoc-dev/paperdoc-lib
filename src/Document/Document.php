@@ -16,6 +16,8 @@ class Document implements DocumentInterface, \JsonSerializable
     /** @var array<string, mixed> */
     private array $metadata = [];
 
+    private ?Metadata $properties = null;
+
     private TextStyle $defaultTextStyle;
 
     public function __construct(
@@ -79,7 +81,7 @@ class Document implements DocumentInterface, \JsonSerializable
     }
 
     /* -------------------------------------------------------------
-     | Metadata
+     | Metadata (loose key/value bag: source_file, custom extras…)
      |------------------------------------------------------------- */
 
     /** @return array<string, mixed> */
@@ -88,6 +90,19 @@ class Document implements DocumentInterface, \JsonSerializable
     public function setMetadata(string $key, mixed $value): static
     {
         $this->metadata[$key] = $value;
+
+        return $this;
+    }
+
+    /* -------------------------------------------------------------
+     | Properties (typed: author / subject / created-at / …)
+     |------------------------------------------------------------- */
+
+    public function getProperties(): ?Metadata { return $this->properties; }
+
+    public function setProperties(?Metadata $properties): static
+    {
+        $this->properties = $properties;
 
         return $this;
     }
@@ -194,11 +209,17 @@ class Document implements DocumentInterface, \JsonSerializable
 
     public function jsonSerialize(): mixed
     {
-        return [
+        $result = [
             'format'   => $this->format,
             'title'    => $this->title,
             'metadata' => $this->metadata,
             'sections' => $this->sections,
         ];
+
+        if ($this->properties !== null) {
+            $result['properties'] = $this->properties;
+        }
+
+        return $result;
     }
 }

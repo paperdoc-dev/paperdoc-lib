@@ -171,4 +171,74 @@ class SectionTest extends TestCase
 
         $this->assertEmpty($section->getElements());
     }
+
+    /* -------------------------------------------------------------
+     | Shortcuts introduced in v0.4.0
+     |------------------------------------------------------------- */
+
+    public function test_add_bullet_list_appends_and_returns_list(): void
+    {
+        $section = new Section();
+
+        $list = $section->addBulletList();
+
+        $this->assertInstanceOf(\Paperdoc\Document\ListBlock::class, $list);
+        $this->assertTrue($list->isBullet());
+        $this->assertSame([$list], $section->getElements());
+    }
+
+    public function test_add_ordered_list_uses_start(): void
+    {
+        $section = new Section();
+
+        $list = $section->addOrderedList(7);
+
+        $this->assertTrue($list->isOrdered());
+        $this->assertSame(7, $list->getStart());
+    }
+
+    public function test_add_list_with_explicit_style(): void
+    {
+        $section = new Section();
+
+        $list = $section->addList(\Paperdoc\Document\ListBlock::STYLE_ORDERED, 2);
+
+        $this->assertTrue($list->isOrdered());
+        $this->assertSame(2, $list->getStart());
+    }
+
+    public function test_add_bookmark_appends_and_returns_bookmark(): void
+    {
+        $section = new Section();
+
+        $b = $section->addBookmark('anchor-1');
+
+        $this->assertInstanceOf(\Paperdoc\Document\Bookmark::class, $b);
+        $this->assertSame('anchor-1', $b->getId());
+        $this->assertSame([$b], $section->getElements());
+    }
+
+    public function test_add_code_block_appends_and_returns_code_block(): void
+    {
+        $section = new Section();
+
+        $cb = $section->addCodeBlock('echo "hi";', 'php');
+
+        $this->assertInstanceOf(\Paperdoc\Document\CodeBlock::class, $cb);
+        $this->assertSame('echo "hi";', $cb->getCode());
+        $this->assertSame('php', $cb->getLanguage());
+        $this->assertSame([$cb], $section->getElements());
+    }
+
+    public function test_add_blockquote_appends_and_returns_blockquote(): void
+    {
+        $section = new Section();
+
+        $q = $section->addBlockquote();
+        $q->addText('quoted');
+
+        $this->assertInstanceOf(\Paperdoc\Document\Blockquote::class, $q);
+        $this->assertSame([$q], $section->getElements());
+        $this->assertSame('quoted', $q->getElements()[0]->getPlainText());
+    }
 }

@@ -130,6 +130,68 @@ class Section implements \JsonSerializable
     }
 
     /* -------------------------------------------------------------
+     | Shortcut : List
+     |------------------------------------------------------------- */
+
+    /**
+     * Append an empty ListBlock to the section and return it so items
+     * can be added fluently.
+     */
+    public function addList(string $style = ListBlock::STYLE_BULLET, int $start = 1): ListBlock
+    {
+        $list = new ListBlock($style, $start);
+        $this->addElement($list);
+
+        return $list;
+    }
+
+    public function addBulletList(): ListBlock
+    {
+        return $this->addList(ListBlock::STYLE_BULLET);
+    }
+
+    public function addOrderedList(int $start = 1): ListBlock
+    {
+        return $this->addList(ListBlock::STYLE_ORDERED, $start);
+    }
+
+    /* -------------------------------------------------------------
+     | Shortcut : Bookmark
+     |------------------------------------------------------------- */
+
+    public function addBookmark(string $id): Bookmark
+    {
+        $bookmark = new Bookmark($id);
+        $this->addElement($bookmark);
+
+        return $bookmark;
+    }
+
+    /* -------------------------------------------------------------
+     | Shortcut : Code block
+     |------------------------------------------------------------- */
+
+    public function addCodeBlock(string $code = '', string $language = ''): CodeBlock
+    {
+        $block = new CodeBlock($code, $language);
+        $this->addElement($block);
+
+        return $block;
+    }
+
+    /* -------------------------------------------------------------
+     | Shortcut : Blockquote
+     |------------------------------------------------------------- */
+
+    public function addBlockquote(): Blockquote
+    {
+        $quote = new Blockquote();
+        $this->addElement($quote);
+
+        return $quote;
+    }
+
+    /* -------------------------------------------------------------
      | JsonSerializable
      |------------------------------------------------------------- */
 

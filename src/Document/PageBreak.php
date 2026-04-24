@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Paperdoc\Document;
 
-use Paperdoc\Contracts\DocumentElementInterface;
+use Paperdoc\Contracts\BlockElementInterface;
 
-class PageBreak implements DocumentElementInterface, \JsonSerializable
+class PageBreak implements BlockElementInterface, \JsonSerializable
 {
     public function getType(): string { return 'page_break'; }
 

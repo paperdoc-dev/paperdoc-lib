@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Paperdoc\Document;
 
-use Paperdoc\Contracts\DocumentElementInterface;
+use Paperdoc\Contracts\BlockElementInterface;
 use Paperdoc\Support\ThumbnailGenerator;
 
-class Image implements DocumentElementInterface, \JsonSerializable
+class Image implements BlockElementInterface, \JsonSerializable
 {
     private ?string $data = null;
 

@@ -189,4 +189,55 @@ class DocumentTest extends TestCase
 
         $this->assertEmpty($doc->getSections());
     }
+
+    /* -------------------------------------------------------------
+     | Typed properties (Metadata) introduced in v0.4.0
+     |------------------------------------------------------------- */
+
+    public function test_properties_are_null_by_default(): void
+    {
+        $doc = new Document('pdf');
+
+        $this->assertNull($doc->getProperties());
+    }
+
+    public function test_set_properties_is_fluent(): void
+    {
+        $doc  = new Document('pdf');
+        $meta = \Paperdoc\Document\Metadata::make()->setAuthor('Alice');
+
+        $result = $doc->setProperties($meta);
+
+        $this->assertSame($doc, $result);
+        $this->assertSame($meta, $doc->getProperties());
+    }
+
+    public function test_set_properties_null_clears(): void
+    {
+        $doc = (new Document('pdf'))->setProperties(\Paperdoc\Document\Metadata::make());
+
+        $doc->setProperties(null);
+
+        $this->assertNull($doc->getProperties());
+    }
+
+    public function test_json_serialize_omits_properties_when_null(): void
+    {
+        $doc = new Document('pdf', 'Title');
+
+        $json = json_decode(json_encode($doc, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayNotHasKey('properties', $json);
+    }
+
+    public function test_json_serialize_includes_properties_when_set(): void
+    {
+        $doc = new Document('pdf', 'Title');
+        $doc->setProperties(\Paperdoc\Document\Metadata::make()->setAuthor('Alice'));
+
+        $json = json_decode(json_encode($doc, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('properties', $json);
+        $this->assertSame(['author' => 'Alice'], $json['properties']);
+    }
 }
