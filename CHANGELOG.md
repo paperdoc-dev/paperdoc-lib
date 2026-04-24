@@ -12,6 +12,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.3.8] — 2026-04-24
+
+### Added
+- **DOCX hyperlink parsing** — `DocxParser` now recognises `<w:hyperlink>` elements and attaches a `TextLink` to the produced `TextRun`s. Supports external URLs (via `r:id` relationship), internal bookmark anchors (`w:anchor`) and tooltips (`w:tooltip`).
+- **`Paperdoc\Document\Link\TextLink`** — new link value object with `url`, `anchor`, `title`, a combined `getHref()` helper (`url#anchor`), and an `isExternal()` predicate for http/https/mailto/tel/ftp schemes.
+- **`Paperdoc\Contracts\LinkInterface`** — minimal serialisation contract (`toArray()`).
+- **`TextRun` / `Section::addText()`** — accept an optional `TextLink` so links can be expressed programmatically.
+- **HTML hyperlink rendering** — `HtmlRenderer` renders `<a>` elements with `href`, preserved run styling (`style` attribute for bold/italic/color/font), optional `title`, and `target="_blank" rel="noopener noreferrer"` for external links (tabnabbing safety).
+- **Markdown hyperlink rendering** — `MarkdownRenderer` produces safe `[label](url "title")` syntax: brackets inside the label are escaped, URLs containing spaces or parentheses are wrapped in `<…>`, and titles are quoted.
+- **Tests** — new test coverage for hyperlink parsing (`DocxParserTest::test_parse_docx_with_hyperlink`) and rendering (`HtmlRendererTest::test_renders_hyperlink`, `MarkdownRendererTest::test_renders_hyperlink`).
+
+### Fixed
+- Hyperlinks without a resolvable `r:id` (internal bookmarks, broken relationships) no longer silently drop their inner text. The runs are still emitted, with an anchor-only link when available.
+- HTML renderer no longer discards run styling when a link is present.
+- Markdown renderer no longer emits malformed `[text](url)` when the label or URL contains markdown-sensitive characters.
+
+### Credits
+- Hyperlink feature implemented by **Olivier Mourlevat** ([@olivM](https://github.com/olivM)) in PR [#4](https://github.com/paperdoc-dev/paperdoc-lib/pull/4) — first external contribution. Thank you!
+
+---
+
 ## [0.3.7] — 2026-04-17
 
 ### Fixed
@@ -180,7 +201,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.8
 [0.3.7]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.7
 [0.3.6]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.6
 [0.3.5]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.5

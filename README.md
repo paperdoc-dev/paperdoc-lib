@@ -182,6 +182,12 @@ src/
 
 We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
+### Contributors
+
+Thanks to everyone who has contributed to **paperdoc-lib**. A full list is kept in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+- **Olivier Mourlevat** — [@olivM](https://github.com/olivM) — DOCX hyperlink parsing, HTML/Markdown hyperlink rendering ([#4](https://github.com/paperdoc-dev/paperdoc-lib/pull/4))
+
 ---
 
 ## Changelog
