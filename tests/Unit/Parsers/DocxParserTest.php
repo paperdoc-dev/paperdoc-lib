@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Paperdoc\Tests\Unit\Parsers;
 
+use Paperdoc\Support\DocumentManager;
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\ParserInterface;
 use Paperdoc\Document\{Image, Paragraph, Table};
@@ -29,6 +30,143 @@ class DocxParserTest extends TestCase
             array_map('unlink', $files);
         }
         @rmdir($this->tmpDir);
+    }
+
+
+    public function test_parse_docx_with_hyperlink(): void
+    {
+        $path = $this->createDocxWithHyperlink();
+
+        $doc = $this->parser->parse($path);
+
+        $elements = $doc->getSections()[0]->getElements();
+
+        $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
+
+        $this->assertNotEmpty($paragraphs);
+
+        $hasLink = false;
+        foreach ($paragraphs as $p) {
+            foreach ($p->getRuns() as $run) {
+
+                if ($run->getLink() !== null) {
+                    $hasLink = true;
+                }
+            }
+        }
+
+        $this->assertTrue($hasLink, 'Au moins un run avec un lien devrait exister');
+
+    }
+    public function test_parse_real_docx_with_hyperlink(): void
+    {
+        $test_document_path = dirname(__DIR__, 3)."/real-docx-with-hyperlink.docx";
+
+        if( file_exists($test_document_path) ){
+
+            $doc = DocumentManager::open(dirname(__DIR__, 3)."/real-docx-with-hyperlink.docx");
+
+            $elements = $doc->getSections()[0]->getElements();
+
+            $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
+
+            $this->assertNotEmpty($paragraphs);
+
+            $hasLink = false;
+            foreach ($paragraphs as $p) {
+                foreach ($p->getRuns() as $run) {
+
+                    if ($run->getLink() !== null) {
+                        $hasLink = true;
+                    }
+                }
+            }
+
+            $this->assertTrue($hasLink, 'Au moins un run avec un lien devrait exister');
+
+        }
+    }
+
+    private function createDocxWithHyperlink(): string
+    {
+        $path = $this->tmpDir . '/hyperlink.docx';
+
+        $zip = new \ZipArchive();
+        $zip->open($path, \ZipArchive::CREATE);
+
+        $zip->addFromString('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+                <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+                <Default Extension="xml" ContentType="application/xml"/>
+                <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+            </Types>');
+
+
+        $zip->addFromString('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+            </Relationships>');
+
+        $zip->addFromString('word/_rels/document.xml.rels', '<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="http://www.google.com" TargetMode="External"/>
+            </Relationships>');
+
+
+        $zip->addFromString('word/document.xml', '<?xml version="1.0" encoding="UTF-8"?>
+            <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+                <w:body>
+                    <w:p>
+                        <w:hyperlink r:id="rId5" w:history="1"><w:r w:rsidRPr="00B23F69"><w:rPr><w:rStyle w:val="Lienhypertexte"/></w:rPr><w:t>AI Impact Summit</w:t></w:r></w:hyperlink>
+                        <w:r>
+                            <w:t xml:space="preserve"> puis </w:t>
+                        </w:r>
+                        <w:r>
+                            <w:rPr><w:i/></w:rPr>
+                            <w:t>italique</w:t>
+                        </w:r>
+                        <w:r>
+                            <w:t xml:space="preserve"> puis </w:t>
+                        </w:r>
+                        <w:r>
+                            <w:rPr><w:u w:val="single"/><w:color w:val="FF0000"/><w:sz w:val="28"/></w:rPr>
+                            <w:t>souligné rouge 14pt</w:t>
+                        </w:r>
+                    </w:p>
+                </w:body>
+            </w:document>');
+
+        $zip->close();
+
+        return $path;
+    }
+
+
+
+    public function test_parse_docx_with_bold_italic_underline(): void
+    {
+        $path = $this->createStyledDocx();
+
+        $doc = $this->parser->parse($path);
+
+        $elements = $doc->getSections()[0]->getElements();
+        $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
+
+        $this->assertNotEmpty($paragraphs);
+
+        $hasStyled = false;
+        foreach ($paragraphs as $p) {
+            foreach ($p->getRuns() as $run) {
+                if ($run->getStyle() !== null) {
+                    $hasStyled = true;
+                }
+            }
+        }
+
+        $this->assertTrue($hasStyled, 'Au moins un run stylé devrait exister');
+
+
     }
 
     public function test_implements_parser_interface(): void
@@ -69,29 +207,6 @@ class DocxParserTest extends TestCase
 
         $this->assertSame('Mon Document', $doc->getTitle());
         $this->assertSame('Akram', $doc->getMetadata()['author'] ?? null);
-    }
-
-    public function test_parse_docx_with_bold_italic_underline(): void
-    {
-        $path = $this->createStyledDocx();
-
-        $doc = $this->parser->parse($path);
-
-        $elements = $doc->getSections()[0]->getElements();
-        $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
-
-        $this->assertNotEmpty($paragraphs);
-
-        $hasStyled = false;
-        foreach ($paragraphs as $p) {
-            foreach ($p->getRuns() as $run) {
-                if ($run->getStyle() !== null) {
-                    $hasStyled = true;
-                }
-            }
-        }
-
-        $this->assertTrue($hasStyled, 'Au moins un run stylé devrait exister');
     }
 
     public function test_parse_docx_with_table(): void

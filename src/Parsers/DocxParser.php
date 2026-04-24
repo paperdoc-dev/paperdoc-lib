@@ -6,6 +6,7 @@ namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
 use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 
@@ -58,6 +59,8 @@ class DocxParser extends AbstractParser implements ParserInterface
         $this->loadRelationships($zip);
         $this->loadStyles($zip);
         $this->extractMetadata($zip, $document);
+
+
 
         $xml = $zip->getFromName('word/document.xml');
 
@@ -186,10 +189,10 @@ class DocxParser extends AbstractParser implements ParserInterface
             }
 
             $nameNode = $xpath->query('w:name', $style)->item(0);
-            $name = $nameNode ? $nameNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+            $name = $nameNode instanceof \DOMElement ? $nameNode->getAttributeNS(self::NS_MAIN, 'val') : '';
 
             $basedOnNode = $xpath->query('w:basedOn', $style)->item(0);
-            $basedOn = $basedOnNode ? $basedOnNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+            $basedOn = $basedOnNode instanceof \DOMElement ? $basedOnNode->getAttributeNS(self::NS_MAIN, 'val') : '';
 
             $this->styleMap[strtolower($styleId)] = strtolower($name ?: $basedOn);
         }
@@ -333,7 +336,7 @@ class DocxParser extends AbstractParser implements ParserInterface
      | Runs (w:r)
      |============================================================= */
 
-    private function parseRuns(\DOMNode $node, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
+    private function parseRuns(\DOMNode $node, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section, ?TextLink $link = null): void
     {
         foreach ($node->childNodes as $child) {
             if ($child->nodeType !== XML_ELEMENT_NODE) {
@@ -343,14 +346,14 @@ class DocxParser extends AbstractParser implements ParserInterface
             $localName = $child->localName;
 
             if ($localName === 'r') {
-                $this->parseRun($child, $paragraph, $xpath, $zip, $section);
+                $this->parseRun($child, $paragraph, $xpath, $zip, $section, $link);
             } elseif ($localName === 'hyperlink') {
-                $this->parseRuns($child, $paragraph, $xpath, $zip, $section);
+                $this->parseRunHyperlink($child, $paragraph, $xpath, $zip, $section);
             }
         }
     }
 
-    private function parseRun(\DOMNode $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
+    private function parseRun(\DOMNode $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section, ?TextLink $link = null): void
     {
         $drawing = $xpath->query('w:drawing', $run)->item(0);
         if ($drawing) {
@@ -394,7 +397,26 @@ class DocxParser extends AbstractParser implements ParserInterface
         }
 
         $style = $this->extractRunStyle($run, $xpath);
-        $paragraph->addRun(new TextRun($text, $style));
+        $paragraph->addRun(new TextRun($text, $style, $link));
+    }
+
+    private function parseRunHyperlink(\DOMElement $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
+    {
+        $rId    = $run->getAttributeNS(self::NS_REL, 'id');
+        $anchor = $run->getAttributeNS(self::NS_MAIN, 'anchor');
+        $tooltip = $run->getAttributeNS(self::NS_MAIN, 'tooltip');
+
+        $url = '';
+        if ($rId !== '' && isset($this->relationships[$rId])) {
+            $url = $this->relationships[$rId];
+        }
+
+        $link = null;
+        if ($url !== '' || $anchor !== '') {
+            $link = TextLink::make($url, $anchor, $tooltip);
+        }
+
+        $this->parseRuns($run, $paragraph, $xpath, $zip, $section, $link);
     }
 
     private function extractRunStyle(\DOMNode $run, \DOMXPath $xpath): ?TextStyle

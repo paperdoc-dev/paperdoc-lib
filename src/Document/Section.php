@@ -6,6 +6,7 @@ namespace Paperdoc\Document;
 
 use Paperdoc\Contracts\DocumentElementInterface;
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
+use Paperdoc\Document\Link\TextLink;
 
 class Section implements \JsonSerializable
 {
@@ -78,10 +79,10 @@ class Section implements \JsonSerializable
      | Shortcut : Text
      |------------------------------------------------------------- */
 
-    public function addText(string $text, ?TextStyle $style = null): Paragraph
+    public function addText(string $text, ?TextStyle $style = null, ?TextLink $link = null): Paragraph
     {
         $paragraph = new Paragraph();
-        $paragraph->addRun(new TextRun($text, $style));
+        $paragraph->addRun(new TextRun($text, $style, $link));
         $this->addElement($paragraph);
 
         return $paragraph;

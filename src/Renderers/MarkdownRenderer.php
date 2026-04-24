@@ -87,6 +87,11 @@ class MarkdownRenderer extends AbstractRenderer
                 continue;
             }
 
+            $link = $run->getLink();
+            if ($link !== null) {
+                $text = $this->formatMarkdownLink($text, $link->getHref(), $link->getTitle());
+            }
+
             $style = $run->getStyle();
 
             if ($style === null) {
@@ -104,14 +109,31 @@ class MarkdownRenderer extends AbstractRenderer
                 $text = '*' . $text . '*';
             }
 
-            if ($style->isUnderline()) {
-                $text = '<u>' . $text . '</u>';
-            }
-
             $md .= $text;
         }
 
         return $md;
+    }
+
+    /**
+     * Build a safe `[label](url "title")` inline link.
+     * Escapes characters that would break markdown link syntax.
+     */
+    private function formatMarkdownLink(string $label, string $href, string $title = ''): string
+    {
+        $label = strtr($label, ['[' => '\\[', ']' => '\\]']);
+
+        // URLs containing spaces or parentheses are wrapped with angle brackets.
+        if ($href === '' || preg_match('/[\s()<>]/', $href) === 1) {
+            $href = '<' . str_replace(['<', '>'], ['%3C', '%3E'], $href) . '>';
+        }
+
+        if ($title !== '') {
+            $title = str_replace('"', '\\"', $title);
+            return sprintf('[%s](%s "%s")', $label, $href, $title);
+        }
+
+        return sprintf('[%s](%s)', $label, $href);
     }
 
     private function renderTable(Table $table): string

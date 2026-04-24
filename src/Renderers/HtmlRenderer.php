@@ -121,29 +121,51 @@ class HtmlRenderer extends AbstractRenderer
     {
         $text = htmlspecialchars($run->getText());
         $style = $run->getStyle();
+        $link = $run->getLink();
 
-        if ($style === null) {
+        if ($style === null && $link === null) {
             return $text;
         }
 
         $parts = [];
-        $parts[] = sprintf('font-family:%s,sans-serif', htmlspecialchars($style->getFontFamily()));
-        $parts[] = sprintf('font-size:%spt', $style->getFontSize());
-        $parts[] = sprintf('color:%s', htmlspecialchars($style->getColor()));
+        if ($style) {
+            $parts[] = sprintf('font-family:%s,sans-serif', htmlspecialchars($style->getFontFamily()));
+            $parts[] = sprintf('font-size:%spt', $style->getFontSize());
+            $parts[] = sprintf('color:%s', htmlspecialchars($style->getColor()));
 
-        if ($style->isBold()) {
-            $parts[] = 'font-weight:bold';
-        }
+            if ($style->isBold()) {
+                $parts[] = 'font-weight:bold';
+            }
 
-        if ($style->isItalic()) {
-            $parts[] = 'font-style:italic';
-        }
+            if ($style->isItalic()) {
+                $parts[] = 'font-style:italic';
+            }
 
-        if ($style->isUnderline()) {
-            $parts[] = 'text-decoration:underline';
+            if ($style->isUnderline()) {
+                $parts[] = 'text-decoration:underline';
+            }
         }
 
         $css = implode(';', $parts);
+
+        if ($link !== null) {
+            $href = htmlspecialchars($link->getHref());
+            $attrs = "href=\"{$href}\"";
+
+            if ($css !== '') {
+                $attrs .= " style=\"{$css}\"";
+            }
+
+            if ($link->getTitle() !== '') {
+                $attrs .= sprintf(' title="%s"', htmlspecialchars($link->getTitle()));
+            }
+
+            if ($link->isExternal()) {
+                $attrs .= ' target="_blank" rel="noopener noreferrer"';
+            }
+
+            return "<a {$attrs}>{$text}</a>";
+        }
 
         return "<span style=\"{$css}\">{$text}</span>";
     }
