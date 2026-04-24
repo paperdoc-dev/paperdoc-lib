@@ -5,6 +5,7 @@ require __DIR__ . '/../vendor/autoload.php';
 use Paperdoc\Support\DocumentManager;
 use Paperdoc\Document\{Section, Paragraph, TextRun, Table, Image};
 use Paperdoc\Document\Style\{TextStyle, ParagraphStyle, TableStyle};
+use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Enum\Alignment;
 
 // ──────────────────────────────────────────────
@@ -118,7 +119,59 @@ if ($thumb !== null) {
 }
 
 // ──────────────────────────────────────────────
-// 7. Extensibilité : enregistrer un nouveau format
+// 7. Hyperliens — DOCX → Markdown + création programmatique
+// ──────────────────────────────────────────────
+
+// 7a. Créer un document contenant des liens
+$linkedDoc = DocumentManager::create('md', 'Release notes');
+$linkedSection = Section::make('main');
+
+$linkedSection->addHeading('Paperdoc v0.3.8', 1);
+
+// Lien externe avec titre/tooltip
+$linkedSection->addText(
+    'See the full changelog',
+    null,
+    TextLink::make(
+        'https://github.com/paperdoc-dev/paperdoc-lib/blob/main/CHANGELOG.md',
+        '',            // pas d'ancre
+        'Changelog'    // title
+    )
+);
+
+// Lien interne vers une ancre
+$linkedSection->addText(
+    'Jump to install instructions',
+    null,
+    TextLink::make('', 'install')
+);
+
+// URL + ancre combinées
+$linkedSection->addText(
+    'Open the API reference',
+    null,
+    TextLink::make('https://paperdoc.dev/docs', 'api-reference')
+);
+
+$linkedDoc->addSection($linkedSection);
+
+DocumentManager::save($linkedDoc, __DIR__ . '/output/release-notes.md');
+echo "release-notes.md créé (avec hyperliens)\n";
+
+// 7b. Parser un DOCX avec hyperliens et le convertir en Markdown
+// Les <w:hyperlink r:id="..."> sont détectés et attachés aux TextRun.
+// Les ancres (w:anchor) et tooltips (w:tooltip) sont conservés.
+if (file_exists(__DIR__ . '/input/report-with-links.docx')) {
+    DocumentManager::convert(
+        __DIR__ . '/input/report-with-links.docx',
+        __DIR__ . '/output/report-with-links.md',
+        'md'
+    );
+    echo "DOCX avec liens converti en Markdown\n";
+}
+
+// ──────────────────────────────────────────────
+// 8. Extensibilité : enregistrer un nouveau format
 // ──────────────────────────────────────────────
 
 // DocumentManager::registerRenderer('odt', \App\Renderers\OdtRenderer::class);

@@ -15,6 +15,7 @@
 - **Generate** documents from scratch (PDF, HTML, CSV, DOCX, XLSX, PPTX, Markdown)
 - **Parse** existing documents into a unified in-memory model
 - **Convert** between any supported formats in one call
+- **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>` or Markdown `[text](url)`, with anchors and tooltips
 - **Batch processing** — open and process multiple files at once
 - **Laravel integration** — first-class ServiceProvider and Facade
 - **AI-powered** features via Neuron AI (OCR, LLM extraction)
@@ -124,12 +125,64 @@ Every format shares the same in-memory structure:
 Document
 └── Section[]
     ├── Paragraph (with TextRun[], bold, italic, font…)
+    │   └── TextRun (text, ?TextStyle, ?TextLink)
     ├── Table → TableRow[] → TableCell[]
     ├── Image
     └── PageBreak
 ```
 
-Styles are encapsulated in `Document/Style/` and can be applied at the paragraph, run, or section level.
+Styles are encapsulated in `Document/Style/` and can be applied at the paragraph, run, or section level. Links live in `Document/Link/TextLink`.
+
+---
+
+## Hyperlinks
+
+Every `TextRun` can carry an optional `Paperdoc\Document\Link\TextLink`. Links survive the full round-trip: they're parsed from DOCX (`<w:hyperlink>`) and rendered natively by the HTML and Markdown renderers.
+
+### Add a link programmatically
+
+```php
+use Paperdoc\Support\DocumentManager;
+use Paperdoc\Document\Section;
+use Paperdoc\Document\Link\TextLink;
+
+$doc = DocumentManager::create('md', 'Release notes');
+$section = Section::make('main');
+
+$section->addText(
+    'See the full changelog',
+    null,
+    TextLink::make('https://github.com/paperdoc-dev/paperdoc-lib/blob/main/CHANGELOG.md', '', 'Changelog')
+);
+
+$doc->addSection($section);
+echo DocumentManager::renderAs($doc, 'md');
+// [See the full changelog](https://github.com/paperdoc-dev/paperdoc-lib/blob/main/CHANGELOG.md "Changelog")
+```
+
+### Supported link flavours
+
+| Kind             | Construction                                         | HTML output                                             | Markdown output          |
+|------------------|------------------------------------------------------|---------------------------------------------------------|--------------------------|
+| External URL     | `TextLink::make('https://x.com')`                    | `<a href="…" target="_blank" rel="noopener noreferrer">…</a>` | `[label](url)`     |
+| Internal anchor  | `TextLink::make('', 'section-2')`                    | `<a href="#section-2">…</a>`                             | `[label](#section-2)`   |
+| URL + fragment   | `TextLink::make('https://x.com', 'sect-2')`          | `<a href="https://x.com#sect-2" …>…</a>`                 | `[label](url#sect-2)`   |
+| Tooltip / title  | `TextLink::make('https://x.com', '', 'Open site')`   | `<a … title="Open site" …>…</a>`                         | `[label](url "Open site")` |
+
+External schemes (`http`, `https`, `mailto`, `tel`, `ftp`) automatically get `target="_blank" rel="noopener noreferrer"` in HTML to prevent tabnabbing. Run styling (bold, italic, color, font) is preserved when combined with a link.
+
+### Convert DOCX with hyperlinks to Markdown
+
+```php
+use Paperdoc\Support\DocumentManager;
+
+// <w:hyperlink r:id="…"> elements are parsed and attached to their TextRun
+$doc = DocumentManager::open('report.docx');
+
+// Links are rendered as safe [label](url) — labels with ] and URLs with spaces
+// or parentheses are escaped/wrapped automatically.
+file_put_contents('report.md', DocumentManager::renderAs($doc, 'md'));
+```
 
 ---
 
