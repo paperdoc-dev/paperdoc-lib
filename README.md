@@ -253,4 +253,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 Paperdoc Library is released under the **[MIT License](LICENSE)** — free to use, modify and distribute, commercial or not.
 
-© 2024–2026 Paperdoc — [paperdoc.dev](https://paperdoc.dev)
+© Paperdoc — [paperdoc.dev](https://paperdoc.dev)
