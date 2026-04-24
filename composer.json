@@ -2,7 +2,7 @@
     "name": "paperdoc-dev/paperdoc-lib",
     "description": "A zero-dependency PHP library for generating, parsing and converting documents (PDF, HTML, CSV, DOCX)",
     "type": "library",
-    "license": "proprietary",
+    "license": "MIT",
     "keywords": [
         "laravel",
         "pdf",
