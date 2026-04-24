@@ -15,10 +15,12 @@
 - **Generate** documents from scratch (PDF, HTML, CSV, DOCX, XLSX, PPTX, Markdown)
 - **Parse** existing documents into a unified in-memory model
 - **Convert** between any supported formats in one call
+- **Rich document model** — typed headings, ordered/bullet lists (nested), bookmarks, code blocks, blockquotes, images, tables, page breaks and typed document properties (author, subject, dates…)
 - **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>` or Markdown `[text](url)`, with anchors and tooltips
 - **Batch processing** — open and process multiple files at once
 - **Laravel integration** — first-class ServiceProvider and Facade
 - **AI-powered** features via Neuron AI (OCR, LLM extraction)
+- **Typed exceptions** — `ParserException`, `RendererException`, `UnsupportedFormatException`, `InvalidDocumentException` all extending a common `PaperdocException`
 - Zero native binary dependencies — pure PHP
 
 ---
@@ -119,19 +121,80 @@ $docs = Paperdoc::openBatch([
 
 ## Document Model
 
-Every format shares the same in-memory structure:
+Every format shares the same strongly-typed in-memory structure:
 
 ```
-Document
+Document (format, title, ?Metadata, metadata[])
 └── Section[]
-    ├── Paragraph (with TextRun[], bold, italic, font…)
+    ├── Heading (level 1-6, runs, ?id)
+    ├── Paragraph (TextRun[], ?ParagraphStyle)
     │   └── TextRun (text, ?TextStyle, ?TextLink)
+    ├── ListBlock (bullet | ordered, start)
+    │   └── ListItem (runs, blocks → nested ListBlock…)
+    ├── Blockquote (nested DocumentElement[])
+    ├── CodeBlock (code, ?language)
+    ├── Bookmark (id) — link target for TextLink anchors
     ├── Table → TableRow[] → TableCell[]
-    ├── Image
+    ├── Image (src | embedded data + mimeType)
     └── PageBreak
 ```
 
-Styles are encapsulated in `Document/Style/` and can be applied at the paragraph, run, or section level. Links live in `Document/Link/TextLink`.
+All block elements implement `Paperdoc\Contracts\BlockElementInterface`. Styles live in `Document/Style/` (`ParagraphStyle`, `TextStyle`, `TableStyle`), links in `Document/Link/TextLink`, typed document properties in `Document/Metadata`.
+
+### Example — build a richly-typed document
+
+```php
+use Paperdoc\Document\{Document, Section, Metadata, ListBlock};
+use Paperdoc\Document\Style\TextStyle;
+
+$doc = Document::make('md', 'Release notes v0.4.0')
+    ->setProperties(
+        Metadata::make()
+            ->setAuthor('Alice')
+            ->setKeywords('release, changelog, paperdoc')
+            ->setLanguage('en-US')
+    );
+
+$section = $doc->openSection();
+
+$section->addElement(\Paperdoc\Document\Heading::make('Getting started', 2, 'intro'));
+
+$section->addBulletList()
+    ->addText('Install the library')
+    ->addText('Run the quick start')
+    ->addText('Read the docs');
+
+$section->addCodeBlock("composer require paperdoc-dev/paperdoc-lib", 'bash');
+
+$section->addBookmark('ready-to-go');
+
+$section->addBlockquote()
+    ->addText('You are all set.', TextStyle::make()->setItalic());
+```
+
+---
+
+## Typed Exceptions
+
+All library errors extend a single base so consumers can catch them uniformly:
+
+| Exception | Thrown when… |
+|---|---|
+| `Paperdoc\Exceptions\PaperdocException` | Base (extends `RuntimeException`) |
+| `Paperdoc\Exceptions\ParserException` | A parser cannot read/decode a file (`::forFile($path, $reason, $previous)`) |
+| `Paperdoc\Exceptions\RendererException` | A renderer cannot serialise a document (`::forFormat($fmt, $reason, $previous)`) |
+| `Paperdoc\Exceptions\UnsupportedFormatException` | Unknown format or extension (`::forFormat()` / `::forExtension()`) |
+| `Paperdoc\Exceptions\InvalidDocumentException` | Document is used in an invalid state (e.g. invalid heading level) |
+
+```php
+use Paperdoc\Exceptions\PaperdocException;
+
+try {
+    $doc = Paperdoc::open('report.docx');
+} catch (PaperdocException $e) {
+    // Any Paperdoc error ends up here.
+}
+```
 
 ---
 
@@ -216,9 +279,10 @@ Integration tests live in `tests/Integration/`, unit tests in `tests/Unit/`.
 src/
 ├── Concerns/          # Shared traits
 ├── Console/           # Artisan commands
-├── Contracts/         # DocumentInterface, ParserInterface…
-├── Document/          # Core model (Document, Section, Paragraph…)
+├── Contracts/         # DocumentInterface, ParserInterface, BlockElementInterface…
+├── Document/          # Core model (Document, Section, Paragraph, Heading, ListBlock, Bookmark, CodeBlock, Blockquote, Metadata…)
 ├── Enum/              # Format enums
+├── Exceptions/        # PaperdocException + typed exceptions
 ├── Facades/           # Laravel Facade
 ├── Factory/           # Document/Parser factories
 ├── Llm/               # AI/LLM integration (Neuron AI)
