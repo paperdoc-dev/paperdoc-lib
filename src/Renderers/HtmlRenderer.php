@@ -128,7 +128,7 @@ class HtmlRenderer extends AbstractRenderer
         }
 
         $parts = [];
-        if ( $style ){
+        if ($style) {
             $parts[] = sprintf('font-family:%s,sans-serif', htmlspecialchars($style->getFontFamily()));
             $parts[] = sprintf('font-size:%spt', $style->getFontSize());
             $parts[] = sprintf('color:%s', htmlspecialchars($style->getColor()));
@@ -146,12 +146,25 @@ class HtmlRenderer extends AbstractRenderer
             }
         }
 
-
         $css = implode(';', $parts);
 
         if ($link !== null) {
-            $href = htmlspecialchars($link->getUrl());
-            return "<a href=\"{$href}\">{$text}</a>";
+            $href = htmlspecialchars($link->getHref());
+            $attrs = "href=\"{$href}\"";
+
+            if ($css !== '') {
+                $attrs .= " style=\"{$css}\"";
+            }
+
+            if ($link->getTitle() !== '') {
+                $attrs .= sprintf(' title="%s"', htmlspecialchars($link->getTitle()));
+            }
+
+            if ($link->isExternal()) {
+                $attrs .= ' target="_blank" rel="noopener noreferrer"';
+            }
+
+            return "<a {$attrs}>{$text}</a>";
         }
 
         return "<span style=\"{$css}\">{$text}</span>";

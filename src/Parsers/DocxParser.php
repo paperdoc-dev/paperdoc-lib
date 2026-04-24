@@ -189,10 +189,10 @@ class DocxParser extends AbstractParser implements ParserInterface
             }
 
             $nameNode = $xpath->query('w:name', $style)->item(0);
-            $name = $nameNode ? $nameNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+            $name = $nameNode instanceof \DOMElement ? $nameNode->getAttributeNS(self::NS_MAIN, 'val') : '';
 
             $basedOnNode = $xpath->query('w:basedOn', $style)->item(0);
-            $basedOn = $basedOnNode ? $basedOnNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+            $basedOn = $basedOnNode instanceof \DOMElement ? $basedOnNode->getAttributeNS(self::NS_MAIN, 'val') : '';
 
             $this->styleMap[strtolower($styleId)] = strtolower($name ?: $basedOn);
         }
@@ -402,18 +402,21 @@ class DocxParser extends AbstractParser implements ParserInterface
 
     private function parseRunHyperlink(\DOMElement $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
     {
-        $rId = $run->getAttributeNS(self::NS_REL, 'id');
+        $rId    = $run->getAttributeNS(self::NS_REL, 'id');
+        $anchor = $run->getAttributeNS(self::NS_MAIN, 'anchor');
+        $tooltip = $run->getAttributeNS(self::NS_MAIN, 'tooltip');
 
-        if (! $rId || ! isset($this->relationships[$rId])) {
-            return ;
+        $url = '';
+        if ($rId !== '' && isset($this->relationships[$rId])) {
+            $url = $this->relationships[$rId];
         }
 
-        $linkTarget = $this->relationships[$rId];
-
-        $link = TextLink::make()->setUrl($linkTarget);
+        $link = null;
+        if ($url !== '' || $anchor !== '') {
+            $link = TextLink::make($url, $anchor, $tooltip);
+        }
 
         $this->parseRuns($run, $paragraph, $xpath, $zip, $section, $link);
-
     }
 
     private function extractRunStyle(\DOMNode $run, \DOMXPath $xpath): ?TextStyle
