@@ -336,7 +336,7 @@ class DocxParser extends AbstractParser implements ParserInterface
      | Runs (w:r)
      |============================================================= */
 
-    private function parseRuns(\DOMNode $node, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
+    private function parseRuns(\DOMNode $node, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section, ?TextLink $link = null): void
     {
         foreach ($node->childNodes as $child) {
             if ($child->nodeType !== XML_ELEMENT_NODE) {
@@ -346,13 +346,14 @@ class DocxParser extends AbstractParser implements ParserInterface
             $localName = $child->localName;
 
             if ($localName === 'r') {
-                $this->parseRun($child, $paragraph, $xpath, $zip, $section);
+                $this->parseRun($child, $paragraph, $xpath, $zip, $section, $link);
             } elseif ($localName === 'hyperlink') {
+                $this->parseRunHyperlink($child, $paragraph, $xpath, $zip, $section);
             }
         }
     }
 
-    private function parseRun(\DOMNode $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
+    private function parseRun(\DOMNode $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section, ?TextLink $link = null): void
     {
         $drawing = $xpath->query('w:drawing', $run)->item(0);
         if ($drawing) {
@@ -391,41 +392,27 @@ class DocxParser extends AbstractParser implements ParserInterface
             return;
         }
 
-        $link = $this->extractRunHyperlink($run, $xpath);
-        if ($link) {
-            $paragraph->addRun(new TextRun($run->childNodes[1]->nodeValue, null, $link));
-            return;
-        }
-
         if ($text === '') {
             return;
         }
 
         $style = $this->extractRunStyle($run, $xpath);
-        $paragraph->addRun(new TextRun($text, $style));
+        $paragraph->addRun(new TextRun($text, $style, $link));
     }
 
-    private function extractRunHyperlink(\DOMNode $run, \DOMXPath $xpath): ?TextLink
+    private function parseRunHyperlink(\DOMElement $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section): void
     {
-
-        $wHyperlink = $xpath->query('w:hyperlink', $run);
-
-        if (! $wHyperlink->length) {
-            return null;
-        }
-
-        $rId = $wHyperlink->item(0)->getAttributeNS(self::NS_REL, 'id');
+        $rId = $run->getAttributeNS(self::NS_REL, 'id');
 
         if (! $rId || ! isset($this->relationships[$rId])) {
-            return null;
+            return ;
         }
 
         $linkTarget = $this->relationships[$rId];
 
-
         $link = TextLink::make()->setUrl($linkTarget);
 
-        return $link;
+        $this->parseRuns($run, $paragraph, $xpath, $zip, $section, $link);
 
     }
 

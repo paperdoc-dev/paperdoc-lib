@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Paperdoc\Tests\Unit\Parsers;
 
+use Paperdoc\Support\DocumentManager;
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\ParserInterface;
 use Paperdoc\Document\{Image, Paragraph, Table};
@@ -35,7 +36,6 @@ class DocxParserTest extends TestCase
     public function test_parse_docx_with_hyperlink(): void
     {
         $path = $this->createDocxWithHyperlink();
-// $path = 'docxWithHyperlink.docx';
 
         $doc = $this->parser->parse($path);
 
@@ -57,6 +57,34 @@ class DocxParserTest extends TestCase
 
         $this->assertTrue($hasLink, 'Au moins un run avec un lien devrait exister');
 
+    }
+    public function test_parse_real_docx_with_hyperlink(): void
+    {
+        $test_document_path = dirname(__DIR__, 3)."/real-docx-with-hyperlink.docx";
+
+        if( file_exists($test_document_path) ){
+
+            $doc = DocumentManager::open(dirname(__DIR__, 3)."/real-docx-with-hyperlink.docx");
+
+            $elements = $doc->getSections()[0]->getElements();
+
+            $paragraphs = array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
+
+            $this->assertNotEmpty($paragraphs);
+
+            $hasLink = false;
+            foreach ($paragraphs as $p) {
+                foreach ($p->getRuns() as $run) {
+
+                    if ($run->getLink() !== null) {
+                        $hasLink = true;
+                    }
+                }
+            }
+
+            $this->assertTrue($hasLink, 'Au moins un run avec un lien devrait exister');
+
+        }
     }
 
     private function createDocxWithHyperlink(): string
@@ -90,9 +118,7 @@ class DocxParserTest extends TestCase
                         xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
                 <w:body>
                     <w:p>
-                        <w:r>
-                            <w:hyperlink r:id="rId5" w:history="1"><w:r w:rsidRPr="00B23F69"><w:rPr><w:rStyle w:val="Lienhypertexte"/></w:rPr><w:t>AI Impact Summit</w:t></w:r></w:hyperlink>
-                        </w:r>
+                        <w:hyperlink r:id="rId5" w:history="1"><w:r w:rsidRPr="00B23F69"><w:rPr><w:rStyle w:val="Lienhypertexte"/></w:rPr><w:t>AI Impact Summit</w:t></w:r></w:hyperlink>
                         <w:r>
                             <w:t xml:space="preserve"> puis </w:t>
                         </w:r>
