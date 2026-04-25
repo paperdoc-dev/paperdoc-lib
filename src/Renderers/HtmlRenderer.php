@@ -4,8 +4,21 @@ declare(strict_types=1);
 
 namespace Paperdoc\Renderers;
 
-use Paperdoc\Contracts\DocumentInterface;
-use Paperdoc\Document\{Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Contracts\{BlockElementInterface, DocumentElementInterface, DocumentInterface};
+use Paperdoc\Document\{
+    Blockquote,
+    Bookmark,
+    CodeBlock,
+    Heading,
+    Image,
+    ListBlock,
+    ListItem,
+    PageBreak,
+    Paragraph,
+    Section,
+    Table,
+    TextRun,
+};
 
 class HtmlRenderer extends AbstractRenderer
 {
@@ -48,6 +61,12 @@ class HtmlRenderer extends AbstractRenderer
                 img { max-width: 100%; height: auto; }
                 section { margin-bottom: 2em; }
                 .page-break { page-break-after: always; border-top: 2px dashed #d1d5db; margin: 2em 0; }
+                blockquote { border-left: 4px solid #d1d5db; padding: 0.25em 1em; margin: 1em 0; color: #4b5563; font-style: italic; }
+                blockquote > :last-child { margin-bottom: 0; }
+                pre { background: #f3f4f6; padding: 1em; overflow-x: auto; border-radius: 6px; margin: 1em 0; }
+                pre code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; white-space: pre; }
+                ul, ol { margin: 1em 0; padding-left: 2em; }
+                li { margin: 0.25em 0; }
             </style>
         </head>
         <body style="{$bodyStyle}">
@@ -63,18 +82,114 @@ class HtmlRenderer extends AbstractRenderer
         $html = "<section id=\"{$id}\">\n";
 
         foreach ($section->getElements() as $element) {
-            $html .= match (true) {
-                $element instanceof Paragraph => $this->renderParagraph($element),
-                $element instanceof Table     => $this->renderTable($element),
-                $element instanceof Image     => $this->renderImage($element),
-                $element instanceof PageBreak => "<div class=\"page-break\"></div>\n",
-                default                       => '',
-            };
+            $html .= $this->renderBlock($element);
         }
 
         $html .= "</section>\n";
 
         return $html;
+    }
+
+    private function renderBlock(DocumentElementInterface $element): string
+    {
+        return match (true) {
+            $element instanceof Heading    => $this->renderHeading($element),
+            $element instanceof Paragraph  => $this->renderParagraph($element),
+            $element instanceof ListBlock  => $this->renderList($element),
+            $element instanceof Blockquote => $this->renderBlockquote($element),
+            $element instanceof CodeBlock  => $this->renderCodeBlock($element),
+            $element instanceof Bookmark   => $this->renderBookmark($element),
+            $element instanceof Table      => $this->renderTable($element),
+            $element instanceof Image      => $this->renderImage($element),
+            $element instanceof PageBreak  => "<div class=\"page-break\"></div>\n",
+            default                        => '',
+        };
+    }
+
+    private function renderHeading(Heading $heading): string
+    {
+        $level = max(1, min(6, $heading->getLevel()));
+        $id = $heading->getId();
+        $idAttr = $id !== '' ? sprintf(' id="%s"', htmlspecialchars($id)) : '';
+
+        $content = '';
+        foreach ($heading->getRuns() as $run) {
+            $content .= $this->renderTextRun($run);
+        }
+
+        return "<h{$level}{$idAttr}>{$content}</h{$level}>\n";
+    }
+
+    private function renderList(ListBlock $list): string
+    {
+        $tag = $list->isOrdered() ? 'ol' : 'ul';
+        $startAttr = '';
+
+        if ($list->isOrdered() && $list->getStart() !== 1) {
+            $startAttr = sprintf(' start="%d"', $list->getStart());
+        }
+
+        $html = "<{$tag}{$startAttr}>\n";
+
+        foreach ($list->getItems() as $item) {
+            $html .= $this->renderListItem($item);
+        }
+
+        $html .= "</{$tag}>\n";
+
+        return $html;
+    }
+
+    private function renderListItem(ListItem $item): string
+    {
+        $content = '';
+        foreach ($item->getRuns() as $run) {
+            $content .= $this->renderTextRun($run);
+        }
+
+        $childHtml = '';
+        foreach ($item->getBlocks() as $child) {
+            $childHtml .= $this->renderBlock($child);
+        }
+
+        return "<li>{$content}{$childHtml}</li>\n";
+    }
+
+    private function renderBlockquote(Blockquote $quote): string
+    {
+        $inner = '';
+        foreach ($quote->getElements() as $child) {
+            if ($child instanceof BlockElementInterface) {
+                $inner .= $this->renderBlock($child);
+                continue;
+            }
+
+            if ($child instanceof DocumentElementInterface) {
+                $inner .= $this->renderBlock($child);
+            }
+        }
+
+        return "<blockquote>\n{$inner}</blockquote>\n";
+    }
+
+    private function renderCodeBlock(CodeBlock $code): string
+    {
+        $lang = $code->getLanguage();
+        $class = $lang !== ''
+            ? sprintf(' class="language-%s"', htmlspecialchars($lang))
+            : '';
+
+        $escaped = htmlspecialchars($code->getCode());
+
+        return "<pre><code{$class}>{$escaped}</code></pre>\n";
+    }
+
+    private function renderBookmark(Bookmark $bookmark): string
+    {
+        return sprintf(
+            "<a id=\"%s\" class=\"paperdoc-bookmark\"></a>\n",
+            htmlspecialchars($bookmark->getId()),
+        );
     }
 
     private function renderParagraph(Paragraph $paragraph): string
@@ -271,11 +386,9 @@ class HtmlRenderer extends AbstractRenderer
 
     private function renderImage(Image $image): string
     {
-        $src = $image->getSrc();
-
-        if ($src === '' && $image->hasData()) {
-            $src = $image->getDataUri() ?? '';
-        }
+        $src = $image->hasData()
+            ? ($image->getDataUri() ?? $image->getSrc())
+            : $image->getSrc();
 
         $src = htmlspecialchars($src);
         $alt = htmlspecialchars($image->getAlt());

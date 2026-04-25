@@ -12,6 +12,72 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.5.0] — 2026-04-24
+
+> Second milestone on the road to **1.0**: the renderers catch up with the
+> v0.4.0 document model. Every block element now has a proper visual
+> representation in DOCX, PDF, HTML and Markdown — no element is silently
+> dropped anymore. This release is **non-breaking**: the model, fluent API
+> and public renderer interfaces are unchanged.
+
+### Added — Rendering core
+
+- **HtmlRenderer**
+  - `Heading` → `<h1>…<h6>` with optional `id` anchor.
+  - `ListBlock`/`ListItem` → `<ul>` / `<ol start="N">` with fully nested lists (sublists live inside their parent `<li>`).
+  - `Blockquote` → `<blockquote>` wrapping any number of nested block elements (paragraphs, lists, nested quotes…).
+  - `CodeBlock` → `<pre><code class="language-…">…</code></pre>` with HTML-escaped content and an optional `language-*` CSS class.
+  - `Bookmark` → `<a id="…" class="paperdoc-bookmark"></a>` target for internal `TextLink` anchors.
+  - Embedded CSS refreshed: `blockquote`, `pre`/`code`, `ul`/`ol`/`li` rules.
+
+- **MarkdownRenderer**
+  - `Heading` → `#`…`######`, with `{#id}` anchor syntax when an id is set.
+  - `ListBlock` → `-` (bullet) or `1.` (ordered, starting at `start`), nested lists indented with two spaces, ordered counter increments correctly.
+  - `Blockquote` → `> `-prefixed block, preserving inner paragraphs / nested lists.
+  - `CodeBlock` → fenced triple-backtick block with language hint.
+  - `Bookmark` → inline `<a id="…"></a>` anchor compatible with most Markdown flavours.
+
+- **DocxRenderer** (native OOXML, zero dependencies)
+  - `Heading` → `<w:pStyle w:val="HeadingN"/>` with full outline levels **1–6** (up from 1–4). Optional heading `id` is wrapped as a `<w:bookmarkStart/>` / `<w:bookmarkEnd/>` pair.
+  - `ListBlock` → real numbered/bulleted lists via `<w:numPr>` referencing per-list `<w:num>` overrides in a new `word/numbering.xml` part. Nested lists honour `<w:ilvl>` up to 8 levels. Ordered lists with a custom `start` emit `<w:startOverride/>`. `ListParagraph` style added.
+  - `Blockquote` → `<w:pStyle w:val="Quote"/>` with italic run properties and 720-twip left indent; nested blocks (including nested quotes) keep proper indentation.
+  - `CodeBlock` → `<w:pStyle w:val="Code"/>` paragraph with Consolas font and preserved newlines emitted as `<w:br/>`.
+  - `Bookmark` → `<w:bookmarkStart/>` / `<w:bookmarkEnd/>`. Names are sanitised to the OOXML `[A-Za-z_][A-Za-z0-9_]*` grammar and capped at 40 chars.
+  - `Image` → `<w:drawing>` with a DrawingML inline picture, bytes added to `word/media/imageN.ext` and a fresh `word/_rels/document.xml.rels` image relationship. Embedded (`Image::fromData(...)`) and on-disk images are both supported.
+  - `TextLink` (hyperlinks) → `<w:hyperlink>` with dynamically-registered `Hyperlink` relationships (external URLs get `TargetMode="External"`), `w:anchor="…"` for internal/hybrid links and `w:tooltip="…"` when a title is set. Run styling inside a link is preserved and the default link look (blue + underline) is applied on top.
+  - `Metadata` → `docProps/core.xml` now maps `author`, `subject`, `description`, `keywords`, `language`, `createdAt`, `modifiedAt` from `Document::getProperties()`.
+  - `Content_Types.xml`, relationships and the new `numbering.xml` part are wired correctly so the produced DOCX opens cleanly in Word and LibreOffice.
+
+- **PdfRenderer** (native, zero dependencies)
+  - `Heading` → typed headings with level-based font sizes (24/20/16/14/13/12 pt) and a default navy accent.
+  - `ListBlock`/`ListItem` → bullet (`•`) and decimal markers with nested-depth indentation; ordered counter correctly continues from `ListBlock::getStart()`.
+  - `Blockquote` → indented, italic, muted-grey paragraphs. Nested block elements are indented recursively.
+  - `CodeBlock` → Courier-rendered lines with dedicated spacing.
+  - `Image` → both on-disk (`Image::make($path)`) and embedded (`Image::fromData($bytes, $mime)`) images are drawn via the existing `PdfEngine::drawImage` path; embedded data is materialised to a temp file under the hood.
+  - `TextLink` → visible styling (blue + underline) for link runs (actual clickable annotations come later).
+  - `Metadata` → `Document::getProperties()->getAuthor()` becomes the PDF `/Creator` when set.
+
+### Fixed
+
+- **Images silently dropped in PDF (GIF, WebP, broken PNG)** — `Paperdoc\Support\Pdf\PdfEngine::registerImage` used to register `images` / `imageRefs` *before* knowing whether the XObject body could actually be built (PNG → GD pipeline could fail, GIF / WebP / etc. were never written at all). The PDF then referenced an empty object and showed nothing. Now the engine routes everything through `imagecreatefromstring` + `imagejpeg` first (covers GIF, WebP, PNG, BMP, …), falls back to direct DCT for JPEG, then to `imagecreatefrompng` on the file path, and only registers the reference once a valid JPEG payload is available.
+- **Embedded images broken in HTML & Markdown** — `HtmlRenderer::renderImage` and `MarkdownRenderer::renderImage` only switched to a data URI when `Image::getSrc() === ''`, but `Image::fromData()` initialises `src` to a placeholder like `embedded.png`. Result: `<img src="embedded.png">` (a dead link) or `![alt](embedded.png)` instead of an inlined data URI. Both renderers now prefer the data URI whenever `Image::hasData()` is true.
+- **DOCX `<a:blip>` missing namespace** — added an explicit `xmlns:r` on `pic:blipFill > a:blip` so Word and LibreOffice resolve the image relationship even when the package is opened by stricter readers.
+- **DOCX `[Content_Types].xml` missed `webp`** — added `webp` to the default extension map.
+- **Spacing between block elements in PDF** — the native PDF engine draws text at the *baseline* of the cursor, so a 24 pt heading visually rose ~19 pt above the cursor, causing headings to overlap the previous block (visible between a table and the following heading). `PdfRenderer::writeHeading` (and the legacy `Paragraph + ParagraphStyle::headingLevel` path) now compensates for the font ascent before drawing. Tables (+12 pt after), images (+10 pt after), root-level lists (+10 pt after) and blockquotes (+6/+10 pt) also get tighter, more consistent surrounding gaps.
+- **DOCX heading spacing** — `Heading1`…`Heading6` now use `w:after="220"` (was `80`) for clearer separation in Word/LibreOffice.
+
+### Added — Tests
+
+- **`tests/Unit/Renderers/HtmlRendererModelCoreTest`** (11 tests) — headings, bullet/ordered/nested lists, blockquote, code block (with / without language), bookmarks, internal + external links.
+- **`tests/Unit/Renderers/MarkdownRendererModelCoreTest`** (11 tests) — heading + `{#id}` syntax, nested-list indentation, blockquote formatting, fenced code blocks, anchor emission, link + emphasis preservation.
+- **`tests/Unit/Renderers/DocxRendererModelCoreTest`** (13 tests) — unzips the produced DOCX and asserts on the generated `word/document.xml`, `word/numbering.xml`, `word/_rels/document.xml.rels` and `docProps/core.xml` (heading `pStyle`, bookmarks, `numPr`/`ilvl`, ordered `startOverride`, `Quote`/`Code` styles, external + anchor hyperlinks with tooltip, embedded image media + rels, typed metadata).
+- **`tests/Unit/Renderers/PdfRendererModelCoreTest`** (8 tests) — decompresses PDF content streams and asserts on rendered text / markers / colors for headings, lists, code blocks, blockquotes and external links.
+- **`tests/Unit/Renderers/ImageRenderingTest`** (11 tests) — cross-renderer image coverage with two real fixtures (`tests/Fixtures/Images/paperdoc-logo.png`, `tests/Fixtures/Images/dot.gif`) exercising both `Image::make($path)` and `Image::fromData()` in DOCX, PDF, HTML and Markdown — including PDF GIF re-encoding, two-images-distinct-relationships in DOCX, missing-file safety in PDF, and data-URI embedding in HTML/Markdown.
+- **`tests/Unit/Support/Pdf/PdfEngineTest`** — added `test_draw_image_gif_is_embedded_as_dct` covering the new GIF→JPEG (DCT) re-encoding path.
+- **+54 new tests / +149 new assertions** in total, all green alongside the existing suite (now 586 tests / 1 375 assertions).
+
+---
+
 ## [0.4.0] — 2026-04-24
 
 > First milestone on the road to **1.0**: a richer, strongly-typed document

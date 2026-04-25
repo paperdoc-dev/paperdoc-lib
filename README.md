@@ -16,7 +16,8 @@
 - **Parse** existing documents into a unified in-memory model
 - **Convert** between any supported formats in one call
 - **Rich document model** — typed headings, ordered/bullet lists (nested), bookmarks, code blocks, blockquotes, images, tables, page breaks and typed document properties (author, subject, dates…)
-- **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>` or Markdown `[text](url)`, with anchors and tooltips
+- **Native rendering core** — every block element renders cleanly to **DOCX**, **PDF**, **HTML** and **Markdown**: typed headings (`<h1>`/`<w:pStyle>`), nested lists (`<ul>`/`<w:numPr>`), blockquotes, code blocks (with language hint), bookmarks, embedded or on-disk images
+- **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>`, Markdown `[text](url)` and DOCX hyperlink relationships, with anchors and tooltips
 - **Batch processing** — open and process multiple files at once
 - **Laravel integration** — first-class ServiceProvider and Facade
 - **AI-powered** features via Neuron AI (OCR, LLM extraction)
@@ -147,7 +148,7 @@ All block elements implement `Paperdoc\Contracts\BlockElementInterface`. Styles 
 use Paperdoc\Document\{Document, Section, Metadata, ListBlock};
 use Paperdoc\Document\Style\TextStyle;
 
-$doc = Document::make('md', 'Release notes v0.4.0')
+$doc = Document::make('md', 'Release notes v0.5.0')
     ->setProperties(
         Metadata::make()
             ->setAuthor('Alice')
@@ -171,6 +172,28 @@ $section->addBookmark('ready-to-go');
 $section->addBlockquote()
     ->addText('You are all set.', TextStyle::make()->setItalic());
 ```
+
+---
+
+## Rendering
+
+Since **v0.5.0**, every element of the document model is natively rendered by **all four** core renderers — no element is silently dropped, every output is a valid file format.
+
+| Element            | DOCX                                                    | PDF                                            | HTML                                  | Markdown                          |
+|--------------------|---------------------------------------------------------|------------------------------------------------|---------------------------------------|-----------------------------------|
+| `Heading` (1–6)    | `<w:pStyle w:val="HeadingN"/>` + bookmark anchor        | typed font sizes (24/20/16/14/13/12 pt) + navy | `<h1>`…`<h6>` with `id`               | `#`…`######`, optional `{#id}`    |
+| `Paragraph`        | `<w:p>` + run styling                                   | wrapped text + inline run styles               | `<p>` + inline `<span>`               | plain text + emphasis             |
+| `ListBlock`        | `<w:numPr>` + `word/numbering.xml`, nested `<w:ilvl>`   | `•` / `1.` markers, depth-based indent         | `<ul>` / `<ol start="N">`, nested     | `-` / `1.`, two-space indent      |
+| `Blockquote`       | `<w:pStyle w:val="Quote"/>` + indent                    | indented italic muted-grey                     | `<blockquote>` (nested children)      | `> ` prefixed lines               |
+| `CodeBlock`        | `<w:pStyle w:val="Code"/>` + Consolas + `<w:br/>`       | Courier, dedicated spacing                     | `<pre><code class="language-…">`      | fenced ` ```lang ` block          |
+| `Bookmark`         | `<w:bookmarkStart/>` / `<w:bookmarkEnd/>`               | rendered silently (PDF annotations: roadmap)   | `<a id="…" class="paperdoc-bookmark">`| inline `<a id="…"></a>`           |
+| `TextLink`         | `<w:hyperlink>` (external rels + `w:anchor` + tooltip)  | blue underlined run                            | `<a href>` with safe `target/rel`     | safe `[label](url "title")`       |
+| `Image`            | `<w:drawing>` + `word/media/imageN.ext` rel             | XObject DCT (JPEG/PNG/GIF via GD re-encode)    | `<img src>` or `data:` URI            | `![alt](path)` or `data:` URI     |
+| `Table`            | `<w:tbl>` with header rows + `gridSpan`                 | drawn cells with header bg                     | `<table>` + striped rows              | `\|` rows                         |
+| `PageBreak`        | `<w:br w:type="page"/>`                                 | `newPage()`                                    | `.page-break` divider                 | blank line                        |
+| `Metadata`         | `docProps/core.xml`                                     | PDF `/Creator`                                 | (HTML head meta — roadmap)            | (frontmatter — roadmap)           |
+
+Both `Image::make($path)` (on-disk) and `Image::fromData($bytes, $mimeType)` (in-memory) are accepted everywhere; HTML and Markdown automatically inline embedded images as `data:` URIs, DOCX writes them to `word/media/`, and PDF embeds them as DCT XObjects (re-encoding GIF/PNG/WebP through GD when needed).
 
 ---
 

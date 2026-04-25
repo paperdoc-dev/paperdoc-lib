@@ -465,61 +465,95 @@ class PdfEngine
         return $ref;
     }
 
+    /**
+     * Enregistre l'image comme XObject DCT. N'écrit jamais de référence
+     * partielle : GIF/WebP/PNG/… passent d'abord par GD (imagecreatefromstring
+     * puis re-encodage JPEG), en secours DCT direct pour le JPEG, puis PNG via fichier.
+     */
     private function registerImage(string $path, string $hash): void
     {
-        if (! file_exists($path) || ! is_readable($path)) {
+        if (! is_readable($path)) {
             return;
         }
 
-        $info = @getimagesize($path);
+        $data = @file_get_contents($path);
+        if ($data === false || $data === '') {
+            return;
+        }
 
+        $info = @getimagesizefromstring($data);
+        if ($info === false) {
+            $info = @getimagesize($path);
+        }
         if ($info === false) {
             return;
         }
 
-        [$imgWidth, $imgHeight, $type] = $info;
-        $data = file_get_contents($path);
+        $rawW   = (int) $info[0];
+        $rawH   = (int) $info[1];
+        $iType  = (int) ($info[2] ?? 0);
 
-        if ($data === false) {
+        $outW  = $rawW;
+        $outH  = $rawH;
+        $jpeg  = null;
+
+        if (function_exists('imagecreatefromstring')) {
+            $im = @imagecreatefromstring($data);
+            if ($im !== false) {
+                $outW = max(1, imagesx($im));
+                $outH = max(1, imagesy($im));
+                ob_start();
+                imagejpeg($im, null, 90);
+                $captured = (string) ob_get_clean();
+                unset($im);
+                if ($captured !== '') {
+                    $jpeg = $captured;
+                }
+            }
+        }
+
+        if ($jpeg === null && $iType === IMAGETYPE_JPEG) {
+            $jpeg = $data;
+            $outW = max(1, $rawW);
+            $outH = max(1, $rawH);
+        }
+
+        if ($jpeg === null && $iType === IMAGETYPE_PNG && function_exists('imagecreatefrompng')) {
+            $im = @imagecreatefrompng($path);
+            if ($im !== false) {
+                $outW = max(1, imagesx($im));
+                $outH = max(1, imagesy($im));
+                ob_start();
+                imagejpeg($im, null, 90);
+                $jpeg = (string) ob_get_clean();
+                unset($im);
+                if ($jpeg === '') {
+                    $jpeg = null;
+                }
+            }
+        }
+
+        if ($jpeg === null || $outW < 1 || $outH < 1) {
             return;
         }
 
         $objNum = $this->allocateObject();
-        $ref = '/Im' . (++$this->imageCounter);
+        $ref    = '/Im' . (++$this->imageCounter);
 
-        $this->images[$hash] = $objNum;
+        $this->images[$hash]  = $objNum;
         $this->imageRefs[$hash] = $ref;
+        $len = strlen($jpeg);
 
-        if ($type === IMAGETYPE_JPEG) {
-            $length = strlen($data);
-            $this->objects[$objNum] = new PdfObject($objNum, sprintf(
+        $this->objects[$objNum] = new PdfObject(
+            $objNum,
+            sprintf(
                 "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n%sendstream",
-                $imgWidth,
-                $imgHeight,
-                $length,
-                $data
-            ));
-        } elseif ($type === IMAGETYPE_PNG) {
-            $im = @imagecreatefrompng($path);
-
-            if ($im === false) {
-                return;
-            }
-
-            ob_start();
-            imagejpeg($im, null, 90);
-            $jpegData = ob_get_clean();
-            imagedestroy($im);
-
-            $length = strlen($jpegData);
-            $this->objects[$objNum] = new PdfObject($objNum, sprintf(
-                "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n%sendstream",
-                $imgWidth,
-                $imgHeight,
-                $length,
-                $jpegData
-            ));
-        }
+                $outW,
+                $outH,
+                $len,
+                $jpeg
+            )
+        );
     }
 
     /* -------------------------------------------------------------

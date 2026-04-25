@@ -228,4 +228,31 @@ class PdfEngineTest extends TestCase
         $this->assertStringContainsString('trailer', $output);
         $this->assertStringContainsString('startxref', $output);
     }
+
+    public function test_draw_image_gif_is_embedded_as_dct(): void
+    {
+        if (! function_exists('imagecreate') || ! function_exists('imagegif')
+            || ! function_exists('imagecolorallocate')) {
+            $this->markTestSkipped('GD with GIF is required to build the fixture');
+        }
+
+        $tmp = tempnam(sys_get_temp_dir(), 'pdftgif_') . '.gif';
+        $im  = imagecreate(2, 2);
+        $this->assertNotFalse($im);
+        imagecolorallocate($im, 0, 0, 0);
+        imagecolorallocate($im, 255, 255, 255);
+        imagegif($im, $tmp);
+        unset($im);
+
+        try {
+            $engine = new PdfEngine();
+            $y = $engine->getCursorY() - 50.0;
+            $engine->drawImage($tmp, 40, $y, 50, 50);
+            $output = $engine->output();
+            $this->assertStringContainsString('/Subtype /Image', $output);
+            $this->assertStringContainsString('DCTDecode', $output);
+        } finally {
+            @unlink($tmp);
+        }
+    }
 }

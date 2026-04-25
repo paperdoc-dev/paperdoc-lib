@@ -4,8 +4,22 @@ declare(strict_types=1);
 
 namespace Paperdoc\Renderers;
 
-use Paperdoc\Contracts\DocumentInterface;
-use Paperdoc\Document\{Image, PageBreak, Paragraph, Section, Table, TableCell, TextRun};
+use Paperdoc\Contracts\{DocumentElementInterface, DocumentInterface};
+use Paperdoc\Document\{
+    Blockquote,
+    Bookmark,
+    CodeBlock,
+    Heading,
+    Image,
+    ListBlock,
+    ListItem,
+    PageBreak,
+    Paragraph,
+    Section,
+    Table,
+    TableCell,
+    TextRun,
+};
 
 class MarkdownRenderer extends AbstractRenderer
 {
@@ -50,16 +64,110 @@ class MarkdownRenderer extends AbstractRenderer
         $md = '';
 
         foreach ($section->getElements() as $element) {
-            $md .= match (true) {
-                $element instanceof Paragraph => $this->renderParagraph($element) . "\n\n",
-                $element instanceof Table     => $this->renderTable($element) . "\n",
-                $element instanceof Image     => $this->renderImage($element) . "\n\n",
-                $element instanceof PageBreak => "---\n\n",
-                default                       => '',
-            };
+            $md .= $this->renderBlock($element);
         }
 
         return $md;
+    }
+
+    private function renderBlock(DocumentElementInterface $element): string
+    {
+        return match (true) {
+            $element instanceof Heading    => $this->renderHeading($element) . "\n\n",
+            $element instanceof Paragraph  => $this->renderParagraph($element) . "\n\n",
+            $element instanceof ListBlock  => $this->renderList($element, 0) . "\n",
+            $element instanceof Blockquote => $this->renderBlockquote($element) . "\n",
+            $element instanceof CodeBlock  => $this->renderCodeBlock($element) . "\n\n",
+            $element instanceof Bookmark   => $this->renderBookmark($element) . "\n\n",
+            $element instanceof Table      => $this->renderTable($element) . "\n",
+            $element instanceof Image      => $this->renderImage($element) . "\n\n",
+            $element instanceof PageBreak  => "---\n\n",
+            default                        => '',
+        };
+    }
+
+    private function renderHeading(Heading $heading): string
+    {
+        $level = max(1, min(6, $heading->getLevel()));
+        $content = $this->renderRuns($heading->getRuns(), true);
+
+        if ($heading->hasId()) {
+            $content = rtrim($content) . ' {#' . $heading->getId() . '}';
+        }
+
+        return str_repeat('#', $level) . ' ' . $content;
+    }
+
+    private function renderList(ListBlock $list, int $depth): string
+    {
+        $md = '';
+        $indent = str_repeat('  ', $depth);
+        $counter = $list->getStart();
+
+        foreach ($list->getItems() as $item) {
+            $marker = $list->isOrdered() ? ($counter . '. ') : '- ';
+            $label = $this->renderRuns($item->getRuns());
+            $md .= $indent . $marker . $label . "\n";
+
+            foreach ($item->getBlocks() as $child) {
+                if ($child instanceof ListBlock) {
+                    $md .= $this->renderList($child, $depth + 1);
+                } else {
+                    foreach (explode("\n", rtrim($this->renderBlock($child))) as $line) {
+                        if ($line === '') {
+                            continue;
+                        }
+                        $md .= $indent . '  ' . $line . "\n";
+                    }
+                }
+            }
+
+            if ($list->isOrdered()) {
+                $counter++;
+            }
+        }
+
+        return $md;
+    }
+
+    private function renderBlockquote(Blockquote $quote): string
+    {
+        $inner = '';
+
+        foreach ($quote->getElements() as $child) {
+            if (! $child instanceof DocumentElementInterface) {
+                continue;
+            }
+            $inner .= $this->renderBlock($child);
+        }
+
+        $inner = rtrim($inner);
+
+        if ($inner === '') {
+            return '';
+        }
+
+        $lines = explode("\n", $inner);
+        $md = '';
+
+        foreach ($lines as $line) {
+            $md .= '> ' . $line . "\n";
+        }
+
+        return $md;
+    }
+
+    private function renderCodeBlock(CodeBlock $code): string
+    {
+        $lang = $code->getLanguage();
+        $fence = "```" . $lang;
+
+        return $fence . "\n" . $code->getCode() . "\n```";
+    }
+
+    private function renderBookmark(Bookmark $bookmark): string
+    {
+        return sprintf('<a id="%s"></a>', htmlspecialchars($bookmark->getId()));
     }
 
     private function renderParagraph(Paragraph $paragraph): string
@@ -186,11 +294,9 @@ class MarkdownRenderer extends AbstractRenderer
     private function renderImage(Image $image): string
     {
         $alt = $image->getAlt();
-        $src = $image->getSrc();
-
-        if ($src === '' && $image->hasData()) {
-            $src = $image->getDataUri() ?? '';
-        }
+        $src = $image->hasData()
+            ? ($image->getDataUri() ?? $image->getSrc())
+            : $image->getSrc();
 
         return sprintf('![%s](%s)', $alt, $src);
     }
