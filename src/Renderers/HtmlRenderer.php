@@ -346,8 +346,15 @@ class HtmlRenderer extends AbstractRenderer
                 $content = '';
 
                 foreach ($cell->getElements() as $el) {
+                    // Paragraphs render inline so single-line cells stay
+                    // visually compact (no <p> wrapper inside <td>).
                     if ($el instanceof Paragraph) {
                         $content .= $this->renderParagraphInline($el);
+                        continue;
+                    }
+
+                    if ($el instanceof BlockElementInterface) {
+                        $content .= $this->renderBlock($el);
                     }
                 }
 
@@ -403,6 +410,9 @@ class HtmlRenderer extends AbstractRenderer
             $attrs .= sprintf(' height="%d"', $image->getHeight());
         }
 
-        return "<figure><img {$attrs}></figure>\n";
+        // No <figure> wrapper — keeps the element valid inside <td>/<li>
+        // and lets the host page wrap it in its own semantic container
+        // when needed.
+        return "<img {$attrs}>\n";
     }
 }

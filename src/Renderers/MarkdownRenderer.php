@@ -281,14 +281,65 @@ class MarkdownRenderer extends AbstractRenderer
         $parts = [];
 
         foreach ($cell->getElements() as $el) {
-            if ($el instanceof Paragraph) {
-                $parts[] = $this->renderRuns($el->getRuns());
+            $piece = $this->cellElementToInline($el);
+            if ($piece !== '') {
+                $parts[] = $piece;
             }
         }
 
-        $text = implode(' ', $parts);
+        // Pipe tables are single-line; collapse newlines that may have
+        // slipped in from inline-rendered code or quoted blocks.
+        $text = preg_replace('/\s*\n+\s*/', ' ', implode(' ', $parts)) ?? '';
 
+        // Escape pipes so the cell never breaks the column separator.
         return str_replace('|', '\\|', $text);
+    }
+
+    /**
+     * Render any block element so it remains valid inside a single
+     * Markdown table cell. Multi-line blocks (lists, blockquotes,
+     * code blocks) are flattened to a one-line representation.
+     */
+    private function cellElementToInline(DocumentElementInterface $element): string
+    {
+        if ($element instanceof Paragraph) {
+            return $this->renderRuns($element->getRuns());
+        }
+
+        if ($element instanceof Heading) {
+            return $this->renderRuns($element->getRuns());
+        }
+
+        if ($element instanceof Image) {
+            return rtrim($this->renderImage($element));
+        }
+
+        if ($element instanceof CodeBlock) {
+            $code = preg_replace('/\s+/', ' ', trim($element->getCode())) ?? '';
+            return $code === '' ? '' : '`' . $code . '`';
+        }
+
+        if ($element instanceof ListBlock) {
+            $items = [];
+            foreach ($element->getItems() as $item) {
+                $items[] = $this->renderRuns($item->getRuns());
+            }
+            return implode(', ', array_filter($items, fn (string $s) => $s !== ''));
+        }
+
+        if ($element instanceof Blockquote) {
+            $parts = [];
+            foreach ($element->getElements() as $child) {
+                if ($child instanceof DocumentElementInterface) {
+                    $parts[] = $this->cellElementToInline($child);
+                }
+            }
+            return implode(' ', array_filter($parts, fn (string $s) => $s !== ''));
+        }
+
+        // Bookmarks and other invisible / structural elements have no
+        // meaningful inline representation in a pipe table cell.
+        return '';
     }
 
     private function renderImage(Image $image): string

@@ -414,8 +414,12 @@ class PdfRenderer extends AbstractRenderer
 
             foreach ($cells as $i => $cell) {
                 $cw   = $colWidths[$i] ?? $colWidths[0];
-                $text  = $cell->getPlainText();
-                $fontName = $defaultStyle->getPdfFontName();
+
+                $text = $this->cellTextForPdf($cell);
+                $cellStyle = $this->cellStyleForPdf($cell, $defaultStyle);
+
+                $cellSize  = $cellStyle->getFontSize() > 0 ? $cellStyle->getFontSize() : $fontSize;
+                $fontName  = $cellStyle->getPdfFontName();
 
                 if ($row->isHeader() && ! str_contains($fontName, 'Bold')) {
                     $fontName = str_replace(
@@ -425,16 +429,16 @@ class PdfRenderer extends AbstractRenderer
                     );
                 }
 
-                [$cr, $cg, $cb] = $defaultStyle->getColorRgb();
+                [$cr, $cg, $cb] = $cellStyle->getColorRgb();
 
                 $textX = $x + $cellPadding;
-                $textY = $startY - $cellPadding - $fontSize;
+                $textY = $startY - $cellPadding - $cellSize;
 
-                $lines = $this->engine->wrapText($text, $fontName, $fontSize, $cw - ($cellPadding * 2));
+                $lines = $this->engine->wrapText($text, $fontName, $cellSize, $cw - ($cellPadding * 2));
 
                 foreach ($lines as $li => $line) {
-                    $yPos = $textY - ($li * $fontSize * 1.15);
-                    $this->engine->writeTextAt($line, $fontName, $fontSize, $textX, $yPos, $cr, $cg, $cb);
+                    $yPos = $textY - ($li * $cellSize * 1.15);
+                    $this->engine->writeTextAt($line, $fontName, $cellSize, $textX, $yPos, $cr, $cg, $cb);
                 }
 
                 $x += $cw;
@@ -444,6 +448,110 @@ class PdfRenderer extends AbstractRenderer
         }
 
         $this->engine->moveCursorY(-12);
+    }
+
+    /**
+     * Flatten a cell's elements into a single line of text suitable for
+     * the (single-font) PDF table renderer. Honours every block element
+     * supported by the model so nothing is silently dropped.
+     */
+    private function cellTextForPdf(\Paperdoc\Document\TableCell $cell): string
+    {
+        $parts = [];
+
+        foreach ($cell->getElements() as $el) {
+            if ($el instanceof Paragraph || $el instanceof Heading) {
+                $parts[] = $el->getPlainText();
+                continue;
+            }
+
+            if ($el instanceof CodeBlock) {
+                $parts[] = $el->getCode();
+                continue;
+            }
+
+            if ($el instanceof ListBlock) {
+                $marker = $el->isOrdered() ? '%d. %s' : '• %s';
+                $i = $el->getStart();
+                foreach ($el->getItems() as $item) {
+                    $parts[] = $el->isOrdered()
+                        ? sprintf($marker, $i++, $item->getPlainText())
+                        : sprintf($marker, $item->getPlainText());
+                }
+                continue;
+            }
+
+            if ($el instanceof Blockquote) {
+                foreach ($el->getElements() as $inner) {
+                    if ($inner instanceof Paragraph || $inner instanceof Heading) {
+                        $parts[] = $inner->getPlainText();
+                    }
+                }
+                continue;
+            }
+
+            if ($el instanceof Image) {
+                // Inline images inside table cells are not yet drawn by
+                // the PDF engine; surface the alt text so the cell is
+                // never empty.
+                $alt = $el->getAlt();
+                if ($alt !== '') {
+                    $parts[] = '[' . $alt . ']';
+                }
+                continue;
+            }
+
+            // Bookmarks have no visible representation; PageBreak inside
+            // a cell is meaningless.
+        }
+
+        $text = implode(' ', array_filter($parts, fn (string $s) => $s !== ''));
+
+        // PDF text engine renders single-line strings — collapse any
+        // newlines that bubbled up from code blocks or quotes.
+        return preg_replace('/\s*\n+\s*/', ' ', $text) ?? $text;
+    }
+
+    /**
+     * Pick a representative TextStyle for a cell. When every run inside
+     * the cell shares the same style (or there is exactly one run), we
+     * use it; otherwise we fall back to the document default. This
+     * preserves bold/italic/color/font-size for the common case where a
+     * cell carries a single visual treatment.
+     */
+    private function cellStyleForPdf(\Paperdoc\Document\TableCell $cell, TextStyle $default): TextStyle
+    {
+        $candidate = null;
+
+        foreach ($cell->getElements() as $el) {
+            if (! $el instanceof Paragraph) {
+                continue;
+            }
+            foreach ($el->getRuns() as $run) {
+                $style = $run->getStyle();
+                if ($style === null) {
+                    continue;
+                }
+                if ($candidate === null) {
+                    $candidate = $style;
+                    continue;
+                }
+                if (! $this->stylesEquivalent($candidate, $style)) {
+                    return $default;
+                }
+            }
+        }
+
+        return $candidate ?? $default;
+    }
+
+    private function stylesEquivalent(TextStyle $a, TextStyle $b): bool
+    {
+        return $a->isBold() === $b->isBold()
+            && $a->isItalic() === $b->isItalic()
+            && $a->getColor() === $b->getColor()
+            && $a->getFontFamily() === $b->getFontFamily()
+            && abs($a->getFontSize() - $b->getFontSize()) < 0.001;
     }
 
     /* =============================================================

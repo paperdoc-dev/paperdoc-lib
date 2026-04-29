@@ -10,6 +10,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 > Changes merged into `main` but not yet tagged.
 
+### Fixed — Tables & Images
+
+- **DocxRenderer / HtmlRenderer / MarkdownRenderer / PdfRenderer** — table cells used to silently drop every element that was not a `Paragraph`. They now accept the **full block model** : `Image`, `Heading`, `ListBlock`, `Blockquote`, `CodeBlock`, `Bookmark`. Markdown flattens multi-line content (lists, code, quotes) to a single-line representation so the pipe-table contract is preserved ; PDF surfaces image alt text as a graceful fallback (inline image painting inside cells is tracked for a later release).
+- **DocxRenderer** — emits the OOXML-required `<w:tblGrid>` element with one `<w:gridCol w:w="…"/>` per column and a per-cell `<w:tcW w:w="…" w:type="dxa"/>`. `Table::getColumnWidths()` is now honoured proportionally on the document content width (Letter − 2×1″ margins = 9360 twips). Without this, Word displayed warnings and LibreOffice sometimes laid the table out incorrectly.
+- **DocxRenderer** — image dimensions are now resolved via `getimagesizefromstring()` when the user does not set `width`/`height`, preserving the real aspect ratio. When only one dimension is supplied the other is computed from the source. Oversized images are capped to the content width while keeping the aspect ratio, preventing overflow into the page margins.
+- **HtmlRenderer** — `<img>` is no longer wrapped in `<figure>` — the wrapper broke the layout when images were placed inside `<td>` or `<li>` and added no semantic value. Hosts can wrap output in their own `<figure>` when needed.
+
+### Tests
+
+- New `tests/Unit/Renderers/TableContentRenderingTest.php` (13 tests / 42 assertions) covering : image / list / code-block inside cells across the four renderers, OOXML compliance (`<w:tblGrid>`, `<w:tcW>`), automatic image dimension detection, oversized-image capping with aspect-ratio preservation, pipe escaping in Markdown cells, and bold-run rendering inside PDF cells.
+- Total suite : **599 tests / 1418 assertions**, no regressions.
+
 ---
 
 ## [0.5.0] — 2026-04-24

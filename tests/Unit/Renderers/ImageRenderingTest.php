@@ -229,7 +229,11 @@ class ImageRenderingTest extends TestCase
 
         $html = (new HtmlRenderer())->render($doc);
 
-        $this->assertStringContainsString('<figure><img', $html);
+        // v0.6.0: <img> is no longer wrapped in <figure> — it now stays
+        // valid inside <td>/<li> contexts and lets the host page wrap
+        // it in its own semantic container when needed.
+        $this->assertMatchesRegularExpression('/<img\s/', $html);
+        $this->assertStringNotContainsString('<figure>', $html);
         $this->assertStringContainsString('alt="Logo"', $html);
         $this->assertStringContainsString('width="64"', $html);
         $this->assertStringContainsString('height="32"', $html);

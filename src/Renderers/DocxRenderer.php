@@ -42,6 +42,12 @@ class DocxRenderer extends AbstractRenderer
     private const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
     private const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
+    // Letter page (12240 twips) − 2×1" margin (1440 each) = 9360 twips.
+    private const CONTENT_WIDTH_TWIPS = 9360;
+    private const EMU_PER_PIXEL = 9525;
+    // 1 twip = 635 EMU (914400 EMU/inch ÷ 1440 twips/inch).
+    private const CONTENT_WIDTH_EMU = 9360 * 635;
+
     /* -------------------------------------------------------------
      | Per-render state (reset in buildDocx)
      |------------------------------------------------------------- */
@@ -483,10 +489,18 @@ class DocxRenderer extends AbstractRenderer
             'media/image' . $imgId . '.' . $ext,
         );
 
-        $widthPx  = $image->getWidth()  > 0 ? $image->getWidth()  : 400;
-        $heightPx = $image->getHeight() > 0 ? $image->getHeight() : 300;
-        $cx = $widthPx * 9525;
-        $cy = $heightPx * 9525;
+        [$widthPx, $heightPx] = $this->resolveImageDimensions($image, $data);
+        $cx = $widthPx * self::EMU_PER_PIXEL;
+        $cy = $heightPx * self::EMU_PER_PIXEL;
+
+        // Cap to content area to prevent overflow / text reflow issues
+        // in Word and LibreOffice.
+        if ($cx > self::CONTENT_WIDTH_EMU) {
+            $scale = self::CONTENT_WIDTH_EMU / $cx;
+            $cx = (int) round($cx * $scale);
+            $cy = (int) round($cy * $scale);
+        }
+
         $alt = $this->escapeXml($image->getAlt());
         $docPrId = $imgId;
 
@@ -513,6 +527,40 @@ class DocxRenderer extends AbstractRenderer
         $xml .= '</w:drawing></w:r></w:p>';
 
         return $xml;
+    }
+
+    /**
+     * Resolve final pixel dimensions for an image. Honours explicit
+     * width/height, otherwise inspects the actual binary via
+     * getimagesize() so the aspect ratio is preserved. Falls back to a
+     * sane 400×300 default only when both inputs and detection fail.
+     *
+     * @return array{0: int, 1: int}
+     */
+    private function resolveImageDimensions(Image $image, string $data): array
+    {
+        $w = $image->getWidth();
+        $h = $image->getHeight();
+
+        if ($w > 0 && $h > 0) {
+            return [$w, $h];
+        }
+
+        $info = @getimagesizefromstring($data);
+        $realW = $info ? (int) $info[0] : 0;
+        $realH = $info ? (int) $info[1] : 0;
+
+        if ($realW > 0 && $realH > 0) {
+            if ($w > 0) {
+                return [$w, (int) round($realH * ($w / $realW))];
+            }
+            if ($h > 0) {
+                return [(int) round($realW * ($h / $realH)), $h];
+            }
+            return [$realW, $realH];
+        }
+
+        return [$w > 0 ? $w : 400, $h > 0 ? $h : 300];
     }
 
     /* =============================================================
@@ -661,6 +709,9 @@ class DocxRenderer extends AbstractRenderer
 
     private function renderTable(Table $table): string
     {
+        $colCount = $table->getColumnCount();
+        $colTwips = $this->computeTableColumnTwips($table, $colCount);
+
         $xml = '<w:tbl>';
         $xml .= '<w:tblPr>';
         $xml .= '<w:tblW w:w="5000" w:type="pct"/>';
@@ -671,8 +722,18 @@ class DocxRenderer extends AbstractRenderer
         $xml .= '</w:tblBorders>';
         $xml .= '</w:tblPr>';
 
+        // Required by ECMA-376 — without it Word warns and LibreOffice
+        // sometimes lays out cells incorrectly.
+        if ($colCount > 0) {
+            $xml .= '<w:tblGrid>';
+            foreach ($colTwips as $w) {
+                $xml .= '<w:gridCol w:w="' . $w . '"/>';
+            }
+            $xml .= '</w:tblGrid>';
+        }
+
         foreach ($table->getRows() as $row) {
-            $xml .= $this->renderTableRow($row);
+            $xml .= $this->renderTableRow($row, $colTwips);
         }
 
         $xml .= '</w:tbl>';
@@ -680,7 +741,41 @@ class DocxRenderer extends AbstractRenderer
         return $xml;
     }
 
-    private function renderTableRow(TableRow $row): string
+    /**
+     * @return array<int, int> per-column width in twips (sum = content width).
+     */
+    private function computeTableColumnTwips(Table $table, int $colCount): array
+    {
+        if ($colCount <= 0) {
+            return [];
+        }
+
+        $contentTwips = self::CONTENT_WIDTH_TWIPS;
+        $widths = $table->getColumnWidths();
+
+        if ($widths === [] || array_sum($widths) <= 0) {
+            $share = (int) floor($contentTwips / $colCount);
+            $cols = array_fill(0, $colCount, $share);
+        } else {
+            $widths = array_slice($widths + array_fill(0, $colCount, 0), 0, $colCount);
+            $total = array_sum($widths);
+            $cols = array_map(fn ($w) => (int) floor(($w / $total) * $contentTwips), $widths);
+        }
+
+        // Distribute rounding remainder onto the last column so the row
+        // exactly fills the content area.
+        $diff = $contentTwips - array_sum($cols);
+        if ($diff !== 0) {
+            $cols[$colCount - 1] += $diff;
+        }
+
+        return $cols;
+    }
+
+    /**
+     * @param array<int, int> $colTwips
+     */
+    private function renderTableRow(TableRow $row, array $colTwips): string
     {
         $xml = '<w:tr>';
 
@@ -688,8 +783,16 @@ class DocxRenderer extends AbstractRenderer
             $xml .= '<w:trPr><w:tblHeader/></w:trPr>';
         }
 
+        $colIndex = 0;
         foreach ($row->getCells() as $cell) {
-            $xml .= $this->renderTableCell($cell, $row->isHeader());
+            $span = max(1, $cell->getColspan());
+            $cellWidth = 0;
+            for ($i = 0; $i < $span && isset($colTwips[$colIndex + $i]); $i++) {
+                $cellWidth += $colTwips[$colIndex + $i];
+            }
+            $colIndex += $span;
+
+            $xml .= $this->renderTableCell($cell, $row->isHeader(), $cellWidth);
         }
 
         $xml .= '</w:tr>';
@@ -697,9 +800,13 @@ class DocxRenderer extends AbstractRenderer
         return $xml;
     }
 
-    private function renderTableCell(TableCell $cell, bool $headerRow): string
+    private function renderTableCell(TableCell $cell, bool $headerRow, int $cellWidthTwips = 0): string
     {
         $xml = '<w:tc><w:tcPr>';
+
+        if ($cellWidthTwips > 0) {
+            $xml .= '<w:tcW w:w="' . $cellWidthTwips . '" w:type="dxa"/>';
+        }
 
         if ($cell->getColspan() > 1) {
             $xml .= '<w:gridSpan w:val="' . $cell->getColspan() . '"/>';
@@ -727,9 +834,21 @@ class DocxRenderer extends AbstractRenderer
                 }
                 $xml .= $this->renderParagraph($element);
                 $hasContent = true;
+                continue;
+            }
+
+            // Any other block element (Heading, Image, ListBlock, Blockquote,
+            // CodeBlock, Bookmark, nested Table, PageBreak) is delegated to
+            // the regular block dispatcher — every renderer in this class
+            // emits OOXML that is valid inside a <w:tc>.
+            $rendered = $this->renderBlock($element);
+            if ($rendered !== '') {
+                $xml .= $rendered;
+                $hasContent = true;
             }
         }
 
+        // OOXML requires every <w:tc> to contain at least one <w:p>.
         if (! $hasContent) {
             $xml .= '<w:p/>';
         }
