@@ -120,6 +120,47 @@ class PageSetupTest extends TestCase
         $this->assertSame($image, $setup->getBackgroundImage());
     }
 
+    public function test_background_size_defaults_to_cover(): void
+    {
+        $setup = new PageSetup();
+
+        $this->assertSame(PageSetup::BG_SIZE_COVER, $setup->getBackgroundSize());
+        $this->assertSame('center center', $setup->getBackgroundPosition());
+        $this->assertSame('no-repeat', $setup->getBackgroundRepeat());
+    }
+
+    public function test_background_size_setter_accepts_predefined_values(): void
+    {
+        $setup = new PageSetup();
+
+        foreach ([
+            PageSetup::BG_SIZE_COVER,
+            PageSetup::BG_SIZE_CONTAIN,
+            PageSetup::BG_SIZE_AUTO,
+            PageSetup::BG_SIZE_STRETCH,
+        ] as $value) {
+            $setup->setBackgroundSize($value);
+            $this->assertSame($value, $setup->getBackgroundSize());
+        }
+    }
+
+    public function test_background_size_accepts_arbitrary_css_value(): void
+    {
+        $setup = (new PageSetup())->setBackgroundSize('50% auto');
+
+        $this->assertSame('50% auto', $setup->getBackgroundSize());
+    }
+
+    public function test_background_position_and_repeat_setters(): void
+    {
+        $setup = (new PageSetup())
+            ->setBackgroundPosition('top right')
+            ->setBackgroundRepeat('repeat-x');
+
+        $this->assertSame('top right', $setup->getBackgroundPosition());
+        $this->assertSame('repeat-x', $setup->getBackgroundRepeat());
+    }
+
     public function test_content_dimensions_subtract_padding(): void
     {
         $setup = PageSetup::fromSize(PageSize::A4)->setPadding(50.0);
@@ -141,5 +182,8 @@ class PageSetupTest extends TestCase
         $this->assertEquals(10.0, $json['padding']['top']);
         $this->assertEquals(20.0, $json['padding']['right']);
         $this->assertSame('#FFFFFF', $json['backgroundColor']);
+        $this->assertSame(PageSetup::BG_SIZE_COVER, $json['backgroundSize']);
+        $this->assertSame('center center', $json['backgroundPosition']);
+        $this->assertSame('no-repeat', $json['backgroundRepeat']);
     }
 }

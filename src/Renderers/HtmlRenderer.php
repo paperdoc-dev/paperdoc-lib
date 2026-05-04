@@ -267,10 +267,30 @@ class HtmlRenderer extends AbstractRenderer
 
             if ($url !== '') {
                 $parts[] = sprintf("background-image:url('%s')", $url);
+                // Per-section overrides for sizing (cover/contain/auto/...),
+                // position and repeat. Sane defaults (cover/center/no-repeat)
+                // also live in the global stylesheet so any section without
+                // a PageSetup keeps its previous look.
+                $parts[] = sprintf('background-size:%s',     htmlspecialchars($this->cssBackgroundSize($setup->getBackgroundSize())));
+                $parts[] = sprintf('background-position:%s', htmlspecialchars($setup->getBackgroundPosition()));
+                $parts[] = sprintf('background-repeat:%s',   htmlspecialchars($setup->getBackgroundRepeat()));
             }
         }
 
         return implode(';', $parts);
+    }
+
+    /**
+     * Normalises a Paperdoc background-size value to a CSS-valid one.
+     * The library accepts the convenience alias `'stretch'` (clearer
+     * intent than `'100% 100%'`), but browsers don't recognise it — so
+     * we expand it for HTML output. All other values are passed through
+     * unchanged so users can supply any CSS-valid string (`50% auto`,
+     * `300pt 200pt`, etc.).
+     */
+    private function cssBackgroundSize(string $value): string
+    {
+        return $value === 'stretch' ? '100% 100%' : $value;
     }
 
     /**
@@ -376,24 +396,25 @@ class HtmlRenderer extends AbstractRenderer
                 break;
         }
 
-        // En mode clamp, le wrapper porte font-size/line-height/text-align
-        // en valeurs ABSOLUES (pt) cohérentes avec celles du contenu :
+        // En mode clamp, le wrapper porte font-size/line-height en
+        // valeurs ABSOLUES (pt) cohérentes avec celles du contenu :
         //  - la même font-size évite tout décalage entre le clamp et les
-        //    spans enfants
+        //    spans enfants ;
         //  - line-height en pt absolu garantit que le calcul du
-        //    `max-height` côté serveur correspond pile-poil au rendu CSS
-        //    (un line-height unitless dépend du font-size hérité, ce qui
-        //    a causé un coupage vertical des lignes auparavant).
+        //    `max-height` côté serveur correspond pile-poil au rendu CSS.
+        //
+        // L'alignement (left / center / right / justify) est en revanche
+        // porté PAR PARAGRAPHE (chaque paragraphe est un <div> dans le
+        // clamp), pour qu'on puisse mélanger plusieurs alignements dans
+        // une même zone. Cf. renderTextZoneInline().
         if ($isClamped) {
             $paraStyle    = $this->firstParagraphStyle($zone);
             $runStyle     = $this->firstRunStyle($zone);
-            $alignment    = $paraStyle?->getAlignment()->value ?? 'left';
             $lineSpacing  = $paraStyle?->getLineSpacing() ?? 1.15;
             $fontSize     = $runStyle?->getFontSize() ?? 12.0;
             $lineHeightPt = $fontSize * $lineSpacing;
             $clampLines   = $this->estimateLineClamp($zone);
 
-            $parts[] = 'text-align:' . $alignment;
             $parts[] = sprintf('font-size:%.2fpt', $fontSize);
             $parts[] = sprintf('line-height:%.2fpt', $lineHeightPt);
 
@@ -443,25 +464,39 @@ class HtmlRenderer extends AbstractRenderer
     }
 
     /**
-     * Renders zone content inline so the parent container can act as a
-     * `-webkit-line-clamp` host. Paragraphs are separated by `<br>` and
-     * paragraph-level styling is delegated to the wrapper.
+     * Renders zone content inside the inner clamp container. Each
+     * paragraph becomes its own `<div>` so it can carry its individual
+     * `text-align` (left / center / right / justify). Block-level divs
+     * also produce natural line breaks between paragraphs without
+     * breaking the `max-height` line-clamp calculation, since they
+     * inherit the wrapper's `line-height`.
      */
     private function renderTextZoneInline(TextZone $zone): string
     {
-        $parts = [];
+        $out = '';
 
         foreach ($zone->getParagraphs() as $paragraph) {
             $runs = '';
             foreach ($paragraph->getRuns() as $run) {
                 $runs .= $this->renderTextRun($run);
             }
-            if ($runs !== '') {
-                $parts[] = $runs;
+
+            if ($runs === '') {
+                continue;
             }
+
+            $style    = $paragraph->getStyle();
+            $align    = $style?->getAlignment()->value ?? 'left';
+            $cssParts = ['margin:0', 'text-align:' . $align];
+
+            $out .= sprintf(
+                '<div class="paperdoc-text-zone-line" style="%s">%s</div>',
+                implode(';', $cssParts),
+                $runs,
+            );
         }
 
-        return implode('<br>', $parts);
+        return $out;
     }
 
     private function firstParagraphStyle(TextZone $zone): ?\Paperdoc\Document\Style\ParagraphStyle

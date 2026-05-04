@@ -16,7 +16,7 @@
 - **Parse** existing documents into a unified in-memory model
 - **Convert** between any supported formats in one call
 - **Rich document model** — typed headings, ordered/bullet lists (nested), bookmarks, code blocks, blockquotes, images, tables, page breaks and typed document properties (author, subject, dates…)
-- **Per-page layout** *(v0.7.0)* — per-section `PageSetup` with custom size (or any `PageSize` enum), padding, full-page **background image or color** ; absolutely-positioned **`TextZone`** blocks with `clip` / `ellipsis` / `visible` overflow strategies ; document-wide running **headers / footers** with `{page}` / `{pages}` / `{title}` / `{date}` / `{datetime}` placeholders
+- **Per-page layout** *(v0.7.0+)* — per-section `PageSetup` with custom size (or any `PageSize` enum), padding, full-page **background image** (`cover` / `contain` / `auto` / `stretch` since v0.7.1) **or color** ; absolutely-positioned **`TextZone`** blocks with `clip` / `ellipsis` / `visible` overflow strategies and **per-paragraph alignment** (`left` / `center` / `right` / `justify`, *v0.7.1*) ; document-wide running **headers / footers** with `{page}` / `{pages}` / `{title}` / `{date}` / `{datetime}` placeholders
 - **Native rendering core** — every block element renders cleanly to **DOCX**, **PDF**, **HTML** and **Markdown**: typed headings (`<h1>`/`<w:pStyle>`), nested lists (`<ul>`/`<w:numPr>`), blockquotes, code blocks (with language hint), bookmarks, embedded or on-disk images
 - **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>`, Markdown `[text](url)` and DOCX hyperlink relationships, with anchors and tooltips
 - **Batch processing** — open and process multiple files at once
@@ -224,6 +224,36 @@ to a lazily-created `PageSetup`.
 | `setPadding(...)` (1–4 values)                              | CSS-style shorthand for top/right/bottom/left padding  |
 | `setBackgroundColor($hex)`                                  | Solid full-bleed background color                      |
 | `setBackgroundImage(Image)`                                 | Full-bleed image (on-disk or `Image::fromData()`)      |
+| `setBackgroundSize(string)` *(v0.7.1)*                      | `cover` (default), `contain`, `auto`, `stretch` (=`100% 100%`), or any CSS string |
+| `setBackgroundPosition(string)` *(v0.7.1)*                  | CSS string, default `'center center'`                  |
+| `setBackgroundRepeat(string)` *(v0.7.1)*                    | CSS string, default `'no-repeat'`                      |
+
+### Fit the background image — `cover` / `contain` / `auto` / `stretch`
+
+*Available since **v0.7.1**.* Both renderers (PDF and HTML) honour the
+same four CSS-like modes. `cover` and `auto` automatically clip the
+overflow with a clip path in the PDF and `overflow: hidden` in the HTML
+output.
+
+```php
+use Paperdoc\Document\Style\PageSetup;
+
+$page->setPageSetup(
+    PageSetup::fromSize(PageSize::A4)
+        ->setBackgroundImage(Image::make('hero.jpg'))
+        ->setBackgroundSize(PageSetup::BG_SIZE_COVER)   // default
+);
+```
+
+| `BG_SIZE_*` constant | CSS equivalent | Behaviour                                                                     |
+|----------------------|----------------|-------------------------------------------------------------------------------|
+| `BG_SIZE_COVER`      | `cover`        | Fills the page, preserves aspect ratio, **overflow is clipped** (default)     |
+| `BG_SIZE_CONTAIN`    | `contain`      | Fits inside the page, preserves aspect ratio (may leave empty bands)          |
+| `BG_SIZE_AUTO`       | `auto`         | Image at its natural size, centred, clipped if larger than the page           |
+| `BG_SIZE_STRETCH`    | `100% 100%`    | Stretches to fill the page; aspect ratio is **not** preserved (legacy mode)   |
+
+Any other CSS-valid string (`'50% auto'`, `'300pt 200pt'`, …) is
+accepted as-is in HTML output.
 
 ### Place text precisely with `TextZone`
 
@@ -264,6 +294,36 @@ $cover->addTextZone(x: 40, y: 160, width: 250, height: 260)
 Coordinates use the top-left convention (`x=0, y=0` is the top-left
 of the page) for both PDF and HTML — the `PdfRenderer` flips to PDF's
 bottom-left origin internally.
+
+#### Per-paragraph alignment inside a zone — *v0.7.1*
+
+Each paragraph of a `TextZone` carries its own `ParagraphStyle`, so
+you can mix several alignments in the same zone (centred title,
+justified body, right-aligned signature, …):
+
+```php
+use Paperdoc\Enum\Alignment;
+
+$zone = $page->addTextZone(40, 80, 515, 380)
+    ->setBackgroundColor('#FFFFFF')
+    ->setOverflow(TextZone::OVERFLOW_ELLIPSIS);
+
+$zone->addText('Quarterly report',
+    TextStyle::make()->setBold()->setFontSize(18),
+    ParagraphStyle::make()->setAlignment(Alignment::CENTER));
+
+$zone->addText($longLorem,
+    TextStyle::make()->setFontSize(11),
+    ParagraphStyle::make()->setAlignment(Alignment::JUSTIFY)->setLineSpacing(1.3));
+
+$zone->addText('— J. Doe',
+    TextStyle::make()->setItalic(),
+    ParagraphStyle::make()->setAlignment(Alignment::RIGHT));
+```
+
+In the PDF, justification is implemented with the native PDF
+word-spacing operator (`Tw`); the last line of a paragraph is
+intentionally left-aligned to avoid stretched short lines.
 
 ### Document-wide headers and footers
 

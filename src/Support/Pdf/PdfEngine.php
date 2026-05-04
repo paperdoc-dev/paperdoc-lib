@@ -202,12 +202,145 @@ class PdfEngine
     }
 
     /**
-     * Dessine une image qui couvre la totalité de la page. Idem que
-     * drawPageBackgroundColor : à appeler en premier sur la page.
+     * Dessine une image en arrière-plan de la page. À appeler tout en
+     * début de page (avant tout autre dessin) pour que le fond reste
+     * sous le contenu.
+     *
+     * Le paramètre `$size` calque la sémantique CSS :
+     *
+     *  - `'cover'`     : l'image remplit la page en préservant son
+     *                    ratio ; l'excédent est rogné via un clip path.
+     *  - `'contain'`   : l'image tient en entier dans la page en
+     *                    préservant son ratio (peut laisser des bandes).
+     *  - `'auto'`      : taille naturelle de l'image, centrée (rognée
+     *                    si plus grande que la page).
+     *  - `'100% 100%'`
+     *    ou `'stretch'`: l'image est étirée pour remplir la page sans
+     *                    préserver le ratio (comportement historique).
+     *
+     * Toute autre valeur retombe sur `'100% 100%'`.
      */
-    public function drawPageBackgroundImage(string $path): void
+    public function drawPageBackgroundImage(string $path, string $size = 'cover'): void
     {
-        $this->drawImage($path, 0, 0, $this->pageWidth, $this->pageHeight);
+        [$iw, $ih] = $this->getImageNaturalSize($path);
+
+        // Sans dimensions exploitables, retombe sur l'étirement
+        // (comportement précédent — aucune régression possible).
+        if ($iw <= 0 || $ih <= 0) {
+            $this->drawImage($path, 0, 0, $this->pageWidth, $this->pageHeight);
+
+            return;
+        }
+
+        [$x, $y, $w, $h, $needsClip] = $this->computeBackgroundPlacement(
+            $iw,
+            $ih,
+            $this->pageWidth,
+            $this->pageHeight,
+            $size,
+        );
+
+        // En mode `cover` ou `auto`, l'image peut déborder. On pose un
+        // clip path rectangulaire à la taille de la page pour rogner
+        // proprement (équivalent CSS `overflow: hidden` sur la page).
+        if ($needsClip) {
+            $this->currentPageContent .= "q\n";
+            $this->currentPageContent .= sprintf(
+                "%.2f %.2f %.2f %.2f re W n\n",
+                0.0,
+                0.0,
+                $this->pageWidth,
+                $this->pageHeight,
+            );
+        }
+
+        $this->drawImage($path, $x, $y, $w, $h);
+
+        if ($needsClip) {
+            $this->currentPageContent .= "Q\n";
+        }
+    }
+
+    /**
+     * Calcule la position (en coordonnées PDF bottom-left) et la taille
+     * cible d'une image de fond selon la stratégie demandée. Renvoie
+     * également un drapeau indiquant si un clip path est nécessaire.
+     *
+     * @return array{0:float,1:float,2:float,3:float,4:bool} [x, y, w, h, needsClip]
+     */
+    private function computeBackgroundPlacement(
+        float $iw,
+        float $ih,
+        float $pw,
+        float $ph,
+        string $size,
+    ): array {
+        $arImg  = $iw / $ih;
+        $arPage = $pw / $ph;
+
+        switch ($size) {
+            case 'cover':
+                if ($arImg > $arPage) {
+                    $h = $ph;
+                    $w = $h * $arImg;
+                } else {
+                    $w = $pw;
+                    $h = $w / $arImg;
+                }
+                $x = ($pw - $w) / 2.0;
+                $y = ($ph - $h) / 2.0;
+                $needsClip = ($w > $pw + 0.01) || ($h > $ph + 0.01);
+                break;
+
+            case 'contain':
+                if ($arImg > $arPage) {
+                    $w = $pw;
+                    $h = $w / $arImg;
+                } else {
+                    $h = $ph;
+                    $w = $h * $arImg;
+                }
+                $x = ($pw - $w) / 2.0;
+                $y = ($ph - $h) / 2.0;
+                $needsClip = false;
+                break;
+
+            case 'auto':
+                $w = $iw;
+                $h = $ih;
+                $x = ($pw - $w) / 2.0;
+                $y = ($ph - $h) / 2.0;
+                $needsClip = ($w > $pw + 0.01) || ($h > $ph + 0.01);
+                break;
+
+            case 'stretch':
+            case '100% 100%':
+            default:
+                return [0.0, 0.0, $pw, $ph, false];
+        }
+
+        return [$x, $y, $w, $h, $needsClip];
+    }
+
+    /**
+     * Lit les dimensions naturelles d'une image (en pixels). Renvoie
+     * `[0, 0]` si l'image est illisible.
+     *
+     * @return array{0:int,1:int}
+     */
+    private function getImageNaturalSize(string $path): array
+    {
+        if (! is_file($path) || ! is_readable($path)) {
+            return [0, 0];
+        }
+
+        $info = @getimagesize($path);
+
+        if ($info === false || ! isset($info[0], $info[1])) {
+            return [0, 0];
+        }
+
+        return [(int) $info[0], (int) $info[1]];
     }
 
     /* -------------------------------------------------------------
@@ -408,6 +541,7 @@ class PdfEngine
         float $lineSpacing = 1.15,
         ?float $maxHeight = null,
         bool $ellipsis = false,
+        string $align = 'left',
     ): array {
         $fontRef    = $this->ensureFont($fontName);
         $lineHeight = $fontSize * $lineSpacing;
@@ -438,12 +572,21 @@ class PdfEngine
 
             $baselineY = $this->pageHeight - $yTopLeft - $topOffset - $fontSize;
 
-            $this->currentPageContent .= "BT\n";
-            $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
-            $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
-            $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $x, $baselineY);
-            $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
-            $this->currentPageContent .= "ET\n";
+            $isLastLine = ($i + 1 >= $totalLines) || $isLastDrawable;
+            $this->emitTextLine(
+                line:       $line,
+                fontRef:    $fontRef,
+                fontName:   $fontName,
+                fontSize:   $fontSize,
+                x:          $x,
+                baselineY:  $baselineY,
+                maxWidth:   $maxWidth,
+                r:          $r,
+                g:          $g,
+                b:          $b,
+                align:      $align,
+                isLastLine: $isLastLine,
+            );
 
             $consumed = $topOffset + $lineHeight;
             $drawn++;
@@ -455,6 +598,72 @@ class PdfEngine
             'totalLines' => $totalLines,
             'drawnLines' => $drawn,
         ];
+    }
+
+    /**
+     * Émet une ligne de texte au content stream PDF en gérant
+     * l'alignement horizontal :
+     *
+     *  - `left`    : la ligne commence à `$x` (comportement par défaut).
+     *  - `right`   : la ligne se termine à `$x + $maxWidth`.
+     *  - `center`  : la ligne est centrée dans `[x, x+maxWidth]`.
+     *  - `justify` : les espaces sont étirés via l'opérateur PDF `Tw`
+     *                pour que la ligne occupe toute la largeur. La
+     *                dernière ligne d'un paragraphe (`$isLastLine`)
+     *                garde l'alignement gauche pour ne pas étirer une
+     *                ligne courte.
+     */
+    private function emitTextLine(
+        string $line,
+        string $fontRef,
+        string $fontName,
+        float $fontSize,
+        float $x,
+        float $baselineY,
+        float $maxWidth,
+        float $r,
+        float $g,
+        float $b,
+        string $align,
+        bool $isLastLine,
+    ): void {
+        $lineWidth = $this->measureTextWidth($line, $fontName, $fontSize);
+        $drawX     = $x;
+        $extraTw   = 0.0;
+
+        switch ($align) {
+            case 'right':
+                $drawX = $x + max(0.0, $maxWidth - $lineWidth);
+                break;
+            case 'center':
+                $drawX = $x + max(0.0, ($maxWidth - $lineWidth) / 2.0);
+                break;
+            case 'justify':
+                if (! $isLastLine && $lineWidth < $maxWidth) {
+                    $spaces = substr_count($line, ' ');
+                    if ($spaces > 0) {
+                        $extraTw = ($maxWidth - $lineWidth) / $spaces;
+                    }
+                }
+                break;
+            case 'left':
+            default:
+                break;
+        }
+
+        $this->currentPageContent .= "BT\n";
+        $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
+        $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
+        if ($extraTw > 0.0) {
+            $this->currentPageContent .= sprintf("%.3f Tw\n", $extraTw);
+        }
+        $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $drawX, $baselineY);
+        $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
+        if ($extraTw > 0.0) {
+            // Always reset Tw so subsequent text isn't accidentally justified.
+            $this->currentPageContent .= "0 Tw\n";
+        }
+        $this->currentPageContent .= "ET\n";
     }
 
     /**

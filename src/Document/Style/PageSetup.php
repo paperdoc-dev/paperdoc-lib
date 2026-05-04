@@ -20,6 +20,26 @@ class PageSetup implements \JsonSerializable
     public const ORIENTATION_PORTRAIT  = 'portrait';
     public const ORIENTATION_LANDSCAPE = 'landscape';
 
+    /**
+     * Stratégie de redimensionnement de l'image de fond.
+     *
+     *  - BG_SIZE_COVER   : couvre toute la page en préservant le ratio
+     *                      (déborde et est rognée si nécessaire). Défaut.
+     *  - BG_SIZE_CONTAIN : tient en entier dans la page en préservant le
+     *                      ratio (peut laisser des bandes vides).
+     *  - BG_SIZE_AUTO    : taille naturelle de l'image (centrée ;
+     *                      l'excédent éventuel est rogné).
+     *  - BG_SIZE_STRETCH : étire l'image pour remplir la page sans
+     *                      préserver le ratio (`100% 100%`).
+     *
+     * Toute autre chaîne CSS valide (`50% 50%`, `300pt 200pt`, …) est
+     * acceptée et passée telle quelle au HTML.
+     */
+    public const BG_SIZE_COVER   = 'cover';
+    public const BG_SIZE_CONTAIN = 'contain';
+    public const BG_SIZE_AUTO    = 'auto';
+    public const BG_SIZE_STRETCH = '100% 100%';
+
     private float $width;
     private float $height;
 
@@ -31,6 +51,10 @@ class PageSetup implements \JsonSerializable
     private ?Image $backgroundImage = null;
 
     private ?string $backgroundColor = null;
+
+    private string $backgroundSize     = self::BG_SIZE_COVER;
+    private string $backgroundPosition = 'center center';
+    private string $backgroundRepeat   = 'no-repeat';
 
     private string $orientation = self::ORIENTATION_PORTRAIT;
 
@@ -204,6 +228,33 @@ class PageSetup implements \JsonSerializable
         return $this->backgroundColor;
     }
 
+    public function setBackgroundSize(string $size): static
+    {
+        $this->backgroundSize = $size;
+
+        return $this;
+    }
+
+    public function getBackgroundSize(): string { return $this->backgroundSize; }
+
+    public function setBackgroundPosition(string $position): static
+    {
+        $this->backgroundPosition = $position;
+
+        return $this;
+    }
+
+    public function getBackgroundPosition(): string { return $this->backgroundPosition; }
+
+    public function setBackgroundRepeat(string $repeat): static
+    {
+        $this->backgroundRepeat = $repeat;
+
+        return $this;
+    }
+
+    public function getBackgroundRepeat(): string { return $this->backgroundRepeat; }
+
     /* -------------------------------------------------------------
      | Convenience
      |------------------------------------------------------------- */
@@ -225,18 +276,21 @@ class PageSetup implements \JsonSerializable
     public function jsonSerialize(): mixed
     {
         return [
-            'width'           => $this->width,
-            'height'          => $this->height,
-            'orientation'     => $this->orientation,
-            'size'            => $this->size?->value,
-            'padding'         => [
+            'width'              => $this->width,
+            'height'             => $this->height,
+            'orientation'        => $this->orientation,
+            'size'               => $this->size?->value,
+            'padding'            => [
                 'top'    => $this->paddingTop,
                 'right'  => $this->paddingRight,
                 'bottom' => $this->paddingBottom,
                 'left'   => $this->paddingLeft,
             ],
-            'backgroundColor' => $this->backgroundColor,
-            'backgroundImage' => $this->backgroundImage,
+            'backgroundColor'    => $this->backgroundColor,
+            'backgroundImage'    => $this->backgroundImage,
+            'backgroundSize'     => $this->backgroundSize,
+            'backgroundPosition' => $this->backgroundPosition,
+            'backgroundRepeat'   => $this->backgroundRepeat,
         ];
     }
 }

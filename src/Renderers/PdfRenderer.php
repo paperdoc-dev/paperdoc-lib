@@ -157,7 +157,7 @@ class PdfRenderer extends AbstractRenderer
         if ($bgImage !== null) {
             $tmpPath = $this->resolveImagePath($bgImage);
             if ($tmpPath !== null) {
-                $this->engine->drawPageBackgroundImage($tmpPath);
+                $this->engine->drawPageBackgroundImage($tmpPath, $setup->getBackgroundSize());
                 if ($this->isTempFile($tmpPath, $bgImage)) {
                     @unlink($tmpPath);
                 }
@@ -751,6 +751,7 @@ class PdfRenderer extends AbstractRenderer
             $paraStyle   = $paragraph->getStyle();
             $lineSpacing = $paraStyle?->getLineSpacing() ?? 1.15;
             $spaceAfter  = $paraStyle?->getSpaceAfter() ?? 4.0;
+            $align       = $paraStyle?->getAlignment()->value ?? 'left';
 
             foreach ($paragraph->getRuns() as $run) {
                 if ($maxHeight !== null && $cursorOffset >= $maxHeight) {
@@ -775,6 +776,7 @@ class PdfRenderer extends AbstractRenderer
                     lineSpacing: $lineSpacing,
                     maxHeight:   $remaining,
                     ellipsis:    $ellipsis,
+                    align:       $align,
                 );
 
                 $cursorOffset += $result['consumed'];

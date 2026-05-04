@@ -12,6 +12,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.7.1] — 2026-05-04
+
+> **Page background sizing & per-paragraph text alignment** — the
+> page background image now follows the same `cover` / `contain` /
+> `auto` / `stretch` semantics as CSS, on both renderers, and
+> `TextZone` paragraphs accept independent alignments
+> (`left` / `center` / `right` / `justify`) — including a real
+> word-spacing-based justification in the PDF output. Fully
+> **non-breaking**: existing documents keep their previous look
+> (`cover` was already the implicit behaviour).
+
+### Added
+
+- **`PageSetup::setBackgroundSize($value)`** — controls how the
+  page background image is fitted. Four predefined modes are
+  exposed as constants:
+  - `BG_SIZE_COVER` (default) — fills the whole page while
+    preserving the image's aspect ratio; overflow is clipped.
+  - `BG_SIZE_CONTAIN` — fits inside the page while preserving the
+    aspect ratio (may leave empty bands).
+  - `BG_SIZE_AUTO` — image rendered at its natural size, centred,
+    clipped if larger than the page.
+  - `BG_SIZE_STRETCH` (alias of `'100% 100%'`) — fills the page
+    without preserving the aspect ratio (legacy behaviour).
+  Any other CSS-valid string (`'50% auto'`, `'300pt 200pt'`, …) is
+  accepted verbatim in HTML.
+- **`PageSetup::setBackgroundPosition($value)`** /
+  **`PageSetup::setBackgroundRepeat($value)`** — full CSS
+  parity for the background layer (defaults: `'center center'`,
+  `'no-repeat'`).
+- **`writeWrappedTextAt(... , string $align = 'left')`** in
+  `PdfEngine` — supports `left`, `center`, `right` and `justify`.
+  Justification distributes leftover horizontal space via the PDF
+  word-spacing operator (`Tw`), and the last line of a paragraph is
+  intentionally left-aligned to avoid stretched short lines.
+
+### Changed
+
+- **`HtmlRenderer` — TextZone clamp layout.** Each paragraph inside
+  a `TextZone` now renders as its own `<div>` (instead of being
+  joined with `<br>`), carrying its own `text-align`. This makes it
+  possible to mix several alignments inside a single zone (e.g.
+  centred title + justified body + right-aligned signature) while
+  still respecting the line clamp / ellipsis behaviour.
+- **`PdfRenderer::writeTextZone()`** now reads
+  `ParagraphStyle::getAlignment()` and forwards it to the engine,
+  giving `TextZone` the same alignment freedom in PDF output.
+- **`PdfEngine::drawPageBackgroundImage()`** gained a `$size`
+  parameter and reads the image's natural dimensions to compute the
+  correct placement; `cover` and `auto` use a clip path to rein in
+  the overflow.
+
+### Notes
+
+- Backward-compatible: existing code that didn't call any of the
+  new setters keeps its previous rendering exactly (`cover` /
+  `center center` / `no-repeat`).
+- The string `'stretch'` is normalised to the CSS-valid
+  `'100% 100%'` in HTML output, so users can pick whichever
+  spelling they prefer.
+
+---
+
 ## [0.7.0] — 2026-05-04
 
 > **Page layout & text zones** — every page can now be configured
