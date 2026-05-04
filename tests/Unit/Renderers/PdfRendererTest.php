@@ -196,6 +196,56 @@ class PdfRendererTest extends TestCase
         $this->assertGreaterThan(100, filesize($this->outputPath()));
     }
 
+    /**
+     * Regression — v0.7.1 originally only honoured ParagraphStyle::alignment
+     * inside a TextZone, so top-level Section paragraphs were silently
+     * left-aligned even when set to CENTER / RIGHT / JUSTIFY.
+     *
+     * This test renders the *same* sentence four times (once per
+     * alignment), extracts the first text-positioning operator
+     * (`<x> <y> Td`) of each paragraph, and verifies they are
+     * positioned distinctly (left < center < right). Justified text is
+     * checked separately by the presence of the PDF word-spacing
+     * operator (`Tw`).
+     */
+    public function test_paragraph_alignment_is_honored_at_section_root(): void
+    {
+        $renderer = new PdfRenderer();
+        $sentence = 'Quick brown fox jumps over the lazy dog.';
+
+        $tdX = [];
+        foreach ([Alignment::LEFT, Alignment::CENTER, Alignment::RIGHT] as $alignment) {
+            $doc = Document::make('pdf');
+            $section = Section::make('s');
+            $section->addElement(
+                Paragraph::make(ParagraphStyle::make()->setAlignment($alignment))
+                    ->addRun(new TextRun($sentence))
+            );
+            $doc->addSection($section);
+
+            $content = $renderer->render($doc);
+            $this->assertMatchesRegularExpression('/(?<x>-?\d+\.\d+) -?\d+\.\d+ Td/', $content);
+            preg_match('/(?<x>-?\d+\.\d+) -?\d+\.\d+ Td/', $content, $m);
+            $tdX[$alignment->value] = (float) $m['x'];
+        }
+
+        $this->assertLessThan($tdX['center'], $tdX['left'],
+            'CENTER paragraph should start further right than LEFT');
+        $this->assertLessThan($tdX['right'], $tdX['center'],
+            'RIGHT paragraph should start further right than CENTER');
+
+        $doc = Document::make('pdf');
+        $section = Section::make('s');
+        $section->addElement(
+            Paragraph::make(ParagraphStyle::make()->setAlignment(Alignment::JUSTIFY))
+                ->addRun(new TextRun(str_repeat($sentence . ' ', 5)))
+        );
+        $doc->addSection($section);
+        $content = $renderer->render($doc);
+        $this->assertMatchesRegularExpression('/\d+\.\d+ Tw/', $content,
+            'JUSTIFY paragraphs should emit a word-spacing (Tw) operator');
+    }
+
     public function test_pdf_with_multiple_text_runs(): void
     {
         $doc = Document::make('pdf');

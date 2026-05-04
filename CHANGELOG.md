@@ -12,6 +12,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.7.2] — 2026-05-04
+
+> **Bug fix** — `ParagraphStyle::alignment` was only honoured by
+> `TextZone` paragraphs. Top-level paragraphs (and paragraphs inside
+> blockquotes) silently rendered left-aligned in the PDF output even
+> when set to `CENTER`, `RIGHT` or `JUSTIFY`. The HTML renderer was
+> already correct.
+
+### Fixed
+
+- **`PdfRenderer::writeParagraph()`** now reads
+  `ParagraphStyle::getAlignment()` and forwards it through
+  `writeTextRun()` to the engine. Top-level Section paragraphs honour
+  `LEFT` / `CENTER` / `RIGHT` / `JUSTIFY` exactly like `TextZone`
+  paragraphs do.
+- **`PdfRenderer::writeQuotedParagraph()`** propagates the alignment
+  too, so blockquoted paragraphs with a non-default alignment render
+  correctly.
+
+### Changed
+
+- **`PdfEngine::writeWrappedText()`** gained a `$align` parameter
+  (default `'left'`, fully backward-compatible). Justified lines use
+  the PDF word-spacing operator (`Tw`) — the last line stays
+  left-aligned, like in `writeWrappedTextAt()`.
+- The X origin of a wrapped block is now snapped at the start of the
+  call, so a wrapped multi-line block keeps the same alignment box
+  for every line.
+
+### Tests
+
+- New regression `test_paragraph_alignment_is_honored_at_section_root`
+  in `PdfRendererTest`: renders the same sentence with each alignment
+  and asserts that the `Td` X coordinates are strictly ordered
+  (`LEFT < CENTER < RIGHT`) and that justified text emits a `Tw`
+  operator. 696 / 696 tests passing.
+
+---
+
 ## [0.7.1] — 2026-05-04
 
 > **Page background sizing & per-paragraph text alignment** — the

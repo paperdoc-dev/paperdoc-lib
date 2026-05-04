@@ -326,6 +326,10 @@ class PdfRenderer extends AbstractRenderer
         $lineSpacing = $paraStyle?->getLineSpacing() ?? 1.15;
         $spaceBefore = $paraStyle?->getSpaceBefore() ?? 0;
         $spaceAfter  = $paraStyle?->getSpaceAfter() ?? 6;
+        // ParagraphStyle::alignment is propagated all the way to the
+        // PDF engine so left/center/right/justify work for top-level
+        // paragraphs (not only inside a TextZone).
+        $align       = $paraStyle?->getAlignment()->value ?? 'left';
 
         $headingFont = null;
 
@@ -354,9 +358,9 @@ class PdfRenderer extends AbstractRenderer
                     ->setFontSize($headingFont)
                     ->setBold();
                 $styledRun = new TextRun($run->getText(), $headingStyle);
-                $this->writeTextRun($styledRun, $document, $lineSpacing, $indent);
+                $this->writeTextRun($styledRun, $document, $lineSpacing, $indent, $align);
             } else {
-                $this->writeTextRun($run, $document, $lineSpacing, $indent);
+                $this->writeTextRun($run, $document, $lineSpacing, $indent, $align);
             }
         }
 
@@ -365,8 +369,13 @@ class PdfRenderer extends AbstractRenderer
         }
     }
 
-    private function writeTextRun(TextRun $run, DocumentInterface $document, float $lineSpacing, float $indent = 0): void
-    {
+    private function writeTextRun(
+        TextRun $run,
+        DocumentInterface $document,
+        float $lineSpacing,
+        float $indent = 0,
+        string $align = 'left',
+    ): void {
         $style = $run->getStyle() ?? $document->getDefaultTextStyle();
         $link = $run->getLink();
 
@@ -393,6 +402,7 @@ class PdfRenderer extends AbstractRenderer
             b: $b,
             lineSpacing: $lineSpacing,
             x: $indent > 0 ? 40 + $indent : 0,
+            align: $align,
         );
     }
 
@@ -472,6 +482,8 @@ class PdfRenderer extends AbstractRenderer
 
     private function writeQuotedParagraph(Paragraph $paragraph, DocumentInterface $document, float $indent): void
     {
+        $align = $paragraph->getStyle()?->getAlignment()->value ?? 'left';
+
         foreach ($paragraph->getRuns() as $run) {
             $style = $run->getStyle() ?? $document->getDefaultTextStyle();
             $quoteStyle = TextStyle::make()
@@ -481,7 +493,7 @@ class PdfRenderer extends AbstractRenderer
                 ->setColor('#4B5563');
 
             $styled = new TextRun($run->getText(), $quoteStyle, $run->getLink());
-            $this->writeTextRun($styled, $document, 1.15, $indent);
+            $this->writeTextRun($styled, $document, 1.15, $indent, $align);
         }
     }
 

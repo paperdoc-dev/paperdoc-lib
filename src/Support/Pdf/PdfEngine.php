@@ -371,6 +371,11 @@ class PdfEngine
     /**
      * Écrit du texte avec retour à la ligne automatique.
      *
+     * Le paramètre `$align` accepte `left` (défaut), `center`, `right`
+     * et `justify`. Pour `justify`, l'espace résiduel est réparti via
+     * l'opérateur PDF `Tw` (word spacing) ; la dernière ligne reste
+     * alignée à gauche pour ne pas étirer une ligne courte.
+     *
      * @return float Hauteur totale consommée
      */
     public function writeWrappedText(
@@ -383,6 +388,7 @@ class PdfEngine
         float $maxWidth = 0,
         float $lineSpacing = 1.15,
         float $x = 0,
+        string $align = 'left',
     ): float {
         if ($maxWidth <= 0) {
             $maxWidth = $this->getContentWidth();
@@ -392,26 +398,42 @@ class PdfEngine
             $this->cursorX = $x;
         }
 
-        $lines = $this->wrapText($text, $fontName, $fontSize, $maxWidth);
-        $lineHeight = $fontSize * $lineSpacing;
+        // L'origine X de la ligne est figée AVANT la boucle : on veut
+        // que toutes les lignes utilisent la même boîte d'alignement
+        // (sinon une ligne wrappée hériterait du décalage de la
+        // précédente).
+        $startX = $this->cursorX;
+
+        $lines       = $this->wrapText($text, $fontName, $fontSize, $maxWidth);
+        $lineHeight  = $fontSize * $lineSpacing;
         $totalHeight = 0;
+        $totalLines  = count($lines);
 
         $fontRef = $this->ensureFont($fontName);
 
-        foreach ($lines as $line) {
+        foreach ($lines as $i => $line) {
             if ($this->needsNewPage($lineHeight)) {
                 $this->newPage();
             }
 
-            $this->currentPageContent .= "BT\n";
-            $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
-            $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
-            $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $this->cursorX, $this->cursorY);
-            $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
-            $this->currentPageContent .= "ET\n";
+            $isLastLine = ($i + 1 >= $totalLines);
+            $this->emitTextLine(
+                line:       $line,
+                fontRef:    $fontRef,
+                fontName:   $fontName,
+                fontSize:   $fontSize,
+                x:          $startX,
+                baselineY:  $this->cursorY,
+                maxWidth:   $maxWidth,
+                r:          $r,
+                g:          $g,
+                b:          $b,
+                align:      $align,
+                isLastLine: $isLastLine,
+            );
 
             $this->cursorY -= $lineHeight;
-            $totalHeight += $lineHeight;
+            $totalHeight   += $lineHeight;
         }
 
         $this->cursorX = $this->marginLeft;
