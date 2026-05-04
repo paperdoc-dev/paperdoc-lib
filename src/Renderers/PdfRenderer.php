@@ -11,6 +11,7 @@ use Paperdoc\Document\{
     CodeBlock,
     Document,
     Heading,
+    HorizontalRule,
     Image,
     ListBlock,
     ListItem,
@@ -23,7 +24,7 @@ use Paperdoc\Document\{
     TextZone,
 };
 use Paperdoc\Document\Style\{PageSetup, RunningElement, TextStyle};
-use Paperdoc\Enum\Alignment;
+use Paperdoc\Enum\{Alignment, VerticalAlignment};
 use Paperdoc\Support\Pdf\PdfEngine;
 
 /**
@@ -39,8 +40,15 @@ class PdfRenderer extends AbstractRenderer
 {
     private PdfEngine $engine;
 
-    private ?RunningElement $header = null;
-    private ?RunningElement $footer = null;
+    /**
+     * Document-level header/footer fallback. The header/footer
+     * actually rendered on each page is the section's
+     * resolveHeader/Footer() applied to these (so a section's
+     * setHeader/setFooter/hideHeader/hideFooter overrides take
+     * precedence — see Section v0.8.0).
+     */
+    private ?RunningElement $documentHeader = null;
+    private ?RunningElement $documentFooter = null;
     private string $documentTitle = '';
     private int $totalPages = 1;
     private ?Section $currentSection = null;
@@ -84,13 +92,13 @@ class PdfRenderer extends AbstractRenderer
         $this->lastBlockLineHeight = 0.0;
 
         $author = null;
-        $this->header = null;
-        $this->footer = null;
+        $this->documentHeader = null;
+        $this->documentFooter = null;
 
         if ($document instanceof Document) {
             $author = $document->getProperties()?->getAuthor();
-            $this->header = $document->getHeader();
-            $this->footer = $document->getFooter();
+            $this->documentHeader = $document->getHeader();
+            $this->documentFooter = $document->getFooter();
         }
 
         $this->engine->setCreator($author !== null && $author !== ''
@@ -179,23 +187,95 @@ class PdfRenderer extends AbstractRenderer
 
     private function writeSection(Section $section, DocumentInterface $document): void
     {
+        $verticalAlignment = $section->getVerticalAlignment();
+
+        // Top-aligned (default) — render straight to the page, no
+        // measurement pass needed.
+        if ($verticalAlignment === VerticalAlignment::TOP) {
+            foreach ($section->getElements() as $element) {
+                $this->writeBlock($element, $document, 0);
+            }
+            return;
+        }
+
+        // CENTER / BOTTOM — capture a "before" anchor, render the
+        // section, then post-wrap that slice in a `q ... cm ... Q`
+        // graphics state to vertically translate it. We only honour the
+        // requested alignment when the section fits in the current page
+        // (no auto-paginated overflow) — otherwise the cm transform
+        // would silently shift content meant for a SECOND page.
+        $beforeOffset = $this->engine->getPageContentLength();
+        $beforePage   = $this->engine->getCurrentPageNumber();
+        $startCursorY = $this->engine->getCursorY();
+
         foreach ($section->getElements() as $element) {
             $this->writeBlock($element, $document, 0);
         }
+
+        $afterPage  = $this->engine->getCurrentPageNumber();
+        if ($afterPage !== $beforePage) {
+            // Section overflowed onto another page during rendering. We
+            // can't safely apply CTM translation across pages, so leave
+            // the content top-aligned and bail out silently.
+            return;
+        }
+
+        $endCursorY    = $this->engine->getCursorY();
+        $contentHeight = max(0.0, $startCursorY - $endCursorY);
+
+        $setup            = $section->getPageSetup();
+        $contentAreaTopY  = $startCursorY;
+        $contentAreaBottomY = $setup !== null
+            ? $setup->getPaddingBottom()
+            : 40.0;
+        $available = max(0.0, $contentAreaTopY - $contentAreaBottomY);
+        $slack     = $available - $contentHeight;
+
+        if ($slack <= 0.5) {
+            return; // Content already fills the area; nothing to centre.
+        }
+
+        $dy = match ($verticalAlignment) {
+            VerticalAlignment::CENTER => -($slack / 2.0),
+            VerticalAlignment::BOTTOM => -$slack,
+            default                   => 0.0,
+        };
+
+        if (abs($dy) < 0.5) {
+            return;
+        }
+
+        $this->engine->wrapPageContentSince(
+            offset: $beforeOffset,
+            prefix: sprintf('1 0 0 1 0 %.2f cm', $dy),
+        );
     }
 
     /* =============================================================
      | Header / Footer
      |============================================================= */
 
+    /**
+     * Resolves and draws the running elements for the current page,
+     * taking into account any per-section override / hide flag set
+     * via {@see Section::setHeader()}/{@see Section::hideFooter()} etc.
+     */
     private function drawHeaderFooter(): void
     {
-        if ($this->header !== null) {
-            $this->drawRunningElement($this->header, true);
+        $header = $this->currentSection !== null
+            ? $this->currentSection->resolveHeader($this->documentHeader)
+            : $this->documentHeader;
+
+        $footer = $this->currentSection !== null
+            ? $this->currentSection->resolveFooter($this->documentFooter)
+            : $this->documentFooter;
+
+        if ($header !== null) {
+            $this->drawRunningElement($header, true);
         }
 
-        if ($this->footer !== null) {
-            $this->drawRunningElement($this->footer, false);
+        if ($footer !== null) {
+            $this->drawRunningElement($footer, false);
         }
     }
 
@@ -258,24 +338,26 @@ class PdfRenderer extends AbstractRenderer
     private function writeBlock(DocumentElementInterface $element, DocumentInterface $document, float $indent): void
     {
         match (true) {
-            $element instanceof Heading    => $this->writeHeading($element, $document, $indent),
-            $element instanceof Paragraph  => $this->writeParagraph($element, $document, $indent),
-            $element instanceof ListBlock  => $this->writeList($element, $document, 0, $indent),
-            $element instanceof Blockquote => $this->writeBlockquote($element, $document, $indent),
-            $element instanceof CodeBlock  => $this->writeCodeBlock($element, $document, $indent),
-            $element instanceof Bookmark   => null, // invisible target; reserved for future link annotations
-            $element instanceof Table      => $this->writeTable($element, $document),
-            $element instanceof Image      => $this->writeImage($element),
-            $element instanceof TextZone   => $this->writeTextZone($element, $document),
-            $element instanceof PageBreak  => $this->handlePageBreak(),
-            default                        => null,
+            $element instanceof Heading        => $this->writeHeading($element, $document, $indent),
+            $element instanceof Paragraph      => $this->writeParagraph($element, $document, $indent),
+            $element instanceof ListBlock      => $this->writeList($element, $document, 0, $indent),
+            $element instanceof Blockquote     => $this->writeBlockquote($element, $document, $indent),
+            $element instanceof CodeBlock      => $this->writeCodeBlock($element, $document, $indent),
+            $element instanceof Bookmark       => null, // invisible target; reserved for future link annotations
+            $element instanceof Table          => $this->writeTable($element, $document),
+            $element instanceof Image          => $this->writeImage($element),
+            $element instanceof TextZone       => $this->writeTextZone($element, $document),
+            $element instanceof HorizontalRule => $this->writeHorizontalRule($element),
+            $element instanceof PageBreak      => $this->handlePageBreak(),
+            default                            => null,
         };
 
-        // Non-paragraph blocks (heading, image, table, list, …) reset
-        // the trailing line metric — paragraphs handle the bookkeeping
-        // themselves inside writeParagraph(), and the next text block
-        // doesn't need ascent reservation against a non-text or
-        // already-spaced block (writeHeading bakes its own clearance).
+        // Non-paragraph blocks (heading, image, table, list, rule, …)
+        // reset the trailing line metric — paragraphs handle the
+        // bookkeeping themselves inside writeParagraph(), and the next
+        // text block doesn't need ascent reservation against a
+        // non-text or already-spaced block (writeHeading bakes its own
+        // clearance, writeHorizontalRule resets explicitly).
         if (! ($element instanceof Paragraph)) {
             $this->lastBlockLineHeight = 0.0;
         }
@@ -380,6 +462,11 @@ class PdfRenderer extends AbstractRenderer
         // PDF engine so left/center/right/justify work for top-level
         // paragraphs (not only inside a TextZone).
         $align       = $paraStyle?->getAlignment()->value ?? 'left';
+        // First-line indent (since v0.8.0). Only applied to the very
+        // first run of the paragraph so a multi-run paragraph keeps a
+        // single visual indent (typical use: italic first word, then
+        // body text — they should share one indent, not two).
+        $firstLineIndent = $paraStyle?->getFirstLineIndent() ?? 0.0;
 
         $headingFont = null;
 
@@ -416,18 +503,20 @@ class PdfRenderer extends AbstractRenderer
 
         $lastFontSize = $firstRunStyle->getFontSize();
 
-        foreach ($paragraph->getRuns() as $run) {
+        foreach ($paragraph->getRuns() as $i => $run) {
             $runStyle = $run->getStyle();
+            $isFirstRun = ($i === 0);
+            $runIndent  = $isFirstRun ? $firstLineIndent : 0.0;
 
             if ($headingFont !== null && $runStyle === null) {
                 $headingStyle = TextStyle::make()
                     ->setFontSize($headingFont)
                     ->setBold();
                 $styledRun = new TextRun($run->getText(), $headingStyle);
-                $this->writeTextRun($styledRun, $document, $lineSpacing, $indent, $align);
+                $this->writeTextRun($styledRun, $document, $lineSpacing, $indent, $align, $runIndent);
                 $lastFontSize = $headingStyle->getFontSize();
             } else {
-                $this->writeTextRun($run, $document, $lineSpacing, $indent, $align);
+                $this->writeTextRun($run, $document, $lineSpacing, $indent, $align, $runIndent);
                 $lastFontSize = ($runStyle ?? $document->getDefaultTextStyle())->getFontSize();
             }
         }
@@ -451,6 +540,7 @@ class PdfRenderer extends AbstractRenderer
         float $lineSpacing,
         float $indent = 0,
         string $align = 'left',
+        float $firstLineIndent = 0.0,
     ): void {
         $style = $run->getStyle() ?? $document->getDefaultTextStyle();
         $link = $run->getLink();
@@ -462,6 +552,7 @@ class PdfRenderer extends AbstractRenderer
                 ->setBold($style->isBold())
                 ->setItalic($style->isItalic())
                 ->setUnderline(true)
+                ->setLetterSpacing($style->getLetterSpacing())
                 ->setColor($style->getColor() === '#000000' ? '#0563C1' : $style->getColor());
         }
 
@@ -470,15 +561,17 @@ class PdfRenderer extends AbstractRenderer
         [$r, $g, $b] = $style->getColorRgb();
 
         $this->engine->writeWrappedText(
-            text: $run->getText(),
-            fontName: $fontName,
-            fontSize: $fontSize,
-            r: $r,
-            g: $g,
-            b: $b,
-            lineSpacing: $lineSpacing,
-            x: $indent > 0 ? 40 + $indent : 0,
-            align: $align,
+            text:            $run->getText(),
+            fontName:        $fontName,
+            fontSize:        $fontSize,
+            r:               $r,
+            g:               $g,
+            b:               $b,
+            lineSpacing:     $lineSpacing,
+            x:               $indent > 0 ? 40 + $indent : 0,
+            align:           $align,
+            letterSpacing:   $style->getLetterSpacing(),
+            firstLineIndent: $firstLineIndent,
         );
     }
 
@@ -840,11 +933,12 @@ class PdfRenderer extends AbstractRenderer
         // separately and don't pollute the page-level state.
 
         foreach ($zone->getParagraphs() as $paragraph) {
-            $paraStyle   = $paragraph->getStyle();
-            $lineSpacing = $paraStyle?->getLineSpacing() ?? 1.15;
-            $spaceAfter  = $paraStyle?->getSpaceAfter() ?? 4.0;
-            $spaceBefore = $paraStyle?->getSpaceBefore() ?? 0.0;
-            $align       = $paraStyle?->getAlignment()->value ?? 'left';
+            $paraStyle       = $paragraph->getStyle();
+            $lineSpacing     = $paraStyle?->getLineSpacing() ?? 1.15;
+            $spaceAfter      = $paraStyle?->getSpaceAfter() ?? 4.0;
+            $spaceBefore     = $paraStyle?->getSpaceBefore() ?? 0.0;
+            $align           = $paraStyle?->getAlignment()->value ?? 'left';
+            $firstLineIndent = $paraStyle?->getFirstLineIndent() ?? 0.0;
 
             // Same overlap-prevention logic as writeParagraph(): if the
             // first run's font is much bigger than the previous tail
@@ -862,7 +956,7 @@ class PdfRenderer extends AbstractRenderer
                 $cursorOffset += $spaceBefore;
             }
 
-            foreach ($paragraph->getRuns() as $run) {
+            foreach ($paragraph->getRuns() as $runIndex => $run) {
                 if ($maxHeight !== null && $cursorOffset >= $maxHeight) {
                     break 2;
                 }
@@ -871,21 +965,25 @@ class PdfRenderer extends AbstractRenderer
 
                 $style = $run->getStyle() ?? $document->getDefaultTextStyle();
                 [$r, $g, $b] = $style->getColorRgb();
+                $isFirstRun  = ($runIndex === 0);
+                $runIndent   = $isFirstRun ? $firstLineIndent : 0.0;
 
                 $result = $this->engine->writeWrappedTextAt(
-                    text:        $run->getText(),
-                    fontName:    $style->getPdfFontName(),
-                    fontSize:    $style->getFontSize(),
-                    x:           $textX,
-                    yTopLeft:    $textTopY + $cursorOffset,
-                    maxWidth:    $maxWidth,
-                    r:           $r,
-                    g:           $g,
-                    b:           $b,
-                    lineSpacing: $lineSpacing,
-                    maxHeight:   $remaining,
-                    ellipsis:    $ellipsis,
-                    align:       $align,
+                    text:            $run->getText(),
+                    fontName:        $style->getPdfFontName(),
+                    fontSize:        $style->getFontSize(),
+                    x:               $textX,
+                    yTopLeft:        $textTopY + $cursorOffset,
+                    maxWidth:        $maxWidth,
+                    r:               $r,
+                    g:               $g,
+                    b:               $b,
+                    lineSpacing:     $lineSpacing,
+                    maxHeight:       $remaining,
+                    ellipsis:        $ellipsis,
+                    align:           $align,
+                    letterSpacing:   $style->getLetterSpacing(),
+                    firstLineIndent: $runIndent,
                 );
 
                 $cursorOffset    += $result['consumed'];
@@ -898,6 +996,75 @@ class PdfRenderer extends AbstractRenderer
 
             $cursorOffset += $spaceAfter;
         }
+    }
+
+    /* =============================================================
+     | Horizontal rule (v0.8.0)
+     |============================================================= */
+
+    private function writeHorizontalRule(HorizontalRule $rule): void
+    {
+        $contentWidth = $this->engine->getContentWidth();
+        $width        = $rule->resolveWidth($contentWidth);
+        $thickness    = $rule->getThickness();
+
+        // We want the rule to break to a new page if there isn't enough
+        // room for it plus its bottom margin.
+        $totalNeeded = $rule->getMarginTop() + $thickness + $rule->getMarginBottom();
+        if ($this->engine->needsNewPage($totalNeeded)) {
+            $this->engine->newPage();
+            $this->lastBlockLineHeight = 0.0;
+        }
+
+        if ($rule->getMarginTop() > 0) {
+            $this->engine->moveCursorY(-$rule->getMarginTop());
+        }
+
+        // Horizontal placement inside the content area (40pt left margin
+        // + page padding already baked in via setPageGeometry).
+        $contentLeftX = 40.0;
+        $x = match ($rule->getAlignment()) {
+            Alignment::CENTER => $contentLeftX + max(0.0, ($contentWidth - $width) / 2.0),
+            Alignment::RIGHT  => $contentLeftX + max(0.0, $contentWidth - $width),
+            default           => $contentLeftX,
+        };
+
+        $cursorY  = $this->engine->getCursorY();
+        $bottomY  = $cursorY - ($thickness / 2.0);
+
+        [$rr, $gg, $bb] = $this->hexToRgb($rule->getColor());
+
+        // We can't easily call drawHorizontalLine() here (it uses
+        // top-left coordinates) because the renderer cursor is in
+        // PDF-native bottom-up. Drop down to drawLine() which expects
+        // the same convention as cursorY.
+        $this->engine->drawColoredLine($x, $bottomY, $x + $width, $bottomY, $thickness, $rr, $gg, $bb);
+
+        $this->engine->moveCursorY(-($thickness + $rule->getMarginBottom()));
+
+        // A horizontal rule resets the trailing line metric so the next
+        // paragraph doesn't think it should reserve ascent against the
+        // (non-existent) "previous baseline".
+        $this->lastBlockLineHeight = 0.0;
+    }
+
+    /**
+     * Hex `#RRGGBB` (or `#RGB`) → 0..1 RGB triplet.
+     */
+    private function hexToRgb(string $hex): array
+    {
+        $hex = ltrim($hex, '#');
+        if (strlen($hex) === 3) {
+            $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+        }
+        if (strlen($hex) !== 6) {
+            return [0.6, 0.6, 0.6]; // sensible grey fallback
+        }
+        return [
+            hexdec(substr($hex, 0, 2)) / 255.0,
+            hexdec(substr($hex, 2, 2)) / 255.0,
+            hexdec(substr($hex, 4, 2)) / 255.0,
+        ];
     }
 
     /* =============================================================

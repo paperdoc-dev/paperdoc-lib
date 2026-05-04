@@ -12,9 +12,11 @@ use Paperdoc\Document\Table;
 use Paperdoc\Document\Image;
 use Paperdoc\Document\PageBreak;
 use Paperdoc\Document\TextZone;
+use Paperdoc\Document\HorizontalRule;
 use Paperdoc\Document\Style\PageSetup;
+use Paperdoc\Document\Style\RunningElement;
 use Paperdoc\Document\Style\TextStyle;
-use Paperdoc\Enum\PageSize;
+use Paperdoc\Enum\{PageSize, VerticalAlignment};
 
 class SectionTest extends TestCase
 {
@@ -371,5 +373,140 @@ class SectionTest extends TestCase
 
         $this->assertSame(0.0, $zone->getX());
         $this->assertSame(0.0, $zone->getY());
+    }
+
+    /* -------------------------------------------------------------
+     | Per-section header / footer override — v0.8.0 (A3)
+     |------------------------------------------------------------- */
+
+    public function test_resolve_header_falls_back_to_document_when_section_has_none(): void
+    {
+        $section = new Section();
+        $docHeader = RunningElement::make('Doc');
+
+        $this->assertSame($docHeader, $section->resolveHeader($docHeader));
+    }
+
+    public function test_set_header_overrides_document_header(): void
+    {
+        $section   = new Section();
+        $docHeader = RunningElement::make('Doc');
+        $sectionHeader = RunningElement::make('Section override');
+
+        $section->setHeader($sectionHeader);
+
+        $this->assertSame($sectionHeader, $section->resolveHeader($docHeader));
+    }
+
+    public function test_hide_header_returns_null_even_when_document_has_one(): void
+    {
+        $section = new Section();
+        $section->hideHeader();
+
+        $this->assertNull($section->resolveHeader(RunningElement::make('Doc')));
+        $this->assertTrue($section->isHeaderHidden());
+    }
+
+    public function test_set_header_after_hide_unhides(): void
+    {
+        $section = new Section();
+        $section->hideHeader();
+        $section->setHeader(RunningElement::make('back'));
+
+        $this->assertNotNull($section->resolveHeader(null));
+        $this->assertFalse($section->isHeaderHidden());
+    }
+
+    public function test_hide_footer_independent_from_header(): void
+    {
+        $section = new Section();
+        $docHeader = RunningElement::make('h');
+        $docFooter = RunningElement::make('f');
+
+        $section->hideFooter();
+
+        $this->assertSame($docHeader, $section->resolveHeader($docHeader));
+        $this->assertNull($section->resolveFooter($docFooter));
+    }
+
+    /* -------------------------------------------------------------
+     | Vertical alignment — v0.8.0 (A4)
+     |------------------------------------------------------------- */
+
+    public function test_default_vertical_alignment_is_top(): void
+    {
+        $section = new Section();
+
+        $this->assertSame(VerticalAlignment::TOP, $section->getVerticalAlignment());
+    }
+
+    public function test_set_vertical_alignment_is_fluent_and_serialises(): void
+    {
+        $section = new Section('center-page');
+        $section->setVerticalAlignment(VerticalAlignment::CENTER);
+
+        $this->assertSame(VerticalAlignment::CENTER, $section->getVerticalAlignment());
+
+        $json = json_decode(json_encode($section), true);
+        $this->assertSame('center', $json['verticalAlignment']);
+    }
+
+    public function test_top_vertical_alignment_is_omitted_from_json(): void
+    {
+        $section = new Section();
+        $section->setVerticalAlignment(VerticalAlignment::TOP);
+
+        $json = json_decode(json_encode($section), true);
+
+        $this->assertArrayNotHasKey('verticalAlignment', $json);
+    }
+
+    /* -------------------------------------------------------------
+     | Per-side padding shortcuts — v0.8.0 (A4)
+     |------------------------------------------------------------- */
+
+    public function test_set_page_padding_top_propagates(): void
+    {
+        $section = new Section();
+
+        $section->setPagePaddingTop(120.0);
+
+        $this->assertSame(120.0, $section->getPageSetup()->getPaddingTop());
+    }
+
+    public function test_set_page_padding_per_side_independent(): void
+    {
+        $section = new Section();
+
+        $section->setPagePaddingTop(40)
+                ->setPagePaddingRight(30)
+                ->setPagePaddingBottom(20)
+                ->setPagePaddingLeft(10);
+
+        $setup = $section->getPageSetup();
+        $this->assertSame(40.0, $setup->getPaddingTop());
+        $this->assertSame(30.0, $setup->getPaddingRight());
+        $this->assertSame(20.0, $setup->getPaddingBottom());
+        $this->assertSame(10.0, $setup->getPaddingLeft());
+    }
+
+    /* -------------------------------------------------------------
+     | HorizontalRule shortcut — v0.8.0 (B5)
+     |------------------------------------------------------------- */
+
+    public function test_add_rule_appends_horizontal_rule(): void
+    {
+        $section = new Section();
+
+        $rule = $section->addRule()
+            ->setWidth('50%')
+            ->setThickness(1.5)
+            ->setColor('#aabbcc');
+
+        $this->assertInstanceOf(HorizontalRule::class, $rule);
+        $this->assertSame([$rule], $section->getElements());
+        $this->assertSame('50%', $rule->getWidth());
+        $this->assertSame(1.5, $rule->getThickness());
+        $this->assertSame('#aabbcc', $rule->getColor());
     }
 }

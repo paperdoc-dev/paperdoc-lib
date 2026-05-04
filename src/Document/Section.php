@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Paperdoc\Document;
 
 use Paperdoc\Contracts\DocumentElementInterface;
-use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, TextStyle};
+use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, RunningElement, TextStyle};
 use Paperdoc\Document\Link\TextLink;
-use Paperdoc\Enum\PageSize;
+use Paperdoc\Enum\{PageSize, VerticalAlignment};
 
 class Section implements \JsonSerializable
 {
@@ -18,6 +18,35 @@ class Section implements \JsonSerializable
     private array $metadata = [];
 
     private ?PageSetup $pageSetup = null;
+
+    /**
+     * Per-section running elements (since v0.8.0). When `null`, the
+     * section inherits the document's `getHeader()`/`getFooter()` if
+     * any. Set explicitly via {@see setHeader()}/{@see setFooter()},
+     * or call {@see hideHeader()}/{@see hideFooter()} to suppress
+     * the document's running element on this section only — useful
+     * for cover pages or full-bleed image pages where a footer would
+     * either disappear under the artwork or need a different colour
+     * to stay legible.
+     */
+    private ?RunningElement $header = null;
+    private ?RunningElement $footer = null;
+    private bool $headerHidden = false;
+    private bool $footerHidden = false;
+
+    /**
+     * Vertical anchoring of the section's content within the
+     * available page area (since v0.8.0). Default
+     * {@see VerticalAlignment::TOP} mirrors previous behaviour.
+     * {@see VerticalAlignment::CENTER} and {@see VerticalAlignment::BOTTOM}
+     * are useful for chapter openers, colophons or single-paragraph
+     * sections that should be visually balanced on the page.
+     *
+     * NOTE: vertical alignment is currently honoured by the PDF
+     * renderer; the HTML renderer applies it via flexbox on the
+     * `.paperdoc-page` section.
+     */
+    private VerticalAlignment $verticalAlignment = VerticalAlignment::TOP;
 
     public function __construct(private string $name = '') {}
 
@@ -241,6 +270,39 @@ class Section implements \JsonSerializable
         return $this;
     }
 
+    /**
+     * Per-side padding shortcuts (since v0.8.0). Useful when you want
+     * to push a frontispiece or a chapter opener towards the middle
+     * of the page without touching the other three sides.
+     */
+    public function setPagePaddingTop(float $v): static
+    {
+        $this->ensurePageSetup()->setPaddingTop($v);
+
+        return $this;
+    }
+
+    public function setPagePaddingRight(float $v): static
+    {
+        $this->ensurePageSetup()->setPaddingRight($v);
+
+        return $this;
+    }
+
+    public function setPagePaddingBottom(float $v): static
+    {
+        $this->ensurePageSetup()->setPaddingBottom($v);
+
+        return $this;
+    }
+
+    public function setPagePaddingLeft(float $v): static
+    {
+        $this->ensurePageSetup()->setPaddingLeft($v);
+
+        return $this;
+    }
+
     public function setPageBackgroundImage(?Image $image): static
     {
         $this->ensurePageSetup()->setBackgroundImage($image);
@@ -256,6 +318,102 @@ class Section implements \JsonSerializable
     }
 
     /* -------------------------------------------------------------
+     | Per-section running elements (header / footer) — v0.8.0
+     |------------------------------------------------------------- */
+
+    /**
+     * Sets a section-specific header that overrides the document's
+     * header on this section's pages. Pass `null` to clear the
+     * override (and resume falling back to the document's header).
+     * To draw NO header at all on this section, use {@see hideHeader()}.
+     */
+    public function setHeader(?RunningElement $header): static
+    {
+        $this->header = $header;
+        $this->headerHidden = false;
+
+        return $this;
+    }
+
+    public function setFooter(?RunningElement $footer): static
+    {
+        $this->footer = $footer;
+        $this->footerHidden = false;
+
+        return $this;
+    }
+
+    /**
+     * Suppresses the document-level header on this section only.
+     * Stronger than `setHeader(null)` — null-resets fall back to the
+     * document, hideHeader() forces no header even if the document
+     * has one. Common on cover pages or full-bleed image pages.
+     */
+    public function hideHeader(): static
+    {
+        $this->header = null;
+        $this->headerHidden = true;
+
+        return $this;
+    }
+
+    public function hideFooter(): static
+    {
+        $this->footer = null;
+        $this->footerHidden = true;
+
+        return $this;
+    }
+
+    public function getHeader(): ?RunningElement { return $this->header; }
+    public function getFooter(): ?RunningElement { return $this->footer; }
+    public function isHeaderHidden(): bool       { return $this->headerHidden; }
+    public function isFooterHidden(): bool       { return $this->footerHidden; }
+
+    /**
+     * Resolves which header/footer (if any) should be rendered on
+     * this section, taking into account the document-level fallback
+     * and the per-section override / hide flags.
+     *
+     *  - hidden flag set → returns null (no header/footer).
+     *  - section override set → returns the section's element.
+     *  - otherwise          → returns the document's element (or null).
+     */
+    public function resolveHeader(?RunningElement $documentHeader): ?RunningElement
+    {
+        if ($this->headerHidden) {
+            return null;
+        }
+
+        return $this->header ?? $documentHeader;
+    }
+
+    public function resolveFooter(?RunningElement $documentFooter): ?RunningElement
+    {
+        if ($this->footerHidden) {
+            return null;
+        }
+
+        return $this->footer ?? $documentFooter;
+    }
+
+    /* -------------------------------------------------------------
+     | Vertical alignment — v0.8.0
+     |------------------------------------------------------------- */
+
+    public function setVerticalAlignment(VerticalAlignment $alignment): static
+    {
+        $this->verticalAlignment = $alignment;
+
+        return $this;
+    }
+
+    public function getVerticalAlignment(): VerticalAlignment
+    {
+        return $this->verticalAlignment;
+    }
+
+    /* -------------------------------------------------------------
      | Shortcut : TextZone
      |------------------------------------------------------------- */
 
@@ -265,6 +423,18 @@ class Section implements \JsonSerializable
         $this->addElement($zone);
 
         return $zone;
+    }
+
+    /* -------------------------------------------------------------
+     | Shortcut : HorizontalRule (v0.8.0)
+     |------------------------------------------------------------- */
+
+    public function addRule(): HorizontalRule
+    {
+        $rule = new HorizontalRule();
+        $this->addElement($rule);
+
+        return $rule;
     }
 
     /* -------------------------------------------------------------
@@ -284,6 +454,23 @@ class Section implements \JsonSerializable
 
         if ($this->pageSetup !== null) {
             $result['pageSetup'] = $this->pageSetup;
+        }
+
+        if ($this->header !== null) {
+            $result['header'] = $this->header;
+        }
+        if ($this->footer !== null) {
+            $result['footer'] = $this->footer;
+        }
+        if ($this->headerHidden) {
+            $result['headerHidden'] = true;
+        }
+        if ($this->footerHidden) {
+            $result['footerHidden'] = true;
+        }
+
+        if ($this->verticalAlignment !== VerticalAlignment::TOP) {
+            $result['verticalAlignment'] = $this->verticalAlignment->value;
         }
 
         return $result;

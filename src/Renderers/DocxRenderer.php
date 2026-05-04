@@ -11,6 +11,7 @@ use Paperdoc\Document\{
     CodeBlock,
     Document,
     Heading,
+    HorizontalRule,
     Image,
     ListBlock,
     ListItem,
@@ -173,17 +174,56 @@ class DocxRenderer extends AbstractRenderer
     private function renderBlock(DocumentElementInterface $element, int $indentTwips = 0): string
     {
         return match (true) {
-            $element instanceof Heading    => $this->renderHeading($element, $indentTwips),
-            $element instanceof Paragraph  => $this->renderParagraph($element, $indentTwips),
-            $element instanceof ListBlock  => $this->renderList($element, 0, $indentTwips),
-            $element instanceof Blockquote => $this->renderBlockquote($element, $indentTwips),
-            $element instanceof CodeBlock  => $this->renderCodeBlock($element, $indentTwips),
-            $element instanceof Bookmark   => $this->renderBookmark($element),
-            $element instanceof Table      => $this->renderTable($element),
-            $element instanceof Image      => $this->renderImageBlock($element),
-            $element instanceof PageBreak  => '<w:p><w:r><w:br w:type="page"/></w:r></w:p>',
-            default                        => '',
+            $element instanceof Heading        => $this->renderHeading($element, $indentTwips),
+            $element instanceof Paragraph      => $this->renderParagraph($element, $indentTwips),
+            $element instanceof ListBlock      => $this->renderList($element, 0, $indentTwips),
+            $element instanceof Blockquote     => $this->renderBlockquote($element, $indentTwips),
+            $element instanceof CodeBlock     => $this->renderCodeBlock($element, $indentTwips),
+            $element instanceof Bookmark       => $this->renderBookmark($element),
+            $element instanceof Table          => $this->renderTable($element),
+            $element instanceof Image          => $this->renderImageBlock($element),
+            $element instanceof HorizontalRule => $this->renderHorizontalRule($element),
+            $element instanceof PageBreak      => '<w:p><w:r><w:br w:type="page"/></w:r></w:p>',
+            default                            => '',
         };
+    }
+
+    /**
+     * Renders a {@see HorizontalRule} as the canonical Word
+     * "horizontal line": an empty paragraph carrying a bottom border
+     * with the requested colour and thickness. Word measures border
+     * thickness in eighths-of-a-point ("sz" attribute), so we convert.
+     */
+    private function renderHorizontalRule(HorizontalRule $rule): string
+    {
+        $color = ltrim($rule->getColor(), '#');
+        if (strlen($color) === 3) {
+            $color = $color[0] . $color[0] . $color[1] . $color[1] . $color[2] . $color[2];
+        }
+        if (strlen($color) !== 6) {
+            $color = '999999';
+        }
+
+        // Word's "sz" border attribute is in eighths-of-a-point. We
+        // clamp to the practical Word range [4..96] so the rule is
+        // always visibly drawn.
+        $sz = (int) round($rule->getThickness() * 8.0);
+        $sz = max(4, min(96, $sz));
+
+        // marginTop/Bottom translated to Word "spacing" (in twips).
+        $before = (int) round($rule->getMarginTop() * 20.0);
+        $after  = (int) round($rule->getMarginBottom() * 20.0);
+
+        return sprintf(
+            '<w:p><w:pPr>'
+            . '<w:spacing w:before="%d" w:after="%d"/>'
+            . '<w:pBdr><w:bottom w:val="single" w:sz="%d" w:space="1" w:color="%s"/></w:pBdr>'
+            . '</w:pPr></w:p>',
+            $before,
+            $after,
+            $sz,
+            $color,
+        );
     }
 
     /* =============================================================

@@ -6,9 +6,9 @@ namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, Image, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\{Document, HorizontalRule, Image, Paragraph, Section, Table, TextRun};
 use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, RunningElement, TextStyle};
-use Paperdoc\Enum\{Alignment, PageSize};
+use Paperdoc\Enum\{Alignment, PageSize, VerticalAlignment};
 use Paperdoc\Renderers\PdfRenderer;
 
 class PdfRendererTest extends TestCase
@@ -427,5 +427,182 @@ class PdfRendererTest extends TestCase
         rmdir($this->tmpDir . '/deep/nested/dir');
         rmdir($this->tmpDir . '/deep/nested');
         rmdir($this->tmpDir . '/deep');
+    }
+
+    /* =============================================================
+     | v0.8.0 — A3 / A4 / B3 / B4 / B5 regressions
+     |============================================================= */
+
+    /**
+     * A3 — A section that calls hideFooter() must NOT emit the
+     * document-level footer text on its page, while sections that
+     * don't override still render it.
+     */
+    public function test_hide_footer_suppresses_document_footer_on_section(): void
+    {
+        $doc = Document::make('pdf');
+        $doc->setFooter(RunningElement::make('PAGE-FOOTER-{page}'));
+
+        // Cover section — footer is suppressed.
+        $cover = Section::make('cover')->hideFooter();
+        $cover->addText('Cover');
+        $doc->addSection($cover);
+
+        // Body section — footer inherits from document.
+        $body = Section::make('body');
+        $body->addText('Body');
+        $doc->addSection($body);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        // Page 1 should NOT contain its footer literal; page 2 should.
+        $this->assertStringNotContainsString('(PAGE-FOOTER-1)', $content);
+        $this->assertStringContainsString('(PAGE-FOOTER-2)', $content);
+    }
+
+    /**
+     * A3 — Section::setFooter() overrides the document-level footer
+     * for that section's page.
+     */
+    public function test_section_footer_override_replaces_document_footer(): void
+    {
+        $doc = Document::make('pdf');
+        $doc->setFooter(RunningElement::make('DOC-{page}'));
+
+        $section = Section::make('s')->setFooter(RunningElement::make('SECTION-{page}'));
+        $section->addText('hi');
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        $this->assertStringContainsString('(SECTION-1)', $content);
+        $this->assertStringNotContainsString('(DOC-1)', $content);
+    }
+
+    /**
+     * A4 — A section with verticalAlignment=CENTER triggers a
+     * `q ... 1 0 0 1 0 dy cm ... Q` translation block in the page
+     * stream so the (small) content is shifted down towards the page
+     * centre. We don't measure the exact dy here (that depends on
+     * font metrics), only that the wrapping was inserted.
+     */
+    public function test_vertical_alignment_center_emits_cm_translation(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s')
+            ->setPageSetup(PageSetup::fromSize(PageSize::A4))
+            ->setVerticalAlignment(VerticalAlignment::CENTER);
+        $section->addText('Just one line of text on a big page.');
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        $this->assertMatchesRegularExpression(
+            '/q\s+1 0 0 1 0 -\d+\.\d+ cm/',
+            $content,
+            'expected a `q 1 0 0 1 0 -dy cm` translation wrapping the section content'
+        );
+    }
+
+    public function test_vertical_alignment_top_emits_no_cm_translation(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s')
+            ->setPageSetup(PageSetup::fromSize(PageSize::A4));
+        $section->addText('hi');
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        $this->assertDoesNotMatchRegularExpression(
+            '/q\s+1 0 0 1 0 -\d+\.\d+ cm/',
+            $content,
+            'top-aligned sections must not emit any vertical translation'
+        );
+    }
+
+    /**
+     * B3 — ParagraphStyle::setFirstLineIndent shifts the first line
+     * to the right by the requested number of points. We capture the
+     * `Td` operator of the first text line and assert its X
+     * coordinate differs by exactly the indent amount between the
+     * two variants. This is more robust than counting wraps (which
+     * may or may not change depending on word boundaries).
+     */
+    public function test_first_line_indent_shifts_first_line_x(): void
+    {
+        $build = function (float $indent) {
+            $doc = Document::make('pdf');
+            $section = Section::make('s')->setPageSetup(PageSetup::fromSize(PageSize::A5));
+            $section->addElement(
+                (new Paragraph())
+                    ->setStyle(ParagraphStyle::make()->setFirstLineIndent($indent))
+                    ->addRun(new TextRun('First-line indent test.'))
+            );
+            $doc->addSection($section);
+
+            $content = (new PdfRenderer())->render($doc);
+
+            // Pull out the first `<x> <y> Td` after a BT.
+            preg_match('/BT\s+[^Z]*?(\d+\.\d+) (\d+\.\d+) Td/', $content, $m);
+
+            return $m[1] ?? null;
+        };
+
+        $xWithout = (float) $build(0.0);
+        $xWith    = (float) $build(36.0);
+
+        $this->assertGreaterThan(0.0, $xWithout);
+        $this->assertEqualsWithDelta(36.0, $xWith - $xWithout, 0.05,
+            'a 36pt firstLineIndent should move the first line\'s X by 36pt');
+    }
+
+    /**
+     * B4 — TextStyle::setLetterSpacing emits a `Tc` operator in the
+     * page stream.
+     */
+    public function test_letter_spacing_emits_tc_operator(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s');
+        $section->addElement(
+            (new Paragraph())->addRun(new TextRun(
+                'WIDE',
+                TextStyle::make()->setLetterSpacing(2.0)
+            ))
+        );
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        $this->assertMatchesRegularExpression('/2\.000 Tc/', $content,
+            'letter-spacing of 2pt should emit a `2.000 Tc` operator');
+        $this->assertStringContainsString('0 Tc', $content,
+            'character spacing should be reset to 0 after the BT/ET block');
+    }
+
+    /**
+     * B5 — HorizontalRule renders as a stroked PDF line.
+     */
+    public function test_horizontal_rule_emits_stroked_line(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s');
+        $section->addText('Above');
+        $section->addRule()->setWidth(200.0)->setColor('#FF0000')->setThickness(1.5);
+        $section->addText('Below');
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        // 1.50 w → line width op
+        $this->assertMatchesRegularExpression('/1\.50 w/', $content,
+            'rule thickness should be set via `w` operator');
+        // 1.00 0.00 0.00 RG → red stroke colour
+        $this->assertStringContainsString('1.00 0.00 0.00 RG', $content,
+            'rule colour should be applied via `RG`');
+        // m / l / S → moveto + lineto + stroke
+        $this->assertMatchesRegularExpression('/[\d\.]+ [\d\.]+ m [\d\.]+ [\d\.]+ l S/', $content,
+            'rule should be drawn with moveto+lineto+stroke');
     }
 }

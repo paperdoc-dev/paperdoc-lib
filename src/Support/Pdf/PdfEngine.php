@@ -398,6 +398,8 @@ class PdfEngine
         float $lineSpacing = 1.15,
         float $x = 0,
         string $align = 'left',
+        float $letterSpacing = 0.0,
+        float $firstLineIndent = 0.0,
     ): float {
         if ($maxWidth <= 0) {
             $maxWidth = $this->getContentWidth();
@@ -413,7 +415,18 @@ class PdfEngine
         // précédente).
         $startX = $this->cursorX;
 
-        $lines       = $this->wrapText($text, $fontName, $fontSize, $maxWidth);
+        // First-line indent: the wrapping engine sees a narrower budget
+        // for the first line; the emit phase shifts the first line's
+        // X by the same amount. Negative indent (hanging) extends the
+        // first line to the LEFT — we don't currently widen the wrap
+        // budget for that case (a paragraph with hanging indent is
+        // typically used for short list-item style text where wrapping
+        // matters less).
+        $firstLineMaxWidth = ($firstLineIndent > 0.0)
+            ? max(0.0, $maxWidth - $firstLineIndent)
+            : $maxWidth;
+
+        $lines       = $this->wrapText($text, $fontName, $fontSize, $maxWidth, $letterSpacing, $firstLineMaxWidth);
         $lineHeight  = $fontSize * $lineSpacing;
         $totalHeight = 0;
         $totalLines  = count($lines);
@@ -426,19 +439,25 @@ class PdfEngine
             }
 
             $isLastLine = ($i + 1 >= $totalLines);
+            $isFirstLine = ($i === 0);
+
+            $lineX     = $isFirstLine ? $startX + $firstLineIndent : $startX;
+            $lineWidth = $isFirstLine ? $firstLineMaxWidth          : $maxWidth;
+
             $this->emitTextLine(
-                line:       $line,
-                fontRef:    $fontRef,
-                fontName:   $fontName,
-                fontSize:   $fontSize,
-                x:          $startX,
-                baselineY:  $this->cursorY,
-                maxWidth:   $maxWidth,
-                r:          $r,
-                g:          $g,
-                b:          $b,
-                align:      $align,
-                isLastLine: $isLastLine,
+                line:          $line,
+                fontRef:       $fontRef,
+                fontName:      $fontName,
+                fontSize:      $fontSize,
+                x:             $lineX,
+                baselineY:     $this->cursorY,
+                maxWidth:      $lineWidth,
+                r:             $r,
+                g:             $g,
+                b:             $b,
+                align:         $align,
+                isLastLine:    $isLastLine,
+                letterSpacing: $letterSpacing,
             );
 
             $this->cursorY -= $lineHeight;
@@ -458,6 +477,91 @@ class PdfEngine
     {
         $this->currentPageContent .= sprintf("%.2f w\n", $width);
         $this->currentPageContent .= sprintf("%.2f %.2f m %.2f %.2f l S\n", $x1, $y1, $x2, $y2);
+    }
+
+    /**
+     * Like {@see drawLine()} but emits a stroke-colour change before
+     * drawing and resets it to black afterwards. Useful for a single
+     * coloured rule without leaking the colour into subsequent ops.
+     */
+    public function drawColoredLine(
+        float $x1,
+        float $y1,
+        float $x2,
+        float $y2,
+        float $width,
+        float $r,
+        float $g,
+        float $b,
+    ): void {
+        $this->currentPageContent .= sprintf("%.2f %.2f %.2f RG\n", $r, $g, $b);
+        $this->drawLine($x1, $y1, $x2, $y2, $width);
+        $this->currentPageContent .= "0 0 0 RG\n";
+    }
+
+    /**
+     * Draws a single coloured horizontal stroke. The y coordinate is
+     * interpreted in user/CSS convention (origin at the top-left,
+     * grows downwards) for symmetry with `drawImageAt` and
+     * `writeWrappedTextAt`.
+     */
+    public function drawHorizontalLine(
+        float $x,
+        float $yTopLeft,
+        float $width,
+        float $thickness,
+        string $color,
+    ): void {
+        [$r, $g, $bcol] = $this->hexToRgb($color);
+        $bottomY = $this->pageHeight - $yTopLeft;
+
+        $this->currentPageContent .= sprintf("%.2f %.2f %.2f RG\n", $r, $g, $bcol);
+        $this->drawLine($x, $bottomY, $x + $width, $bottomY, $thickness);
+        // Reset stroke colour to black so subsequent draws don't inherit it.
+        $this->currentPageContent .= "0 0 0 RG\n";
+    }
+
+    /* -------------------------------------------------------------
+     | Page-content windowing — used by Section vertical alignment
+     | (v0.8.0) and any future "wrap an arbitrary slice in a CTM
+     | transform" use case.
+     |------------------------------------------------------------- */
+
+    /**
+     * Returns the current byte length of the in-flight page content
+     * stream. Use it to mark a position before rendering a span of
+     * elements, then later call {@see wrapPageContentSince()} with
+     * that mark to wrap the rendered span in `q ... Q` graphics
+     * state and an optional CTM (for translation/rotation).
+     */
+    public function getPageContentLength(): int
+    {
+        return strlen($this->currentPageContent);
+    }
+
+    /**
+     * Wraps the page content emitted since {@see getPageContentLength()}
+     * was sampled, by inserting `q\n<prefix>` at the offset and
+     * appending `<suffix>\nQ\n` at the tail. Used by the renderer to
+     * apply a translation matrix (`1 0 0 1 dx dy cm`) to a section's
+     * body when it should be vertically centred or bottom-anchored.
+     *
+     * The graphics-state push/pop is mandatory: PDF content streams
+     * accumulate transforms, so without `q ... Q` the cm would leak
+     * into all subsequent content (header, footer, page background of
+     * the next page, …).
+     */
+    public function wrapPageContentSince(int $offset, string $prefix = '', string $suffix = ''): void
+    {
+        $head = substr($this->currentPageContent, 0, $offset);
+        $tail = substr($this->currentPageContent, $offset);
+
+        $this->currentPageContent = $head
+            . "q\n"
+            . ($prefix !== '' ? rtrim($prefix, "\n") . "\n" : '')
+            . $tail
+            . ($suffix !== '' ? rtrim($suffix, "\n") . "\n" : '')
+            . "Q\n";
     }
 
     public function drawRect(
@@ -537,13 +641,20 @@ class PdfEngine
      *      ou si l'octet n'a pas de largeur (cas .notdef), on retombe
      *      sur la largeur moyenne par police (CHAR_WIDTHS).
      */
-    public function measureTextWidth(string $text, string $fontName, float $fontSize): float
-    {
+    public function measureTextWidth(
+        string $text,
+        string $fontName,
+        float $fontSize,
+        float $letterSpacing = 0.0,
+    ): float {
         $fontTable = Core14Widths::FONTS[$fontName] ?? null;
 
         if ($fontTable === null) {
             $avgWidth = self::CHAR_WIDTHS[$fontName] ?? 550;
-            return mb_strlen($text) * $avgWidth * $fontSize / 1000;
+            $glyphCount = mb_strlen($text);
+            $base = $glyphCount * $avgWidth * $fontSize / 1000;
+
+            return $base + max(0, $glyphCount - 1) * $letterSpacing;
         }
 
         $widths   = $fontTable['widths'];
@@ -561,7 +672,12 @@ class PdfEngine
             $units += $widths[$code] ?? $default;
         }
 
-        return $units * $fontSize / 1000.0;
+        $base = $units * $fontSize / 1000.0;
+
+        // Tc is applied between every pair of adjacent glyphs, hence
+        // (len - 1) extra advances. Negative letterSpacing shrinks
+        // the line.
+        return $base + max(0, $len - 1) * $letterSpacing;
     }
 
     /**
@@ -634,11 +750,17 @@ class PdfEngine
         ?float $maxHeight = null,
         bool $ellipsis = false,
         string $align = 'left',
+        float $letterSpacing = 0.0,
+        float $firstLineIndent = 0.0,
     ): array {
         $fontRef    = $this->ensureFont($fontName);
         $lineHeight = $fontSize * $lineSpacing;
 
-        $lines      = $this->wrapText($text, $fontName, $fontSize, $maxWidth);
+        $firstLineMaxWidth = ($firstLineIndent > 0.0)
+            ? max(0.0, $maxWidth - $firstLineIndent)
+            : $maxWidth;
+
+        $lines      = $this->wrapText($text, $fontName, $fontSize, $maxWidth, $letterSpacing, $firstLineMaxWidth);
         $totalLines = count($lines);
 
         $consumed   = 0.0;
@@ -665,19 +787,25 @@ class PdfEngine
             $baselineY = $this->pageHeight - $yTopLeft - $topOffset - $fontSize;
 
             $isLastLine = ($i + 1 >= $totalLines) || $isLastDrawable;
+            $isFirstLine = ($i === 0);
+
+            $lineX     = $isFirstLine ? $x + $firstLineIndent : $x;
+            $lineWidth = $isFirstLine ? $firstLineMaxWidth     : $maxWidth;
+
             $this->emitTextLine(
-                line:       $line,
-                fontRef:    $fontRef,
-                fontName:   $fontName,
-                fontSize:   $fontSize,
-                x:          $x,
-                baselineY:  $baselineY,
-                maxWidth:   $maxWidth,
-                r:          $r,
-                g:          $g,
-                b:          $b,
-                align:      $align,
-                isLastLine: $isLastLine,
+                line:          $line,
+                fontRef:       $fontRef,
+                fontName:      $fontName,
+                fontSize:      $fontSize,
+                x:             $lineX,
+                baselineY:     $baselineY,
+                maxWidth:      $lineWidth,
+                r:             $r,
+                g:             $g,
+                b:             $b,
+                align:         $align,
+                isLastLine:    $isLastLine,
+                letterSpacing: $letterSpacing,
             );
 
             $consumed = $topOffset + $lineHeight;
@@ -736,10 +864,15 @@ class PdfEngine
         float $b,
         string $align,
         bool $isLastLine,
+        float $letterSpacing = 0.0,
     ): void {
-        $lineWidth = $this->measureTextWidth($line, $fontName, $fontSize);
+        $lineWidth = $this->measureTextWidth($line, $fontName, $fontSize, $letterSpacing);
         $drawX     = $x;
         $extraTw   = 0.0;
+        // The Tc operator we'll actually emit is the SUM of the
+        // user-requested letterSpacing (from TextStyle) and any extra
+        // character-spacing that justification might add. We emit one
+        // Tc, then reset to 0 at the end of the BT/ET block.
         $extraTc   = 0.0;
 
         switch ($align) {
@@ -766,14 +899,16 @@ class PdfEngine
                 break;
         }
 
+        $totalTc = $extraTc + $letterSpacing;
+
         $this->currentPageContent .= "BT\n";
         $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
         $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
         if ($extraTw > 0.0) {
             $this->currentPageContent .= sprintf("%.3f Tw\n", $extraTw);
         }
-        if ($extraTc > 0.0) {
-            $this->currentPageContent .= sprintf("%.3f Tc\n", $extraTc);
+        if (abs($totalTc) > 1e-4) {
+            $this->currentPageContent .= sprintf("%.3f Tc\n", $totalTc);
         }
         $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $drawX, $baselineY);
         $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
@@ -781,7 +916,7 @@ class PdfEngine
             // Always reset Tw so subsequent text isn't accidentally justified.
             $this->currentPageContent .= "0 Tw\n";
         }
-        if ($extraTc > 0.0) {
+        if (abs($totalTc) > 1e-4) {
             $this->currentPageContent .= "0 Tc\n";
         }
         $this->currentPageContent .= "ET\n";
@@ -899,17 +1034,29 @@ class PdfEngine
     /**
      * @return string[]
      */
-    public function wrapText(string $text, string $fontName, float $fontSize, float $maxWidth): array
-    {
+    public function wrapText(
+        string $text,
+        string $fontName,
+        float $fontSize,
+        float $maxWidth,
+        float $letterSpacing = 0.0,
+        ?float $firstLineMaxWidth = null,
+    ): array {
         $words = explode(' ', $text);
         $lines = [];
         $currentLine = '';
 
         foreach ($words as $word) {
-            $testLine = $currentLine === '' ? $word : $currentLine . ' ' . $word;
-            $testWidth = $this->measureTextWidth($testLine, $fontName, $fontSize);
+            $testLine  = $currentLine === '' ? $word : $currentLine . ' ' . $word;
+            $testWidth = $this->measureTextWidth($testLine, $fontName, $fontSize, $letterSpacing);
 
-            if ($testWidth > $maxWidth && $currentLine !== '') {
+            // For the first emitted line, a possibly tighter budget applies
+            // (text-indent shrinks the first line's available width).
+            $budget = (count($lines) === 0 && $firstLineMaxWidth !== null)
+                ? $firstLineMaxWidth
+                : $maxWidth;
+
+            if ($testWidth > $budget && $currentLine !== '') {
                 $lines[] = $currentLine;
                 $currentLine = $word;
             } else {

@@ -12,6 +12,126 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.8.0] — 2026-05-05
+
+> **Layout & typography APIs (additive).** Five fully additive APIs
+> that round out the document model with the layout primitives that
+> previously had to be hacked together at the application level
+> (kludge paragraphs to push a frontispiece down, em-dashes that
+> pretend to be a horizontal rule, manually space-padded letters to
+> fake letter-spacing, …). Backwards-compatible : every existing
+> document renders byte-identically when none of the new APIs are
+> used.
+
+### Added
+
+- **A3 — Per-section running elements**. `Section::setHeader()`,
+  `Section::setFooter()`, `Section::hideHeader()`, `Section::hideFooter()`
+  let a section override (or suppress) the document-level
+  `Document::setHeader()` / `setFooter()`. Typical use: a cover page
+  or a full-bleed image page that should NOT carry the document's
+  page-number footer (it would either disappear under the artwork
+  or fight with the imagery for legibility). Resolution rule:
+  hidden flag → no header ; explicit override → section's element ;
+  otherwise → fallback to document's element. Honoured by both PDF
+  and HTML renderers.
+- **A4 — Section::setVerticalAlignment(VerticalAlignment::TOP|CENTER|BOTTOM)**.
+  Controls vertical anchoring of the section's content within the
+  page padding box. `TOP` (default) preserves previous behaviour ;
+  `CENTER` and `BOTTOM` are useful for chapter openers, colophons
+  or one-paragraph sections that should be visually balanced on
+  the page. The PDF renderer captures the section's content slice,
+  measures its height, then wraps it in a `q ... 1 0 0 1 0 dy cm
+  ... Q` translation block — native PDF, no overhead, no
+  pre-render measurement pass. The HTML renderer applies the same
+  semantics via flexbox (`justify-content: center` / `flex-end`).
+  Sections that overflow onto multiple pages safely fall back to
+  TOP alignment to avoid a stale CTM bleeding across pages.
+- **A4 — Per-side padding shortcuts on Section**. `setPagePaddingTop(float)`,
+  `setPagePaddingRight(float)`, `setPagePaddingBottom(float)`,
+  `setPagePaddingLeft(float)` for cases where a single side needs
+  tweaking (e.g. push the frontispiece title down without touching
+  left/right). The existing variadic `setPagePadding(...$values)`
+  still accepts CSS-shorthand 1-/2-/3-/4-value forms and remains
+  the recommended one-liner for the common cases.
+- **B3 — ParagraphStyle::setFirstLineIndent(float)**. Mirrors the CSS
+  `text-indent` property : only the FIRST wrapped line of the
+  paragraph starts further to the right (or left, for negative
+  values = hanging indent). The PDF wrap engine sees a tighter
+  budget for the first line so wrapping accounts for the indent
+  correctly. HTML emits `text-indent: Xpt` on the paragraph's
+  inline style. Honoured by top-level paragraphs AND paragraphs
+  inside a `TextZone`.
+- **B4 — TextStyle::setLetterSpacing(float)**. Native character
+  spacing in points. PDF emits the `Tc` (character spacing)
+  operator before drawing the run and resets it to 0 after, so
+  the advance is preserved by the PDF and copy-paste from the
+  rendered file gives back the original (un-spaced) text — a
+  property the previous app-level "insert thin spaces between
+  every glyph" workarounds did not have. HTML emits `letter-spacing:
+  Xpt` on the run's `<span>`. `measureTextWidth()` and `wrapText()`
+  now both account for letter-spacing so wrapping stays correct.
+  Combinable with letterSpacing-aware justify (Tc adds onto the
+  spacing the justifier may already inject without producing
+  double-counted advances).
+- **B5 — `HorizontalRule` block element**. New first-class block
+  element with fluent setters for `width` (absolute pt OR a
+  percentage string like `'50%'`), `thickness`, `color`,
+  `alignment` (LEFT/CENTER/RIGHT for partial-width rules) and
+  per-side margins (`marginTop`, `marginBottom`). Renderers :
+  - **PDF** : a stroked horizontal line on the current page,
+    correctly clearing the trailing-line metric so the next
+    paragraph isn't reservation-shifted against a non-existent
+    baseline.
+  - **HTML** : `<hr>` with inline CSS (`border-top:Wpt solid C ;
+    width:X ; margin:T 0 B`).
+  - **Markdown** : `---` thematic break (CommonMark).
+  - **DOCX** : the canonical Word "horizontal line" — an empty
+    paragraph carrying a `<w:pBdr><w:bottom .../></w:pBdr>` with
+    the requested colour and thickness (in eighths-of-a-point).
+
+  Convenience: `Section::addRule()` returns the new
+  `HorizontalRule` instance for fluent chaining.
+
+- **`Paperdoc\Enum\VerticalAlignment`** : `TOP` / `CENTER` / `BOTTOM`,
+  used by `Section::setVerticalAlignment()`.
+- **PdfEngine internals** :
+  - `getPageContentLength()` and `wrapPageContentSince(int $offset,
+    string $prefix, string $suffix)` for slicing arbitrary spans
+    of the in-flight content stream and wrapping them in a `q ...
+    Q` graphics-state block — currently used by section vertical
+    alignment, future-proofed for any "translate / rotate this
+    chunk" use case.
+  - `drawColoredLine()` : `drawLine()` plus stroke-colour push and
+    reset, used by `HorizontalRule`.
+  - `measureTextWidth()` and `wrapText()` accept an optional
+    `$letterSpacing` argument (in points).
+  - `writeWrappedText()` and `writeWrappedTextAt()` accept new
+    optional `$letterSpacing` and `$firstLineIndent` arguments
+    (defaults preserve previous behaviour exactly).
+
+### Changed
+
+- `PdfRenderer` no longer caches the document-level header/footer
+  in its own state ; instead it asks each `Section` to resolve
+  its effective running elements, so per-section overrides /
+  hide flags Just Work without a separate code path.
+- `HtmlRenderer::renderSection()` wraps the body content in a
+  `<div class="paperdoc-section-body">` ONLY when vertical
+  alignment is non-TOP — top-aligned sections still produce the
+  same DOM as 0.7.3 (no breaking change for downstream selectors).
+
+### Compatibility
+
+- **Backwards compatible.** Every existing document, test fixture
+  and renderer call site renders byte-identically without any of
+  the new APIs invoked.
+- All defaults preserve previous behaviour: `firstLineIndent = 0`,
+  `letterSpacing = 0`, `verticalAlignment = TOP`, no per-section
+  header/footer override, no `HorizontalRule` magically inserted.
+
+---
+
 ## [0.7.3] — 2026-05-04
 
 > **Typography quality patch** — four fixes that materially improve

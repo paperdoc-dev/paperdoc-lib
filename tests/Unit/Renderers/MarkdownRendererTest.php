@@ -6,7 +6,7 @@ namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\{Document, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Document\Link\{TextLink};
 use Paperdoc\Enum\Alignment;
@@ -212,4 +212,23 @@ class MarkdownRendererTest extends TestCase
         rmdir($this->tmpDir . '/sub');
     }
 
+    /**
+     * v0.8.0 / B5 — HorizontalRule renders as the CommonMark thematic
+     * break (`---`).
+     */
+    public function test_horizontal_rule_renders_as_thematic_break(): void
+    {
+        $doc = Document::make('markdown');
+        $section = Section::make('s');
+        $section->addText('Above');
+        $section->addRule();
+        $section->addText('Below');
+        $doc->addSection($section);
+
+        $md = (new MarkdownRenderer())->render($doc);
+
+        $this->assertStringContainsString("Above\n", $md);
+        $this->assertStringContainsString("---\n", $md);
+        $this->assertStringContainsString("Below\n", $md);
+    }
 }

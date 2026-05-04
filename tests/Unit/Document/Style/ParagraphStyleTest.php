@@ -102,4 +102,28 @@ class ParagraphStyleTest extends TestCase
         $this->assertSame(6.0, $arr['spaceAfter']);
         $this->assertSame(1.15, $arr['lineSpacing']);
     }
+
+    /* -------------------------------------------------------------
+     | First-line indent — v0.8.0 (B3)
+     |------------------------------------------------------------- */
+
+    public function test_first_line_indent_default_is_zero(): void
+    {
+        $this->assertSame(0.0, (new ParagraphStyle())->getFirstLineIndent());
+    }
+
+    public function test_set_first_line_indent_is_fluent_and_serialises(): void
+    {
+        $style = ParagraphStyle::make()->setFirstLineIndent(18.0);
+
+        $this->assertSame(18.0, $style->getFirstLineIndent());
+        $this->assertSame(18.0, $style->toArray()['firstLineIndent']);
+    }
+
+    public function test_first_line_indent_supports_negative_values(): void
+    {
+        $style = ParagraphStyle::make()->setFirstLineIndent(-12.0);
+
+        $this->assertSame(-12.0, $style->getFirstLineIndent());
+    }
 }

@@ -18,6 +18,7 @@
 - **Rich document model** — typed headings, ordered/bullet lists (nested), bookmarks, code blocks, blockquotes, images, tables, page breaks and typed document properties (author, subject, dates…)
 - **Per-page layout** *(v0.7.0+)* — per-section `PageSetup` with custom size (or any `PageSize` enum), padding, full-page **background image** (`cover` / `contain` / `auto` / `stretch` since v0.7.1) **or color** ; absolutely-positioned **`TextZone`** blocks with `clip` / `ellipsis` / `visible` overflow strategies and **per-paragraph alignment** (`left` / `center` / `right` / `justify`, *v0.7.1*) ; document-wide running **headers / footers** with `{page}` / `{pages}` / `{title}` / `{date}` / `{datetime}` placeholders
 - **Typographic quality** *(v0.7.3)* — per-glyph metrics from the **14 standard PDF fonts** (Core 14, AFM-derived) so centering, right-alignment, justification and word-wrapping are pixel-accurate ; ascent-aware vertical stacking (no more eyebrow/title overlap) ; justification combines `Tw` (word-spacing) and `Tc` (character-spacing) and falls back to flush-left when a line would produce visible "rivers"
+- **Layout & typography APIs** *(v0.8.0)* — per-section header/footer override (`Section::setHeader/setFooter/hideHeader/hideFooter`) ; `Section::setVerticalAlignment(TOP/CENTER/BOTTOM)` for chapter openers / colophons ; per-side padding shortcuts (`setPagePaddingTop/Right/Bottom/Left`) ; `ParagraphStyle::setFirstLineIndent()` (CSS `text-indent`) ; `TextStyle::setLetterSpacing()` (PDF `Tc` operator, HTML `letter-spacing`) ; new **`HorizontalRule`** block element rendered to PDF (stroked line), HTML (`<hr>`), Markdown (`---`) and DOCX (bordered paragraph)
 - **Native rendering core** — every block element renders cleanly to **DOCX**, **PDF**, **HTML** and **Markdown**: typed headings (`<h1>`/`<w:pStyle>`), nested lists (`<ul>`/`<w:numPr>`), blockquotes, code blocks (with language hint), bookmarks, embedded or on-disk images
 - **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>`, Markdown `[text](url)` and DOCX hyperlink relationships, with anchors and tooltips
 - **Batch processing** — open and process multiple files at once
@@ -361,6 +362,198 @@ library does not automatically reserve vertical space for the
 header/footer — keep that in mind when positioning a `TextZone` close
 to a page edge.
 
+### Per-section header / footer override (v0.8.0)
+
+A document-level header/footer applies uniformly to every page by
+default. Often that's not what you want — a cover page should NOT
+carry the page-number footer (it would either disappear under the
+artwork or fight with the imagery for legibility), and a colophon
+on the last page might want a different label. Since v0.8.0,
+sections can override or suppress the document-level running
+elements:
+
+```php
+use Paperdoc\Document\Style\RunningElement;
+
+// Document-level: every page gets this footer by default.
+$doc->setFooter(RunningElement::make('Page {page} / {pages}'));
+
+// Cover page: NO footer at all.
+$cover = $doc->openSection('cover')->hideFooter();
+
+// Body pages: inherit the document footer.
+$body = $doc->openSection('body');
+// (nothing to do — automatic fallback)
+
+// Colophon: per-section override.
+$colophon = $doc->openSection('colophon')
+    ->setFooter(RunningElement::make('— Fin —'));
+```
+
+Resolution rule — for every page, the renderer picks (in order) :
+
+1. If `Section::hideHeader()` / `hideFooter()` was called → no
+   header/footer is drawn.
+2. If `Section::setHeader()` / `setFooter()` was called with a
+   non-null element → that element is drawn.
+3. Otherwise → the document-level header/footer is drawn (if any).
+
+Both PDF and HTML renderers honour this resolution.
+
+### Vertical alignment of section content (v0.8.0)
+
+By default the content of a section flows from the top padding
+downwards. For pages that should breathe vertically — chapter
+openers, colophons, frontispieces, single-paragraph "blank" pages —
+you can centre or bottom-anchor the content :
+
+```php
+use Paperdoc\Enum\VerticalAlignment;
+
+$opener = $doc->openSection('chapter-1-opener')
+    ->setPageSize(PageSize::A5)
+    ->setVerticalAlignment(VerticalAlignment::CENTER);
+$opener->addText('CHAPITRE 1', TextStyle::make()->setFontSize(10)->setColor('#888'));
+$opener->addText('Le Signal sur le Balcon', TextStyle::make()->setFontSize(28)->setBold());
+
+$colophon = $doc->openSection('colophon')
+    ->setVerticalAlignment(VerticalAlignment::BOTTOM);
+$colophon->addText('© 2026 — All rights reserved.');
+```
+
+Implementation notes :
+
+- The PDF renderer captures the section's content slice, measures
+  its rendered height, then wraps it in a native PDF `q ... 1 0 0 1
+  0 dy cm ... Q` translation block — no overhead, no pre-render
+  measurement pass.
+- The HTML renderer applies the same semantics via flexbox
+  (`display:flex; justify-content:center` for `CENTER`, `flex-end`
+  for `BOTTOM`).
+- Sections that overflow onto a second page automatically fall
+  back to TOP alignment to avoid a stale CTM bleeding across
+  pages. If you need centring on a section with lots of content,
+  reduce its content first.
+
+### Per-side padding shortcuts (v0.8.0)
+
+`Section::setPagePadding(...$values)` already accepts CSS-shorthand
+1-/2-/3-/4-value forms. When only ONE side needs tweaking — typical
+for a frontispiece title that should sit ~110pt from the top — the
+new per-side shortcuts are clearer :
+
+```php
+$frontispiece = $doc->openSection('frontispiece')
+    ->setPageSize(PageSize::A5)
+    ->setPagePaddingTop(110.0)
+    ->setPagePaddingBottom(60.0);
+$frontispiece->addText('La Lumière des Autres', TextStyle::make()->setFontSize(32)->setBold());
+```
+
+Available : `setPagePaddingTop()`, `setPagePaddingRight()`,
+`setPagePaddingBottom()`, `setPagePaddingLeft()`. They all return
+`$this` for chaining.
+
+---
+
+## First-line indent and letter-spacing (v0.8.0)
+
+Two style-level additions that previously had to be hacked at the
+application layer :
+
+### Paragraph first-line indent
+
+`ParagraphStyle::setFirstLineIndent(float $points)` mirrors the CSS
+`text-indent` property : only the first line of the paragraph
+starts further to the right. Negative values produce a hanging
+indent (first line jutting OUT to the left of the block — a
+typographic device used in lists or dictionary entries).
+
+```php
+use Paperdoc\Document\Style\ParagraphStyle;
+
+$body = ParagraphStyle::make()
+    ->setLineSpacing(1.4)
+    ->setFirstLineIndent(18.0); // ~6mm — classic book body indent
+
+$paragraph->setStyle($body);
+```
+
+The PDF wrap engine sees a tighter budget for the first line so
+wrapping accounts for the indent correctly. The HTML renderer
+emits `text-indent: Xpt` on the paragraph's inline style.
+
+### Run letter-spacing
+
+`TextStyle::setLetterSpacing(float $points)` opens out a run of
+text by the requested number of points between every pair of
+adjacent glyphs. Common uses : an opened-out section heading
+(`setLetterSpacing(1.5)`), or marking an acronym in small-caps
+style. Negative values pull glyphs closer.
+
+```php
+use Paperdoc\Document\Style\TextStyle;
+
+$eyebrow = TextStyle::make()
+    ->setFontSize(10)
+    ->setBold()
+    ->setColor('#888')
+    ->setLetterSpacing(2.0); // wide tracking for the eyebrow
+
+$paragraph->addRun(new TextRun('CHAPITRE PREMIER', $eyebrow));
+```
+
+PDF emits the native `Tc` operator and resets to 0 after the run,
+so copy-paste from the rendered file gives back the original
+(un-spaced) text — a property the previous "insert thin spaces
+between every glyph" workarounds did not have. HTML emits
+`letter-spacing: Xpt`. `measureTextWidth()` and `wrapText()`
+correctly account for letter-spacing.
+
+---
+
+## Horizontal rule (v0.8.0)
+
+A first-class block element for visual separators :
+
+```php
+use Paperdoc\Document\HorizontalRule;
+use Paperdoc\Enum\Alignment;
+
+// Quick: full-width default-styled rule.
+$section->addRule();
+
+// Customised: 50%-width centred grey hairline.
+$section->addRule()
+    ->setWidth('50%')
+    ->setThickness(0.75)
+    ->setColor('#aaaaaa')
+    ->setAlignment(Alignment::CENTER)
+    ->setMargins(8.0, 12.0);
+
+// Pure absolute pt width.
+$section->addRule()->setWidth(140.0)->setColor('#1F3763');
+```
+
+| Property      | Type           | Default     | Notes                                                |
+|---------------|----------------|-------------|------------------------------------------------------|
+| `width`       | `string\|float` | `'100%'`    | Either a CSS-style percentage (`'50%'`) or absolute pt. |
+| `thickness`   | `float` (pt)    | `0.5`       | Word-style "thin rule" by default.                   |
+| `color`       | `string` hex   | `'#999999'` | CSS hex (`#rgb` or `#rrggbb`).                       |
+| `alignment`   | `Alignment`    | `CENTER`    | LEFT / CENTER / RIGHT for partial-width rules.       |
+| `marginTop`   | `float` (pt)    | `6.0`       | Vertical breathing space above the rule.             |
+| `marginBottom`| `float` (pt)    | `6.0`       | Below.                                               |
+
+Renderers :
+- **PDF** : a stroked horizontal line, drawn with the requested
+  thickness and stroke colour.
+- **HTML** : `<hr>` with inline CSS (`border-top:Wpt solid C ;
+  width:X ; margin:T 0 B`).
+- **Markdown** : `---` thematic break (CommonMark).
+- **DOCX** : the canonical Word "horizontal line" — an empty
+  paragraph carrying a `<w:pBdr><w:bottom .../></w:pBdr>` with
+  the requested colour and thickness in eighths-of-a-point.
+
 ---
 
 ## Rendering
@@ -379,6 +572,7 @@ Since **v0.5.0**, every element of the document model is natively rendered by **
 | `Image`            | `<w:drawing>` + `word/media/imageN.ext` rel             | XObject DCT (JPEG/PNG/GIF via GD re-encode)    | `<img src>` or `data:` URI            | `![alt](path)` or `data:` URI     |
 | `Table`            | `<w:tbl>` with header rows + `gridSpan`                 | drawn cells with header bg                     | `<table>` + striped rows              | `\|` rows                         |
 | `PageBreak`        | `<w:br w:type="page"/>`                                 | `newPage()`                                    | `.page-break` divider                 | blank line                        |
+| `HorizontalRule` *(v0.8.0)* | bordered empty `<w:p>` (`<w:pBdr>`)            | stroked PDF line                               | `<hr>` with inline CSS                | `---` thematic break              |
 | `Metadata`         | `docProps/core.xml`                                     | PDF `/Creator`                                 | (HTML head meta — roadmap)            | (frontmatter — roadmap)           |
 
 Both `Image::make($path)` (on-disk) and `Image::fromData($bytes, $mimeType)` (in-memory) are accepted everywhere; HTML and Markdown automatically inline embedded images as `data:` URIs, DOCX writes them to `word/media/`, and PDF embeds them as DCT XObjects (re-encoding GIF/PNG/WebP through GD when needed).

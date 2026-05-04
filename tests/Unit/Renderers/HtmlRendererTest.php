@@ -6,10 +6,10 @@ namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TextRun};
-use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
+use Paperdoc\Document\{Document, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\Style\{ParagraphStyle, RunningElement, TableStyle, TextStyle};
 use Paperdoc\Document\Link\{TextLink};
-use Paperdoc\Enum\Alignment;
+use Paperdoc\Enum\{Alignment, VerticalAlignment};
 use Paperdoc\Renderers\HtmlRenderer;
 
 class HtmlRendererTest extends TestCase
@@ -270,5 +270,117 @@ class HtmlRendererTest extends TestCase
 
         $html = (new HtmlRenderer())->render($doc);
         $this->assertStringContainsString('colspan="2"', $html);
+    }
+
+    /* =============================================================
+     | v0.8.0 — A3 / A4 / B3 / B4 / B5 regressions
+     |============================================================= */
+
+    public function test_section_hide_footer_suppresses_document_footer(): void
+    {
+        $doc = Document::make('html');
+        $doc->setFooter(RunningElement::make('FOOTER-{page}'));
+
+        $cover = Section::make('cover')->hideFooter();
+        $cover->addText('Cover');
+        $doc->addSection($cover);
+
+        $body = Section::make('body');
+        $body->addText('Body');
+        $doc->addSection($body);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringNotContainsString('FOOTER-1', $html);
+        $this->assertStringContainsString('FOOTER-2', $html);
+    }
+
+    public function test_section_header_override_replaces_document_header(): void
+    {
+        $doc = Document::make('html');
+        $doc->setHeader(RunningElement::make('DOC'));
+
+        $section = Section::make('s')->setHeader(RunningElement::make('SECTION'));
+        $section->addText('hi');
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('SECTION', $html);
+        $this->assertStringNotContainsString('DOC<', $html); // crude but works
+    }
+
+    public function test_vertical_alignment_center_emits_flex_centering(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('s')->setVerticalAlignment(VerticalAlignment::CENTER);
+        $section->addText('centred');
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('display:flex', $html);
+        $this->assertStringContainsString('justify-content:center', $html);
+        $this->assertStringContainsString('paperdoc-section-body', $html);
+    }
+
+    public function test_vertical_alignment_bottom_uses_flex_end(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('s')->setVerticalAlignment(VerticalAlignment::BOTTOM);
+        $section->addText('bottom');
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('justify-content:flex-end', $html);
+    }
+
+    public function test_first_line_indent_emits_text_indent_css(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('s');
+        $section->addElement(
+            (new Paragraph())
+                ->setStyle(ParagraphStyle::make()->setFirstLineIndent(24.0))
+                ->addRun(new TextRun('Indented body text.'))
+        );
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('text-indent:24.00pt', $html);
+    }
+
+    public function test_letter_spacing_emits_letter_spacing_css(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('s');
+        $section->addElement(
+            (new Paragraph())->addRun(new TextRun(
+                'WIDE',
+                TextStyle::make()->setLetterSpacing(2.5)
+            ))
+        );
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('letter-spacing:2.50pt', $html);
+    }
+
+    public function test_horizontal_rule_renders_hr_with_inline_style(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('s');
+        $section->addRule()->setWidth('60%')->setColor('#ff0000')->setThickness(2.0);
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('<hr', $html);
+        $this->assertStringContainsString('width:60%', $html);
+        $this->assertStringContainsString('#ff0000', $html);
+        $this->assertStringContainsString('border-top:2.00pt solid', $html);
     }
 }

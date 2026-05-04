@@ -10,6 +10,7 @@ use Paperdoc\Document\{
     Bookmark,
     CodeBlock,
     Heading,
+    HorizontalRule,
     Image,
     ListBlock,
     ListItem,
@@ -73,16 +74,21 @@ class MarkdownRenderer extends AbstractRenderer
     private function renderBlock(DocumentElementInterface $element): string
     {
         return match (true) {
-            $element instanceof Heading    => $this->renderHeading($element) . "\n\n",
-            $element instanceof Paragraph  => $this->renderParagraph($element) . "\n\n",
-            $element instanceof ListBlock  => $this->renderList($element, 0) . "\n",
-            $element instanceof Blockquote => $this->renderBlockquote($element) . "\n",
-            $element instanceof CodeBlock  => $this->renderCodeBlock($element) . "\n\n",
-            $element instanceof Bookmark   => $this->renderBookmark($element) . "\n\n",
-            $element instanceof Table      => $this->renderTable($element) . "\n",
-            $element instanceof Image      => $this->renderImage($element) . "\n\n",
-            $element instanceof PageBreak  => "---\n\n",
-            default                        => '',
+            $element instanceof Heading        => $this->renderHeading($element) . "\n\n",
+            $element instanceof Paragraph      => $this->renderParagraph($element) . "\n\n",
+            $element instanceof ListBlock      => $this->renderList($element, 0) . "\n",
+            $element instanceof Blockquote     => $this->renderBlockquote($element) . "\n",
+            $element instanceof CodeBlock      => $this->renderCodeBlock($element) . "\n\n",
+            $element instanceof Bookmark       => $this->renderBookmark($element) . "\n\n",
+            $element instanceof Table          => $this->renderTable($element) . "\n",
+            $element instanceof Image          => $this->renderImage($element) . "\n\n",
+            // Markdown's CommonMark thematic-break: a line of dashes
+            // surrounded by blank lines. The visual width / colour
+            // properties of HorizontalRule are lost in MD (the format
+            // has no notion of those) — we keep the semantic break.
+            $element instanceof HorizontalRule => "---\n\n",
+            $element instanceof PageBreak      => "---\n\n",
+            default                            => '',
         };
     }
 

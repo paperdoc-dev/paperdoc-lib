@@ -8,12 +8,21 @@ use Paperdoc\Contracts\StyleInterface;
 
 class TextStyle implements StyleInterface, \JsonSerializable
 {
-    private string $fontFamily = 'Helvetica';
-    private float  $fontSize   = 12.0;
-    private string $color      = '#000000';
-    private bool   $bold       = false;
-    private bool   $italic     = false;
-    private bool   $underline  = false;
+    private string $fontFamily    = 'Helvetica';
+    private float  $fontSize      = 12.0;
+    private string $color         = '#000000';
+    private bool   $bold          = false;
+    private bool   $italic        = false;
+    private bool   $underline     = false;
+
+    /**
+     * Extra space inserted between glyphs, in points (since v0.8.0).
+     * Mirrors the CSS `letter-spacing` property and PDF's `Tc`
+     * operator. Common uses: opening-out a section heading
+     * (`setLetterSpacing(1.5)`), or marking an acronym in a small-caps
+     * style. Negative values pull glyphs closer together. Default: 0pt.
+     */
+    private float  $letterSpacing = 0.0;
 
     /* -------------------------------------------------------------
      | Static Factories
@@ -28,23 +37,25 @@ class TextStyle implements StyleInterface, \JsonSerializable
      | Getters
      |------------------------------------------------------------- */
 
-    public function getFontFamily(): string { return $this->fontFamily; }
-    public function getFontSize(): float    { return $this->fontSize; }
-    public function getColor(): string      { return $this->color; }
-    public function isBold(): bool          { return $this->bold; }
-    public function isItalic(): bool        { return $this->italic; }
-    public function isUnderline(): bool     { return $this->underline; }
+    public function getFontFamily(): string  { return $this->fontFamily; }
+    public function getFontSize(): float     { return $this->fontSize; }
+    public function getColor(): string       { return $this->color; }
+    public function isBold(): bool           { return $this->bold; }
+    public function isItalic(): bool         { return $this->italic; }
+    public function isUnderline(): bool      { return $this->underline; }
+    public function getLetterSpacing(): float { return $this->letterSpacing; }
 
     /* -------------------------------------------------------------
      | Fluent Setters
      |------------------------------------------------------------- */
 
-    public function setFontFamily(string $v): static { $this->fontFamily = $v; return $this; }
-    public function setFontSize(float $v): static    { $this->fontSize = $v; return $this; }
-    public function setColor(string $v): static      { $this->color = $v; return $this; }
-    public function setBold(bool $v = true): static  { $this->bold = $v; return $this; }
-    public function setItalic(bool $v = true): static{ $this->italic = $v; return $this; }
+    public function setFontFamily(string $v): static     { $this->fontFamily = $v; return $this; }
+    public function setFontSize(float $v): static        { $this->fontSize = $v; return $this; }
+    public function setColor(string $v): static          { $this->color = $v; return $this; }
+    public function setBold(bool $v = true): static      { $this->bold = $v; return $this; }
+    public function setItalic(bool $v = true): static    { $this->italic = $v; return $this; }
     public function setUnderline(bool $v = true): static { $this->underline = $v; return $this; }
+    public function setLetterSpacing(float $v): static   { $this->letterSpacing = $v; return $this; }
 
     /* -------------------------------------------------------------
      | Serialization
@@ -53,12 +64,13 @@ class TextStyle implements StyleInterface, \JsonSerializable
     public function toArray(): array
     {
         return [
-            'fontFamily' => $this->fontFamily,
-            'fontSize'   => $this->fontSize,
-            'color'      => $this->color,
-            'bold'       => $this->bold,
-            'italic'     => $this->italic,
-            'underline'  => $this->underline,
+            'fontFamily'    => $this->fontFamily,
+            'fontSize'      => $this->fontSize,
+            'color'         => $this->color,
+            'bold'          => $this->bold,
+            'italic'        => $this->italic,
+            'underline'     => $this->underline,
+            'letterSpacing' => $this->letterSpacing,
         ];
     }
 

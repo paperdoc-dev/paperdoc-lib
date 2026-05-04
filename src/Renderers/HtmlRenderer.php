@@ -11,6 +11,7 @@ use Paperdoc\Document\{
     CodeBlock,
     Document,
     Heading,
+    HorizontalRule,
     Image,
     ListBlock,
     ListItem,
@@ -22,6 +23,7 @@ use Paperdoc\Document\{
     TextZone,
 };
 use Paperdoc\Document\Style\{PageSetup, RunningElement};
+use Paperdoc\Enum\{Alignment, VerticalAlignment};
 
 class HtmlRenderer extends AbstractRenderer
 {
@@ -37,8 +39,8 @@ class HtmlRenderer extends AbstractRenderer
             htmlspecialchars($defaultStyle->getColor()),
         );
 
-        $header = $document instanceof Document ? $document->getHeader() : null;
-        $footer = $document instanceof Document ? $document->getFooter() : null;
+        $documentHeader = $document instanceof Document ? $document->getHeader() : null;
+        $documentFooter = $document instanceof Document ? $document->getFooter() : null;
 
         $sections   = $document->getSections();
         $totalPages = max(1, count($sections));
@@ -48,7 +50,15 @@ class HtmlRenderer extends AbstractRenderer
 
         foreach ($sections as $i => $section) {
             $pageNumber = $i + 1;
-            $body .= $this->renderSection($section, $header, $footer, $pageNumber, $totalPages, $title);
+
+            // Per-section override / hide flags (since v0.8.0). The
+            // section decides which (if any) running element to draw,
+            // falling back to the document-level ones unless an
+            // explicit hideHeader()/hideFooter() was set.
+            $sectionHeader = $section->resolveHeader($documentHeader);
+            $sectionFooter = $section->resolveFooter($documentFooter);
+
+            $body .= $this->renderSection($section, $sectionHeader, $sectionFooter, $pageNumber, $totalPages, $title);
         }
 
         $title = htmlspecialchars($document->getTitle());
@@ -84,6 +94,13 @@ class HtmlRenderer extends AbstractRenderer
                     max-width: 800px;
                     padding: 40px 20px;
                 }
+                /*
+                 * v0.8.0: Section::setVerticalAlignment() wraps the body
+                 * in this element. The wrapping section uses flexbox to
+                 * align it (justify-content: center / flex-end), so the
+                 * body itself doesn't need to grow.
+                 */
+                .paperdoc-section-body { flex: 0 0 auto; }
                 .paperdoc-text-zone {
                     position: absolute;
                     box-sizing: border-box;
@@ -176,9 +193,26 @@ class HtmlRenderer extends AbstractRenderer
         $id    = htmlspecialchars($section->getName());
         $setup = $section->getPageSetup();
 
-        $sectionStyle = $this->buildSectionStyle($setup);
-        $cssClass     = $setup !== null ? 'paperdoc-page' : 'paperdoc-page flow';
-        $styleAttr    = $sectionStyle !== '' ? sprintf(' style="%s"', $sectionStyle) : '';
+        $sectionStyle  = $this->buildSectionStyle($setup);
+        $cssClass      = $setup !== null ? 'paperdoc-page' : 'paperdoc-page flow';
+        $verticalAlign = $section->getVerticalAlignment();
+
+        // Vertical alignment (v0.8.0). For TOP we keep the original DOM
+        // (header / content / footer as siblings); for CENTER/BOTTOM we
+        // wrap the content in a flex column whose justify-content
+        // pushes the body to the centre or to the bottom of the
+        // page-padding box. Header/footer stay absolutely positioned
+        // (.paperdoc-running uses absolute), so they don't participate
+        // in the flex layout.
+        $extraStyle = '';
+        if ($verticalAlign !== VerticalAlignment::TOP) {
+            $justify = $verticalAlign === VerticalAlignment::CENTER ? 'center' : 'flex-end';
+            $extraStyle = sprintf(';display:flex;flex-direction:column;justify-content:%s', $justify);
+        }
+
+        $styleAttr = ($sectionStyle . $extraStyle) !== ''
+            ? sprintf(' style="%s%s"', $sectionStyle, $extraStyle)
+            : '';
 
         $html = "<section id=\"{$id}\" class=\"{$cssClass}\"{$styleAttr}>\n";
 
@@ -186,8 +220,20 @@ class HtmlRenderer extends AbstractRenderer
             $html .= $this->renderRunningElement($header, RunningElement::TYPE_HEADER, $pageNumber, $totalPages, $title);
         }
 
+        // When vertical alignment is non-TOP, wrap body content in a
+        // div so flex-grow can balance it against an empty box at the
+        // top/bottom (justify-content already handles that for us).
+        $wrapBody = $verticalAlign !== VerticalAlignment::TOP;
+        if ($wrapBody) {
+            $html .= "<div class=\"paperdoc-section-body\">\n";
+        }
+
         foreach ($section->getElements() as $element) {
             $html .= $this->renderBlock($element);
+        }
+
+        if ($wrapBody) {
+            $html .= "</div>\n";
         }
 
         if ($footer !== null) {
@@ -334,18 +380,49 @@ class HtmlRenderer extends AbstractRenderer
     private function renderBlock(DocumentElementInterface $element): string
     {
         return match (true) {
-            $element instanceof Heading    => $this->renderHeading($element),
-            $element instanceof Paragraph  => $this->renderParagraph($element),
-            $element instanceof ListBlock  => $this->renderList($element),
-            $element instanceof Blockquote => $this->renderBlockquote($element),
-            $element instanceof CodeBlock  => $this->renderCodeBlock($element),
-            $element instanceof Bookmark   => $this->renderBookmark($element),
-            $element instanceof Table      => $this->renderTable($element),
-            $element instanceof Image      => $this->renderImage($element),
-            $element instanceof TextZone   => $this->renderTextZone($element),
-            $element instanceof PageBreak  => "<div class=\"page-break\"></div>\n",
-            default                        => '',
+            $element instanceof Heading        => $this->renderHeading($element),
+            $element instanceof Paragraph      => $this->renderParagraph($element),
+            $element instanceof ListBlock      => $this->renderList($element),
+            $element instanceof Blockquote     => $this->renderBlockquote($element),
+            $element instanceof CodeBlock      => $this->renderCodeBlock($element),
+            $element instanceof Bookmark       => $this->renderBookmark($element),
+            $element instanceof Table          => $this->renderTable($element),
+            $element instanceof Image          => $this->renderImage($element),
+            $element instanceof TextZone       => $this->renderTextZone($element),
+            $element instanceof HorizontalRule => $this->renderHorizontalRule($element),
+            $element instanceof PageBreak      => "<div class=\"page-break\"></div>\n",
+            default                            => '',
         };
+    }
+
+    /**
+     * Renders a {@see HorizontalRule} as a CSS-styled `<hr>` element.
+     * The `width`, alignment, thickness, colour and margins are all
+     * honoured; an `<hr>` carries no semantic role for screen readers
+     * other than "thematic break", which matches our intent exactly.
+     */
+    private function renderHorizontalRule(HorizontalRule $rule): string
+    {
+        $widthCss = is_string($rule->getWidth()) ? $rule->getWidth() : sprintf('%.2fpt', (float) $rule->getWidth());
+
+        $marginLeftRight = match ($rule->getAlignment()) {
+            Alignment::LEFT   => 'margin-left:0;margin-right:auto',
+            Alignment::RIGHT  => 'margin-left:auto;margin-right:0',
+            Alignment::CENTER => 'margin-left:auto;margin-right:auto',
+            default           => 'margin-left:auto;margin-right:auto',
+        };
+
+        $style = sprintf(
+            'border:none;border-top:%.2fpt solid %s;width:%s;margin-top:%.2fpt;margin-bottom:%.2fpt;%s',
+            $rule->getThickness(),
+            htmlspecialchars($rule->getColor()),
+            htmlspecialchars($widthCss),
+            $rule->getMarginTop(),
+            $rule->getMarginBottom(),
+            $marginLeftRight,
+        );
+
+        return sprintf("<hr style=\"%s\">\n", $style);
     }
 
     private function renderTextZone(TextZone $zone): string
@@ -488,6 +565,10 @@ class HtmlRenderer extends AbstractRenderer
             $style    = $paragraph->getStyle();
             $align    = $style?->getAlignment()->value ?? 'left';
             $cssParts = ['margin:0', 'text-align:' . $align];
+
+            if ($style !== null && abs($style->getFirstLineIndent()) > 1e-4) {
+                $cssParts[] = sprintf('text-indent:%.2fpt', $style->getFirstLineIndent());
+            }
 
             $out .= sprintf(
                 '<div class="paperdoc-text-zone-line" style="%s">%s</div>',
@@ -676,6 +757,13 @@ class HtmlRenderer extends AbstractRenderer
                 $parts[] = sprintf('line-height:%.2f', $style->getLineSpacing());
             }
 
+            // First-line indent (CSS text-indent). Negative values are
+            // supported and produce a hanging indent. Skip when zero
+            // so we don't pollute every paragraph's style attribute.
+            if (abs($style->getFirstLineIndent()) > 1e-4) {
+                $parts[] = sprintf('text-indent:%.2fpt', $style->getFirstLineIndent());
+            }
+
             $css = ' style="' . implode(';', $parts) . '"';
         }
 
@@ -720,6 +808,12 @@ class HtmlRenderer extends AbstractRenderer
 
             if ($style->isUnderline()) {
                 $parts[] = 'text-decoration:underline';
+            }
+
+            // letter-spacing (v0.8.0). Same units as the rest of the
+            // library (points). Skip when zero to avoid noisy markup.
+            if (abs($style->getLetterSpacing()) > 1e-4) {
+                $parts[] = sprintf('letter-spacing:%.2fpt', $style->getLetterSpacing());
             }
         }
 

@@ -189,4 +189,28 @@ class TextStyleTest extends TestCase
         $this->assertSame('Helvetica', TextStyle::make()->setFontFamily('Arial')->getPdfFontName());
         $this->assertSame('Helvetica', TextStyle::make()->setFontFamily('Verdana')->getPdfFontName());
     }
+
+    /* -------------------------------------------------------------
+     | Letter-spacing — v0.8.0 (B4)
+     |------------------------------------------------------------- */
+
+    public function test_letter_spacing_default_is_zero(): void
+    {
+        $this->assertSame(0.0, (new TextStyle())->getLetterSpacing());
+    }
+
+    public function test_set_letter_spacing_is_fluent_and_serialises(): void
+    {
+        $style = TextStyle::make()->setLetterSpacing(1.5);
+
+        $this->assertSame(1.5, $style->getLetterSpacing());
+        $this->assertSame(1.5, $style->toArray()['letterSpacing']);
+    }
+
+    public function test_letter_spacing_supports_negative_values(): void
+    {
+        $style = TextStyle::make()->setLetterSpacing(-0.5);
+
+        $this->assertSame(-0.5, $style->getLetterSpacing());
+    }
 }

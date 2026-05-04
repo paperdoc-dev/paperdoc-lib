@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
-use Paperdoc\Document\{Document, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\{Document, HorizontalRule, Paragraph, Section, Table, TableCell, TableRow, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Parsers\DocxParser;
@@ -203,5 +203,34 @@ class DocxRendererTest extends TestCase
 
         $dom = new \DOMDocument();
         $this->assertTrue($dom->loadXML($xml));
+    }
+
+    /**
+     * v0.8.0 / B5 — HorizontalRule renders as the canonical Word
+     * "horizontal line": an empty paragraph with a bottom border. We
+     * inspect the document.xml directly so the test is unaffected by
+     * future model-core refactors.
+     */
+    public function test_horizontal_rule_renders_as_bordered_paragraph(): void
+    {
+        $doc = Document::make('docx');
+        $section = Section::make('s');
+        $section->addText('Above');
+        $section->addRule()->setColor('#999999')->setThickness(0.75);
+        $section->addText('Below');
+        $doc->addSection($section);
+
+        (new DocxRenderer())->save($doc, $this->tmp);
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($this->tmp) === true);
+        $xml = $zip->getFromName('word/document.xml');
+        $zip->close();
+
+        // The rule emits a <w:pBdr><w:bottom .../></w:pBdr> on an
+        // empty paragraph — the canonical Word "horizontal line".
+        $this->assertStringContainsString('<w:pBdr>', $xml);
+        $this->assertStringContainsString('<w:bottom', $xml);
+        $this->assertStringContainsString('w:color="999999"', $xml);
     }
 }
