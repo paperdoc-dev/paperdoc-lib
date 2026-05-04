@@ -9,6 +9,7 @@ use Paperdoc\Document\{
     Blockquote,
     Bookmark,
     CodeBlock,
+    Document,
     Heading,
     Image,
     ListBlock,
@@ -18,7 +19,9 @@ use Paperdoc\Document\{
     Section,
     Table,
     TextRun,
+    TextZone,
 };
+use Paperdoc\Document\Style\{PageSetup, RunningElement};
 
 class HtmlRenderer extends AbstractRenderer
 {
@@ -28,16 +31,24 @@ class HtmlRenderer extends AbstractRenderer
     {
         $defaultStyle = $document->getDefaultTextStyle();
         $bodyStyle = sprintf(
-            'font-family:%s,sans-serif;font-size:%spt;color:%s;max-width:800px;margin:0 auto;padding:40px 20px;',
+            'font-family:%s,sans-serif;font-size:%spt;color:%s;',
             htmlspecialchars($defaultStyle->getFontFamily()),
             $defaultStyle->getFontSize(),
             htmlspecialchars($defaultStyle->getColor()),
         );
 
+        $header = $document instanceof Document ? $document->getHeader() : null;
+        $footer = $document instanceof Document ? $document->getFooter() : null;
+
+        $sections   = $document->getSections();
+        $totalPages = max(1, count($sections));
+        $title      = $document->getTitle();
+
         $body = '';
 
-        foreach ($document->getSections() as $section) {
-            $body .= $this->renderSection($section);
+        foreach ($sections as $i => $section) {
+            $pageNumber = $i + 1;
+            $body .= $this->renderSection($section, $header, $footer, $pageNumber, $totalPages, $title);
         }
 
         $title = htmlspecialchars($document->getTitle());
@@ -53,13 +64,87 @@ class HtmlRenderer extends AbstractRenderer
             <title>{$title}</title>
             <style>
                 * { box-sizing: border-box; margin: 0; padding: 0; }
-                body { line-height: 1.6; }
+                body { line-height: 1.6; background: #f3f4f6; }
                 table { border-collapse: collapse; width: 100%; margin: 1em 0; }
                 th, td { border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; }
                 th { background: #f3f4f6; font-weight: 600; }
                 tr:nth-child(even) { background: #f9fafb; }
                 img { max-width: 100%; height: auto; }
-                section { margin-bottom: 2em; }
+                section.paperdoc-page {
+                    background: #ffffff;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                    margin: 24px auto;
+                    background-size: cover;
+                    background-position: center center;
+                    background-repeat: no-repeat;
+                    position: relative;
+                    overflow: hidden;
+                }
+                section.paperdoc-page.flow {
+                    max-width: 800px;
+                    padding: 40px 20px;
+                }
+                .paperdoc-text-zone {
+                    position: absolute;
+                    box-sizing: border-box;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                    overflow: hidden;
+                }
+                .paperdoc-text-zone p,
+                .paperdoc-text-zone p[style] { margin: 0 !important; }
+                .paperdoc-text-zone p + p { margin-top: 0.4em !important; }
+                .paperdoc-text-zone.visible { overflow: visible; }
+                /*
+                 * Inner clamp: pure max-height + overflow:hidden. This
+                 * approach clips at an exact integer number of lines
+                 * (max-height = N × line-height in pt) regardless of
+                 * browser, with no reliance on -webkit-line-clamp which
+                 * has been observed to leak content past N lines when
+                 * the parent box has a fixed height in position:absolute.
+                 */
+                .paperdoc-clamp {
+                    overflow: hidden;
+                    max-height: var(--paperdoc-clamp-h, none);
+                }
+                .paperdoc-text-zone.ellipsis .paperdoc-clamp {
+                    position: relative;
+                }
+                .paperdoc-text-zone.ellipsis .paperdoc-clamp::after {
+                    content: "…";
+                    position: absolute;
+                    right: 0;
+                    bottom: 0;
+                    padding: 0 4pt 0 16pt;
+                    background: var(--paperdoc-zone-bg, #ffffff);
+                    line-height: inherit;
+                    pointer-events: none;
+                }
+                .paperdoc-running {
+                    position: absolute;
+                    left: 0;
+                    right: 0;
+                    box-sizing: border-box;
+                    display: flex;
+                    align-items: center;
+                    pointer-events: none;
+                    color: #4b5563;
+                    font-size: 10pt;
+                    /*
+                     * Bande semi-transparente : assure la lisibilité quand
+                     * la page a une image de fond ET garantit visuellement
+                     * une zone de respiration entre les TextZones et le
+                     * header/footer (sinon ils peuvent paraître collés).
+                     */
+                    background: rgba(255, 255, 255, 0.85);
+                    backdrop-filter: blur(2px);
+                    min-height: 24pt;
+                }
+                .paperdoc-running.header { top: 0;    padding: 8pt 24pt; }
+                .paperdoc-running.footer { bottom: 0; padding: 8pt 24pt; }
+                .paperdoc-running.align-left   { justify-content: flex-start; }
+                .paperdoc-running.align-center { justify-content: center; }
+                .paperdoc-running.align-right  { justify-content: flex-end; }
                 .page-break { page-break-after: always; border-top: 2px dashed #d1d5db; margin: 2em 0; }
                 blockquote { border-left: 4px solid #d1d5db; padding: 0.25em 1em; margin: 1em 0; color: #4b5563; font-style: italic; }
                 blockquote > :last-child { margin-bottom: 0; }
@@ -67,6 +152,10 @@ class HtmlRenderer extends AbstractRenderer
                 pre code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; white-space: pre; }
                 ul, ol { margin: 1em 0; padding-left: 2em; }
                 li { margin: 0.25em 0; }
+                @media print {
+                    body { background: #ffffff; }
+                    section.paperdoc-page { box-shadow: none; margin: 0; }
+                }
             </style>
         </head>
         <body style="{$bodyStyle}">
@@ -76,18 +165,150 @@ class HtmlRenderer extends AbstractRenderer
         HTML;
     }
 
-    private function renderSection(Section $section): string
-    {
-        $id = htmlspecialchars($section->getName());
-        $html = "<section id=\"{$id}\">\n";
+    private function renderSection(
+        Section $section,
+        ?RunningElement $header = null,
+        ?RunningElement $footer = null,
+        int $pageNumber = 1,
+        int $totalPages = 1,
+        string $title = '',
+    ): string {
+        $id    = htmlspecialchars($section->getName());
+        $setup = $section->getPageSetup();
+
+        $sectionStyle = $this->buildSectionStyle($setup);
+        $cssClass     = $setup !== null ? 'paperdoc-page' : 'paperdoc-page flow';
+        $styleAttr    = $sectionStyle !== '' ? sprintf(' style="%s"', $sectionStyle) : '';
+
+        $html = "<section id=\"{$id}\" class=\"{$cssClass}\"{$styleAttr}>\n";
+
+        if ($header !== null) {
+            $html .= $this->renderRunningElement($header, RunningElement::TYPE_HEADER, $pageNumber, $totalPages, $title);
+        }
 
         foreach ($section->getElements() as $element) {
             $html .= $this->renderBlock($element);
         }
 
+        if ($footer !== null) {
+            $html .= $this->renderRunningElement($footer, RunningElement::TYPE_FOOTER, $pageNumber, $totalPages, $title);
+        }
+
         $html .= "</section>\n";
 
         return $html;
+    }
+
+    private function renderRunningElement(
+        RunningElement $element,
+        string $type,
+        int $pageNumber,
+        int $totalPages,
+        string $title,
+    ): string {
+        $text = $element->resolve($pageNumber, $totalPages, $title);
+
+        if ($text === '') {
+            return '';
+        }
+
+        $alignClass = 'align-' . $element->getAlignment()->value;
+        $cssClass   = sprintf('paperdoc-running %s %s', htmlspecialchars($type), htmlspecialchars($alignClass));
+
+        $style    = $element->getStyle();
+        $inlineParts = [];
+        $inlineParts[] = sprintf('font-family:%s,sans-serif', htmlspecialchars($style->getFontFamily()));
+        $inlineParts[] = sprintf('font-size:%spt', $style->getFontSize());
+        $inlineParts[] = sprintf('color:%s', htmlspecialchars($style->getColor()));
+
+        if ($style->isBold()) {
+            $inlineParts[] = 'font-weight:bold';
+        }
+        if ($style->isItalic()) {
+            $inlineParts[] = 'font-style:italic';
+        }
+
+        $inlineParts[] = sprintf('height:%.2fpt', $element->getHeight());
+
+        $inlineStyle = implode(';', $inlineParts);
+
+        return sprintf(
+            "<div class=\"%s\" style=\"%s\"><span>%s</span></div>\n",
+            $cssClass,
+            $inlineStyle,
+            htmlspecialchars($text),
+        );
+    }
+
+    private function buildSectionStyle(?PageSetup $setup): string
+    {
+        if ($setup === null) {
+            return '';
+        }
+
+        $parts = [];
+        $parts[] = sprintf('width:%.2fpt', $setup->getWidth());
+        $parts[] = sprintf('height:%.2fpt', $setup->getHeight());
+        $parts[] = sprintf(
+            'padding:%.2fpt %.2fpt %.2fpt %.2fpt',
+            $setup->getPaddingTop(),
+            $setup->getPaddingRight(),
+            $setup->getPaddingBottom(),
+            $setup->getPaddingLeft(),
+        );
+
+        if ($setup->getBackgroundColor() !== null) {
+            $parts[] = sprintf('background-color:%s', htmlspecialchars($setup->getBackgroundColor()));
+        }
+
+        $bgImage = $setup->getBackgroundImage();
+        if ($bgImage !== null) {
+            $url = $this->resolveImageUrl($bgImage);
+
+            if ($url !== '') {
+                $parts[] = sprintf("background-image:url('%s')", $url);
+            }
+        }
+
+        return implode(';', $parts);
+    }
+
+    /**
+     * Résout une URL utilisable directement dans un attribut `url()` ou
+     * `src=""`. Les URLs absolues (http(s)://, data:, //) sont conservées
+     * telles quelles ; les chemins locaux sont encodés en data URI pour
+     * que le HTML reste portable et autonome.
+     */
+    private function resolveImageUrl(Image $image): string
+    {
+        if ($image->hasData()) {
+            $uri = $image->getDataUri();
+            if ($uri !== null) {
+                return $uri;
+            }
+        }
+
+        $src = $image->getSrc();
+
+        if ($src === '') {
+            return '';
+        }
+
+        if (preg_match('#^(?:https?:|data:|//)#i', $src) === 1) {
+            return htmlspecialchars($src);
+        }
+
+        if (is_readable($src)) {
+            $data = @file_get_contents($src);
+            if ($data !== false) {
+                $info = @getimagesizefromstring($data);
+                $mime = is_array($info) && isset($info['mime']) ? $info['mime'] : 'application/octet-stream';
+
+                return 'data:' . $mime . ';base64,' . base64_encode($data);
+            }
+        }
+
+        return htmlspecialchars($src);
     }
 
     private function renderBlock(DocumentElementInterface $element): string
@@ -101,9 +322,215 @@ class HtmlRenderer extends AbstractRenderer
             $element instanceof Bookmark   => $this->renderBookmark($element),
             $element instanceof Table      => $this->renderTable($element),
             $element instanceof Image      => $this->renderImage($element),
+            $element instanceof TextZone   => $this->renderTextZone($element),
             $element instanceof PageBreak  => "<div class=\"page-break\"></div>\n",
             default                        => '',
         };
+    }
+
+    private function renderTextZone(TextZone $zone): string
+    {
+        $parts = [];
+        $parts[] = sprintf('left:%.2fpt', $zone->getX());
+        $parts[] = sprintf('top:%.2fpt', $zone->getY());
+        $parts[] = sprintf('width:%.2fpt', $zone->getWidth());
+        $parts[] = sprintf('height:%.2fpt', $zone->getHeight());
+
+        if ($zone->getPadding() > 0) {
+            $parts[] = sprintf('padding:%.2fpt', $zone->getPadding());
+        }
+
+        if ($zone->getBackgroundColor() !== null) {
+            $parts[] = sprintf('background:%s', htmlspecialchars($zone->getBackgroundColor()));
+            // Re-exposed as a CSS variable so the ellipsis pseudo-element
+            // can mask the clipped text behind a matching background.
+            $parts[] = sprintf('--paperdoc-zone-bg:%s', htmlspecialchars($zone->getBackgroundColor()));
+        }
+
+        if ($zone->getBorderColor() !== null && $zone->getBorderWidth() > 0) {
+            $parts[] = sprintf(
+                'border:%.2fpt solid %s',
+                $zone->getBorderWidth(),
+                htmlspecialchars($zone->getBorderColor()),
+            );
+        }
+
+        $overflow  = $zone->getOverflow();
+        $cssClass  = 'paperdoc-text-zone';
+        $isClamped = false;
+        $clampLines  = 1;
+        $lineHeightPt = 12.0;
+
+        switch ($overflow) {
+            case TextZone::OVERFLOW_VISIBLE:
+                $cssClass .= ' visible';
+                break;
+            case TextZone::OVERFLOW_ELLIPSIS:
+                $cssClass .= ' ellipsis';
+                $isClamped = true;
+                break;
+            case TextZone::OVERFLOW_CLIP:
+            default:
+                $cssClass .= ' clip';
+                $isClamped = true;
+                break;
+        }
+
+        // En mode clamp, le wrapper porte font-size/line-height/text-align
+        // en valeurs ABSOLUES (pt) cohérentes avec celles du contenu :
+        //  - la même font-size évite tout décalage entre le clamp et les
+        //    spans enfants
+        //  - line-height en pt absolu garantit que le calcul du
+        //    `max-height` côté serveur correspond pile-poil au rendu CSS
+        //    (un line-height unitless dépend du font-size hérité, ce qui
+        //    a causé un coupage vertical des lignes auparavant).
+        if ($isClamped) {
+            $paraStyle    = $this->firstParagraphStyle($zone);
+            $runStyle     = $this->firstRunStyle($zone);
+            $alignment    = $paraStyle?->getAlignment()->value ?? 'left';
+            $lineSpacing  = $paraStyle?->getLineSpacing() ?? 1.15;
+            $fontSize     = $runStyle?->getFontSize() ?? 12.0;
+            $lineHeightPt = $fontSize * $lineSpacing;
+            $clampLines   = $this->estimateLineClamp($zone);
+
+            $parts[] = 'text-align:' . $alignment;
+            $parts[] = sprintf('font-size:%.2fpt', $fontSize);
+            $parts[] = sprintf('line-height:%.2fpt', $lineHeightPt);
+
+            if ($runStyle !== null) {
+                $parts[] = sprintf('font-family:%s,sans-serif', htmlspecialchars($runStyle->getFontFamily()));
+                $parts[] = sprintf('color:%s', htmlspecialchars($runStyle->getColor()));
+                if ($runStyle->isBold()) {
+                    $parts[] = 'font-weight:bold';
+                }
+                if ($runStyle->isItalic()) {
+                    $parts[] = 'font-style:italic';
+                }
+            }
+        }
+
+        $style = implode(';', $parts);
+
+        if ($isClamped) {
+            $maxHeightPt  = $clampLines * $lineHeightPt;
+            $clampStyle   = sprintf('max-height:%.2fpt;--paperdoc-clamp-h:%.2fpt', $maxHeightPt, $maxHeightPt);
+            $innerContent = $this->renderTextZoneInline($zone);
+
+            return sprintf(
+                "<div class=\"%s\" style=\"%s\"><div class=\"paperdoc-clamp\" style=\"%s\">%s</div></div>\n",
+                $cssClass,
+                $style,
+                $clampStyle,
+                $innerContent,
+            );
+        }
+
+        return "<div class=\"{$cssClass}\" style=\"{$style}\">" . $this->renderTextZoneBlocks($zone) . "</div>\n";
+    }
+
+    /**
+     * Renders zone content as block paragraphs (used when overflow is
+     * "visible"). Each paragraph keeps its own styling.
+     */
+    private function renderTextZoneBlocks(TextZone $zone): string
+    {
+        $inner = '';
+        foreach ($zone->getParagraphs() as $paragraph) {
+            $inner .= $this->renderParagraph($paragraph);
+        }
+
+        return $inner;
+    }
+
+    /**
+     * Renders zone content inline so the parent container can act as a
+     * `-webkit-line-clamp` host. Paragraphs are separated by `<br>` and
+     * paragraph-level styling is delegated to the wrapper.
+     */
+    private function renderTextZoneInline(TextZone $zone): string
+    {
+        $parts = [];
+
+        foreach ($zone->getParagraphs() as $paragraph) {
+            $runs = '';
+            foreach ($paragraph->getRuns() as $run) {
+                $runs .= $this->renderTextRun($run);
+            }
+            if ($runs !== '') {
+                $parts[] = $runs;
+            }
+        }
+
+        return implode('<br>', $parts);
+    }
+
+    private function firstParagraphStyle(TextZone $zone): ?\Paperdoc\Document\Style\ParagraphStyle
+    {
+        foreach ($zone->getParagraphs() as $paragraph) {
+            $style = $paragraph->getStyle();
+            if ($style !== null) {
+                return $style;
+            }
+        }
+
+        return null;
+    }
+
+    private function firstRunStyle(TextZone $zone): ?\Paperdoc\Document\Style\TextStyle
+    {
+        foreach ($zone->getParagraphs() as $paragraph) {
+            foreach ($paragraph->getRuns() as $run) {
+                $style = $run->getStyle();
+                if ($style !== null) {
+                    return $style;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Calcule le nombre de lignes de texte qui tiennent dans la hauteur
+     * visible de la zone. On utilise la première paire (font-size,
+     * line-spacing) qu'on rencontre comme représentative ; les zones
+     * mixant plusieurs tailles sont rares en pratique.
+     */
+    private function estimateLineClamp(TextZone $zone): int
+    {
+        $available = $zone->getHeight() - 2 * $zone->getPadding();
+
+        if ($available <= 0) {
+            return 1;
+        }
+
+        $fontSize    = 12.0;
+        $lineSpacing = 1.15;
+        $found       = false;
+
+        foreach ($zone->getParagraphs() as $paragraph) {
+            $paraStyle = $paragraph->getStyle();
+            if ($paraStyle !== null) {
+                $lineSpacing = $paraStyle->getLineSpacing() ?: $lineSpacing;
+            }
+
+            foreach ($paragraph->getRuns() as $run) {
+                $runStyle = $run->getStyle();
+                if ($runStyle !== null && $runStyle->getFontSize() > 0) {
+                    $fontSize = $runStyle->getFontSize();
+                    $found = true;
+                    break 2;
+                }
+            }
+        }
+
+        $lineHeight = $fontSize * $lineSpacing;
+
+        if ($lineHeight <= 0) {
+            return 1;
+        }
+
+        return max(1, (int) floor($available / $lineHeight));
     }
 
     private function renderHeading(Heading $heading): string

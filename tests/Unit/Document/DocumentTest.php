@@ -240,4 +240,71 @@ class DocumentTest extends TestCase
         $this->assertArrayHasKey('properties', $json);
         $this->assertSame(['author' => 'Alice'], $json['properties']);
     }
+
+    /* -------------------------------------------------------------
+     | Header / Footer (running elements) — v0.5.0
+     |------------------------------------------------------------- */
+
+    public function test_header_and_footer_are_null_by_default(): void
+    {
+        $doc = new Document('pdf');
+
+        $this->assertNull($doc->getHeader());
+        $this->assertNull($doc->getFooter());
+    }
+
+    public function test_set_header_is_fluent(): void
+    {
+        $doc    = new Document('pdf');
+        $header = \Paperdoc\Document\Style\RunningElement::make('My doc');
+
+        $result = $doc->setHeader($header);
+
+        $this->assertSame($doc, $result);
+        $this->assertSame($header, $doc->getHeader());
+    }
+
+    public function test_set_footer_is_fluent(): void
+    {
+        $doc    = new Document('pdf');
+        $footer = \Paperdoc\Document\Style\RunningElement::make('Page {page}');
+
+        $result = $doc->setFooter($footer);
+
+        $this->assertSame($doc, $result);
+        $this->assertSame($footer, $doc->getFooter());
+    }
+
+    public function test_set_header_null_clears(): void
+    {
+        $doc = (new Document('pdf'))->setHeader(\Paperdoc\Document\Style\RunningElement::make('x'));
+
+        $doc->setHeader(null);
+
+        $this->assertNull($doc->getHeader());
+    }
+
+    public function test_json_serialize_omits_header_footer_when_null(): void
+    {
+        $doc = new Document('pdf', 'Title');
+
+        $json = json_decode(json_encode($doc, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayNotHasKey('header', $json);
+        $this->assertArrayNotHasKey('footer', $json);
+    }
+
+    public function test_json_serialize_includes_header_and_footer_when_set(): void
+    {
+        $doc = new Document('pdf', 'Title');
+        $doc->setHeader(\Paperdoc\Document\Style\RunningElement::make('Top'));
+        $doc->setFooter(\Paperdoc\Document\Style\RunningElement::make('Page {page}'));
+
+        $json = json_decode(json_encode($doc, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('header', $json);
+        $this->assertArrayHasKey('footer', $json);
+        $this->assertSame('Top', $json['header']['template']);
+        $this->assertSame('Page {page}', $json['footer']['template']);
+    }
 }

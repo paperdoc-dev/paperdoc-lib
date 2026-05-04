@@ -24,6 +24,14 @@ class PdfEngine
     /** @var int[] Object numbers for each page resource dict */
     private array $pageResourceObjects = [];
 
+    /**
+     * Per-page geometry captured at flush time so each page's MediaBox
+     * can vary (size & margins set via setPageGeometry()).
+     *
+     * @var array<int, array{width: float, height: float, marginTop: float, marginRight: float, marginBottom: float, marginLeft: float}>
+     */
+    private array $pageGeometries = [];
+
     private int $catalogObj;
     private int $pagesObj;
 
@@ -116,6 +124,50 @@ class PdfEngine
         $this->cursorY = $this->pageHeight - $this->marginTop;
     }
 
+    /**
+     * Met à jour la géométrie de la page courante (taille et marges).
+     *
+     * À appeler juste après {@see newPage()} pour que la nouvelle page
+     * adopte les dimensions souhaitées avant d'y écrire quoi que ce soit.
+     */
+    public function setPageGeometry(
+        float $width,
+        float $height,
+        float $marginTop,
+        float $marginRight,
+        float $marginBottom,
+        float $marginLeft,
+    ): void {
+        $this->pageWidth    = $width;
+        $this->pageHeight   = $height;
+        $this->marginTop    = $marginTop;
+        $this->marginRight  = $marginRight;
+        $this->marginBottom = $marginBottom;
+        $this->marginLeft   = $marginLeft;
+
+        $this->cursorX = $this->marginLeft;
+        $this->cursorY = $this->pageHeight - $this->marginTop;
+    }
+
+    public function getPageWidth(): float  { return $this->pageWidth; }
+    public function getPageHeight(): float { return $this->pageHeight; }
+
+    /**
+     * Numéro de la page actuellement en cours d'écriture (1-indexé).
+     * Tient compte des pages déjà flushées et de la page en cours de
+     * remplissage.
+     */
+    public function getCurrentPageNumber(): int
+    {
+        $count = count($this->pageObjects);
+
+        // currentPageContent !== '' means we have content on a fresh page
+        // that hasn't been flushed yet. That page hasn't been counted in
+        // pageObjects, so its number is count+1. When the page is empty
+        // (just opened), it's also count+1.
+        return $count + 1;
+    }
+
     public function getContentWidth(): float
     {
         return $this->pageWidth - $this->marginLeft - $this->marginRight;
@@ -133,6 +185,29 @@ class PdfEngine
     public function needsNewPage(float $requiredHeight): bool
     {
         return $this->cursorY - $requiredHeight < $this->marginBottom;
+    }
+
+    /* -------------------------------------------------------------
+     | Page Background (image / color)
+     |------------------------------------------------------------- */
+
+    /**
+     * Remplit la page entière avec une couleur unie. À appeler juste
+     * après newPage() (avant tout autre dessin) pour que le fond reste
+     * sous le contenu.
+     */
+    public function drawPageBackgroundColor(string $color): void
+    {
+        $this->drawRect(0, 0, $this->pageWidth, $this->pageHeight, $color, null, 0);
+    }
+
+    /**
+     * Dessine une image qui couvre la totalité de la page. Idem que
+     * drawPageBackgroundColor : à appeler en premier sur la page.
+     */
+    public function drawPageBackgroundImage(string $path): void
+    {
+        $this->drawImage($path, 0, 0, $this->pageWidth, $this->pageHeight);
     }
 
     /* -------------------------------------------------------------
@@ -310,6 +385,121 @@ class PdfEngine
     }
 
     /**
+     * Écrit un bloc de texte avec retour à la ligne automatique dans une
+     * largeur donnée, à une position absolue (x, y) où l'origine est le
+     * coin supérieur gauche de la page (convention utilisateur/CSS).
+     *
+     * Si $maxHeight est fourni, les lignes qui dépassent sont tronquées.
+     * Si $ellipsis vaut true, la dernière ligne visible reçoit '…' lorsqu'il
+     * reste du contenu non rendu.
+     *
+     * @return array{consumed: float, truncated: bool, totalLines: int, drawnLines: int}
+     */
+    public function writeWrappedTextAt(
+        string $text,
+        string $fontName,
+        float $fontSize,
+        float $x,
+        float $yTopLeft,
+        float $maxWidth,
+        float $r = 0,
+        float $g = 0,
+        float $b = 0,
+        float $lineSpacing = 1.15,
+        ?float $maxHeight = null,
+        bool $ellipsis = false,
+    ): array {
+        $fontRef    = $this->ensureFont($fontName);
+        $lineHeight = $fontSize * $lineSpacing;
+
+        $lines      = $this->wrapText($text, $fontName, $fontSize, $maxWidth);
+        $totalLines = count($lines);
+
+        $consumed   = 0.0;
+        $drawn      = 0;
+        $truncated  = false;
+
+        foreach ($lines as $i => $line) {
+            $topOffset = $i * $lineHeight;
+
+            if ($maxHeight !== null && $topOffset + $lineHeight > $maxHeight) {
+                $truncated = true;
+                break;
+            }
+
+            $isLastDrawable = $maxHeight !== null
+                && $i + 1 < $totalLines
+                && $topOffset + 2 * $lineHeight > $maxHeight;
+
+            if ($isLastDrawable && $ellipsis) {
+                $line = $this->appendEllipsis($line, $fontName, $fontSize, $maxWidth);
+                $truncated = true;
+            }
+
+            $baselineY = $this->pageHeight - $yTopLeft - $topOffset - $fontSize;
+
+            $this->currentPageContent .= "BT\n";
+            $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
+            $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
+            $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $x, $baselineY);
+            $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
+            $this->currentPageContent .= "ET\n";
+
+            $consumed = $topOffset + $lineHeight;
+            $drawn++;
+        }
+
+        return [
+            'consumed'   => $consumed,
+            'truncated'  => $truncated,
+            'totalLines' => $totalLines,
+            'drawnLines' => $drawn,
+        ];
+    }
+
+    /**
+     * Tronque la fin d'une ligne pour y faire tenir '…' dans la largeur
+     * disponible.
+     */
+    private function appendEllipsis(string $line, string $fontName, float $fontSize, float $maxWidth): string
+    {
+        $candidate = rtrim($line) . '…';
+
+        while ($candidate !== '…' && $this->measureTextWidth($candidate, $fontName, $fontSize) > $maxWidth) {
+            $candidate = mb_substr($candidate, 0, mb_strlen($candidate) - 2) . '…';
+        }
+
+        return $candidate;
+    }
+
+    /**
+     * Dessine un rectangle aux coordonnées top-left (origine page haut-gauche),
+     * en convertissant vers la convention PDF interne. Pratique pour
+     * encadrer une zone de texte.
+     */
+    public function drawRectTopLeft(
+        float $x,
+        float $yTopLeft,
+        float $width,
+        float $height,
+        ?string $fillColor = null,
+        ?string $strokeColor = null,
+        float $strokeWidth = 0.5,
+    ): void {
+        $bottomY = $this->pageHeight - $yTopLeft - $height;
+        $this->drawRect($x, $bottomY, $width, $height, $fillColor, $strokeColor, $strokeWidth);
+    }
+
+    /**
+     * Dessine une image aux coordonnées top-left.
+     */
+    public function drawImageTopLeft(string $path, float $x, float $yTopLeft, float $width, float $height): void
+    {
+        $bottomY = $this->pageHeight - $yTopLeft - $height;
+        $this->drawImage($path, $x, $bottomY, $width, $height);
+    }
+
+    /**
      * @return string[]
      */
     public function wrapText(string $text, string $fontName, float $fontSize, float $maxWidth): array
@@ -354,11 +544,16 @@ class PdfEngine
 
             $resourceDict = $this->buildResourceDict($i);
 
+            $geometry = $this->pageGeometries[$i] ?? [
+                'width'  => $this->pageWidth,
+                'height' => $this->pageHeight,
+            ];
+
             $this->objects[$pageObj] = new PdfObject($pageObj, sprintf(
                 "<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %.2f %.2f] /Contents %d 0 R /Resources %s >>",
                 $this->pagesObj,
-                $this->pageWidth,
-                $this->pageHeight,
+                $geometry['width'],
+                $geometry['height'],
                 $contentObj,
                 $resourceDict
             ));
@@ -415,6 +610,15 @@ class PdfEngine
         );
 
         $this->pageObjects[] = $streamObj;
+        $this->pageGeometries[] = [
+            'width'        => $this->pageWidth,
+            'height'       => $this->pageHeight,
+            'marginTop'    => $this->marginTop,
+            'marginRight'  => $this->marginRight,
+            'marginBottom' => $this->marginBottom,
+            'marginLeft'   => $this->marginLeft,
+        ];
+
         $this->currentPageContent = '';
     }
 

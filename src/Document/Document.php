@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Document;
 
 use Paperdoc\Contracts\DocumentInterface;
-use Paperdoc\Document\Style\TextStyle;
+use Paperdoc\Document\Style\{RunningElement, TextStyle};
 use Paperdoc\Support\ThumbnailGenerator;
 
 class Document implements DocumentInterface, \JsonSerializable
@@ -19,6 +19,10 @@ class Document implements DocumentInterface, \JsonSerializable
     private ?Metadata $properties = null;
 
     private TextStyle $defaultTextStyle;
+
+    private ?RunningElement $header = null;
+
+    private ?RunningElement $footer = null;
 
     public function __construct(
         private string $format,
@@ -204,6 +208,27 @@ class Document implements DocumentInterface, \JsonSerializable
     }
 
     /* -------------------------------------------------------------
+     | Header / Footer (running elements)
+     |------------------------------------------------------------- */
+
+    public function getHeader(): ?RunningElement { return $this->header; }
+    public function getFooter(): ?RunningElement { return $this->footer; }
+
+    public function setHeader(?RunningElement $header): static
+    {
+        $this->header = $header;
+
+        return $this;
+    }
+
+    public function setFooter(?RunningElement $footer): static
+    {
+        $this->footer = $footer;
+
+        return $this;
+    }
+
+    /* -------------------------------------------------------------
      | JsonSerializable
      |------------------------------------------------------------- */
 
@@ -218,6 +243,14 @@ class Document implements DocumentInterface, \JsonSerializable
 
         if ($this->properties !== null) {
             $result['properties'] = $this->properties;
+        }
+
+        if ($this->header !== null) {
+            $result['header'] = $this->header;
+        }
+
+        if ($this->footer !== null) {
+            $result['footer'] = $this->footer;
         }
 
         return $result;

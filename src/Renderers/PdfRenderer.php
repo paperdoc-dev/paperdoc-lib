@@ -20,8 +20,10 @@ use Paperdoc\Document\{
     Section,
     Table,
     TextRun,
+    TextZone,
 };
-use Paperdoc\Document\Style\TextStyle;
+use Paperdoc\Document\Style\{PageSetup, RunningElement, TextStyle};
+use Paperdoc\Enum\Alignment;
 use Paperdoc\Support\Pdf\PdfEngine;
 
 /**
@@ -36,6 +38,12 @@ use Paperdoc\Support\Pdf\PdfEngine;
 class PdfRenderer extends AbstractRenderer
 {
     private PdfEngine $engine;
+
+    private ?RunningElement $header = null;
+    private ?RunningElement $footer = null;
+    private string $documentTitle = '';
+    private int $totalPages = 1;
+    private ?Section $currentSection = null;
 
     public function getFormat(): string { return 'pdf'; }
 
@@ -62,14 +70,23 @@ class PdfRenderer extends AbstractRenderer
     {
         $this->engine = new PdfEngine();
         $this->engine->setTitle($document->getTitle());
+        $this->documentTitle = $document->getTitle();
 
         $author = null;
+        $this->header = null;
+        $this->footer = null;
+
         if ($document instanceof Document) {
             $author = $document->getProperties()?->getAuthor();
+            $this->header = $document->getHeader();
+            $this->footer = $document->getFooter();
         }
+
         $this->engine->setCreator($author !== null && $author !== ''
             ? $author
             : ($document->getMetadata()['creator'] ?? 'Paperdoc'));
+
+        $this->totalPages = $this->countDeclaredPages($document);
 
         $isFirst = true;
 
@@ -78,11 +95,74 @@ class PdfRenderer extends AbstractRenderer
                 $this->engine->newPage();
             }
 
+            $this->currentSection = $section;
+            $this->applyPageSetup($section->getPageSetup());
+            $this->drawHeaderFooter();
             $this->writeSection($section, $document);
             $isFirst = false;
         }
 
+        $this->currentSection = null;
         $this->engine->save($filename);
+    }
+
+    /**
+     * Compte les pages "déclarées" : sections + PageBreaks explicites.
+     * Les sauts de page automatiques (déclenchés par needsNewPage()
+     * pour des images ou tableaux qui débordent) ne sont pas comptés
+     * ici — l'estimation reste suffisante pour le placeholder {pages}
+     * dans la grande majorité des cas.
+     */
+    private function countDeclaredPages(DocumentInterface $document): int
+    {
+        $total = 0;
+
+        foreach ($document->getSections() as $section) {
+            $total++;
+            foreach ($section->getElements() as $element) {
+                if ($element instanceof PageBreak) {
+                    $total++;
+                }
+            }
+        }
+
+        return max(1, $total);
+    }
+
+    /**
+     * Applique la configuration de page (taille, marges, fonds) à la
+     * page courante du PdfEngine. Doit être appelé après newPage() et
+     * avant tout autre dessin.
+     */
+    private function applyPageSetup(?PageSetup $setup): void
+    {
+        if ($setup === null) {
+            return;
+        }
+
+        $this->engine->setPageGeometry(
+            width:        $setup->getWidth(),
+            height:       $setup->getHeight(),
+            marginTop:    $setup->getPaddingTop(),
+            marginRight:  $setup->getPaddingRight(),
+            marginBottom: $setup->getPaddingBottom(),
+            marginLeft:   $setup->getPaddingLeft(),
+        );
+
+        if ($setup->getBackgroundColor() !== null) {
+            $this->engine->drawPageBackgroundColor($setup->getBackgroundColor());
+        }
+
+        $bgImage = $setup->getBackgroundImage();
+        if ($bgImage !== null) {
+            $tmpPath = $this->resolveImagePath($bgImage);
+            if ($tmpPath !== null) {
+                $this->engine->drawPageBackgroundImage($tmpPath);
+                if ($this->isTempFile($tmpPath, $bgImage)) {
+                    @unlink($tmpPath);
+                }
+            }
+        }
     }
 
     private function writeSection(Section $section, DocumentInterface $document): void
@@ -90,6 +170,77 @@ class PdfRenderer extends AbstractRenderer
         foreach ($section->getElements() as $element) {
             $this->writeBlock($element, $document, 0);
         }
+    }
+
+    /* =============================================================
+     | Header / Footer
+     |============================================================= */
+
+    private function drawHeaderFooter(): void
+    {
+        if ($this->header !== null) {
+            $this->drawRunningElement($this->header, true);
+        }
+
+        if ($this->footer !== null) {
+            $this->drawRunningElement($this->footer, false);
+        }
+    }
+
+    private function drawRunningElement(RunningElement $element, bool $isHeader): void
+    {
+        $text = $element->resolve(
+            $this->engine->getCurrentPageNumber(),
+            $this->totalPages,
+            $this->documentTitle,
+        );
+
+        if ($text === '') {
+            return;
+        }
+
+        $style    = $element->getStyle();
+        $fontName = $style->getPdfFontName();
+        $fontSize = $style->getFontSize();
+        [$r, $g, $b] = $style->getColorRgb();
+
+        // Drawn within the page padding area, with a small inner margin
+        // so it doesn't kiss the page edge.
+        $sideMargin   = 24.0;
+        $verticalGap  = 12.0;
+        $pageWidth    = $this->engine->getPageWidth();
+        $pageHeight   = $this->engine->getPageHeight();
+        $textWidth    = $this->engine->measureTextWidth($text, $fontName, $fontSize);
+        $available    = max(1.0, $pageWidth - 2 * $sideMargin);
+
+        $x = match ($element->getAlignment()) {
+            Alignment::CENTER => ($pageWidth - $textWidth) / 2,
+            Alignment::RIGHT  => $pageWidth - $sideMargin - $textWidth,
+            default           => $sideMargin,
+        };
+
+        // Ensure x stays within page bounds (handles oversized text gracefully).
+        $x = max($sideMargin, min($x, $pageWidth - $sideMargin - 1));
+
+        // Top-left coordinate (we use the engine's top-left helper to convert).
+        $yTopLeft = $isHeader
+            ? $verticalGap
+            : $pageHeight - $verticalGap - $element->getHeight();
+
+        $this->engine->writeWrappedTextAt(
+            text:     $text,
+            fontName: $fontName,
+            fontSize: $fontSize,
+            x:        $x,
+            yTopLeft: $yTopLeft,
+            maxWidth: $available,
+            r:        $r,
+            g:        $g,
+            b:        $b,
+            lineSpacing: 1.15,
+            maxHeight: $element->getHeight(),
+            ellipsis: true,
+        );
     }
 
     private function writeBlock(DocumentElementInterface $element, DocumentInterface $document, float $indent): void
@@ -103,9 +254,17 @@ class PdfRenderer extends AbstractRenderer
             $element instanceof Bookmark   => null, // invisible target; reserved for future link annotations
             $element instanceof Table      => $this->writeTable($element, $document),
             $element instanceof Image      => $this->writeImage($element),
-            $element instanceof PageBreak  => $this->engine->newPage(),
+            $element instanceof TextZone   => $this->writeTextZone($element, $document),
+            $element instanceof PageBreak  => $this->handlePageBreak(),
             default                        => null,
         };
+    }
+
+    private function handlePageBreak(): void
+    {
+        $this->engine->newPage();
+        $this->applyPageSetup($this->currentSection?->getPageSetup());
+        $this->drawHeaderFooter();
     }
 
     /* =============================================================
@@ -555,27 +714,90 @@ class PdfRenderer extends AbstractRenderer
     }
 
     /* =============================================================
+     | TextZone (positioned text frame)
+     |============================================================= */
+
+    private function writeTextZone(TextZone $zone, DocumentInterface $document): void
+    {
+        $bg     = $zone->getBackgroundColor();
+        $border = $zone->getBorderColor();
+        $bw     = $zone->getBorderWidth();
+
+        if ($bg !== null || $border !== null) {
+            $this->engine->drawRectTopLeft(
+                $zone->getX(),
+                $zone->getY(),
+                $zone->getWidth(),
+                $zone->getHeight(),
+                $bg,
+                $border,
+                $bw > 0 ? $bw : 0.5,
+            );
+        }
+
+        $padding  = $zone->getPadding();
+        $textX    = $zone->getX() + $padding;
+        $textTopY = $zone->getY() + $padding;
+        $maxWidth = max(0.0, $zone->getWidth() - 2 * $padding);
+
+        $overflow = $zone->getOverflow();
+        $hasMaxHeight = $overflow !== TextZone::OVERFLOW_VISIBLE;
+        $maxHeight = $hasMaxHeight ? max(0.0, $zone->getHeight() - 2 * $padding) : null;
+        $ellipsis  = $overflow === TextZone::OVERFLOW_ELLIPSIS;
+
+        $cursorOffset = 0.0;
+
+        foreach ($zone->getParagraphs() as $paragraph) {
+            $paraStyle   = $paragraph->getStyle();
+            $lineSpacing = $paraStyle?->getLineSpacing() ?? 1.15;
+            $spaceAfter  = $paraStyle?->getSpaceAfter() ?? 4.0;
+
+            foreach ($paragraph->getRuns() as $run) {
+                if ($maxHeight !== null && $cursorOffset >= $maxHeight) {
+                    break 2;
+                }
+
+                $remaining = $maxHeight !== null ? $maxHeight - $cursorOffset : null;
+
+                $style = $run->getStyle() ?? $document->getDefaultTextStyle();
+                [$r, $g, $b] = $style->getColorRgb();
+
+                $result = $this->engine->writeWrappedTextAt(
+                    text:        $run->getText(),
+                    fontName:    $style->getPdfFontName(),
+                    fontSize:    $style->getFontSize(),
+                    x:           $textX,
+                    yTopLeft:    $textTopY + $cursorOffset,
+                    maxWidth:    $maxWidth,
+                    r:           $r,
+                    g:           $g,
+                    b:           $b,
+                    lineSpacing: $lineSpacing,
+                    maxHeight:   $remaining,
+                    ellipsis:    $ellipsis,
+                );
+
+                $cursorOffset += $result['consumed'];
+
+                if ($result['truncated']) {
+                    break 2;
+                }
+            }
+
+            $cursorOffset += $spaceAfter;
+        }
+    }
+
+    /* =============================================================
      | Images
      |============================================================= */
 
     private function writeImage(Image $image): void
     {
-        $src = $image->getSrc();
         $tmpPath = null;
+        $src = $this->resolveImagePath($image, $tmpPath);
 
-        if ((! $src || ! file_exists($src)) && $image->hasData()) {
-            $extension = match ($image->getMimeType()) {
-                'image/jpeg', 'image/jpg' => 'jpg',
-                'image/gif' => 'gif',
-                default => 'png',
-            };
-            $tmpPath = tempnam(sys_get_temp_dir(), 'paperdoc_img_') . '.' . $extension;
-            if (@file_put_contents($tmpPath, $image->getData()) !== false) {
-                $src = $tmpPath;
-            }
-        }
-
-        if (! $src || ! file_exists($src)) {
+        if ($src === null) {
             return;
         }
 
@@ -604,5 +826,41 @@ class PdfRenderer extends AbstractRenderer
         if ($tmpPath !== null) {
             @unlink($tmpPath);
         }
+    }
+
+    /**
+     * Résout le chemin d'une Image utilisable par le PdfEngine. Si
+     * l'image n'a qu'un buffer en mémoire, écrit un fichier temporaire
+     * (que l'appelant doit ensuite supprimer).
+     */
+    private function resolveImagePath(Image $image, ?string &$tmpPath = null): ?string
+    {
+        $src = $image->getSrc();
+        $tmpPath = null;
+
+        if ((! $src || ! file_exists($src)) && $image->hasData()) {
+            $extension = match ($image->getMimeType()) {
+                'image/jpeg', 'image/jpg' => 'jpg',
+                'image/gif' => 'gif',
+                default => 'png',
+            };
+            $tmpPath = tempnam(sys_get_temp_dir(), 'paperdoc_img_') . '.' . $extension;
+            if (@file_put_contents($tmpPath, $image->getData()) !== false) {
+                $src = $tmpPath;
+            } else {
+                $tmpPath = null;
+            }
+        }
+
+        if (! $src || ! file_exists($src)) {
+            return null;
+        }
+
+        return $src;
+    }
+
+    private function isTempFile(string $path, Image $image): bool
+    {
+        return $path !== $image->getSrc();
     }
 }

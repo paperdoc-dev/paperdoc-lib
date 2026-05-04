@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace Paperdoc\Document;
 
 use Paperdoc\Contracts\DocumentElementInterface;
-use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
+use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, TextStyle};
 use Paperdoc\Document\Link\TextLink;
+use Paperdoc\Enum\PageSize;
 
 class Section implements \JsonSerializable
 {
@@ -15,6 +16,8 @@ class Section implements \JsonSerializable
 
     /** @var array<string, mixed> */
     private array $metadata = [];
+
+    private ?PageSetup $pageSetup = null;
 
     public function __construct(private string $name = '') {}
 
@@ -192,6 +195,79 @@ class Section implements \JsonSerializable
     }
 
     /* -------------------------------------------------------------
+     | Page setup (size, padding, background)
+     |------------------------------------------------------------- */
+
+    public function getPageSetup(): ?PageSetup { return $this->pageSetup; }
+
+    public function setPageSetup(?PageSetup $setup): static
+    {
+        $this->pageSetup = $setup;
+
+        return $this;
+    }
+
+    /**
+     * Lazily creates a PageSetup so callers can chain setters
+     * without instantiating it themselves.
+     */
+    private function ensurePageSetup(): PageSetup
+    {
+        if ($this->pageSetup === null) {
+            $this->pageSetup = new PageSetup();
+        }
+
+        return $this->pageSetup;
+    }
+
+    public function setPageSize(PageSize $size, string $orientation = PageSetup::ORIENTATION_PORTRAIT): static
+    {
+        $this->ensurePageSetup()->setSize($size, $orientation);
+
+        return $this;
+    }
+
+    public function setPageDimensions(float $width, float $height): static
+    {
+        $this->ensurePageSetup()->setDimensions($width, $height);
+
+        return $this;
+    }
+
+    public function setPagePadding(float ...$values): static
+    {
+        $this->ensurePageSetup()->setPadding(...$values);
+
+        return $this;
+    }
+
+    public function setPageBackgroundImage(?Image $image): static
+    {
+        $this->ensurePageSetup()->setBackgroundImage($image);
+
+        return $this;
+    }
+
+    public function setPageBackgroundColor(?string $color): static
+    {
+        $this->ensurePageSetup()->setBackgroundColor($color);
+
+        return $this;
+    }
+
+    /* -------------------------------------------------------------
+     | Shortcut : TextZone
+     |------------------------------------------------------------- */
+
+    public function addTextZone(float $x = 0.0, float $y = 0.0, float $width = 200.0, float $height = 100.0): TextZone
+    {
+        $zone = new TextZone($x, $y, $width, $height);
+        $this->addElement($zone);
+
+        return $zone;
+    }
+
+    /* -------------------------------------------------------------
      | JsonSerializable
      |------------------------------------------------------------- */
 
@@ -204,6 +280,10 @@ class Section implements \JsonSerializable
 
         if (! empty($this->metadata)) {
             $result['metadata'] = $this->metadata;
+        }
+
+        if ($this->pageSetup !== null) {
+            $result['pageSetup'] = $this->pageSetup;
         }
 
         return $result;

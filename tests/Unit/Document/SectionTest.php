@@ -11,7 +11,10 @@ use Paperdoc\Document\TextRun;
 use Paperdoc\Document\Table;
 use Paperdoc\Document\Image;
 use Paperdoc\Document\PageBreak;
+use Paperdoc\Document\TextZone;
+use Paperdoc\Document\Style\PageSetup;
 use Paperdoc\Document\Style\TextStyle;
+use Paperdoc\Enum\PageSize;
 
 class SectionTest extends TestCase
 {
@@ -240,5 +243,133 @@ class SectionTest extends TestCase
         $this->assertInstanceOf(\Paperdoc\Document\Blockquote::class, $q);
         $this->assertSame([$q], $section->getElements());
         $this->assertSame('quoted', $q->getElements()[0]->getPlainText());
+    }
+
+    /* -------------------------------------------------------------
+     | Page setup (size, padding, background) — v0.5.0
+     |------------------------------------------------------------- */
+
+    public function test_page_setup_is_null_by_default(): void
+    {
+        $this->assertNull((new Section())->getPageSetup());
+    }
+
+    public function test_set_page_setup_replaces_current(): void
+    {
+        $section = new Section();
+        $setup = PageSetup::fromSize(PageSize::A4);
+
+        $section->setPageSetup($setup);
+
+        $this->assertSame($setup, $section->getPageSetup());
+    }
+
+    public function test_set_page_size_creates_setup_lazily(): void
+    {
+        $section = new Section();
+
+        $section->setPageSize(PageSize::A5);
+
+        $this->assertNotNull($section->getPageSetup());
+        $this->assertSame(PageSize::A5, $section->getPageSetup()->getSize());
+    }
+
+    public function test_set_page_dimensions_uses_custom_values(): void
+    {
+        $section = new Section();
+
+        $section->setPageDimensions(800.0, 600.0);
+
+        $this->assertSame(800.0, $section->getPageSetup()->getWidth());
+        $this->assertSame(600.0, $section->getPageSetup()->getHeight());
+    }
+
+    public function test_set_page_padding_propagates(): void
+    {
+        $section = new Section();
+
+        $section->setPagePadding(10.0, 20.0);
+
+        $this->assertSame(10.0, $section->getPageSetup()->getPaddingTop());
+        $this->assertSame(20.0, $section->getPageSetup()->getPaddingRight());
+    }
+
+    public function test_set_page_background_color_propagates(): void
+    {
+        $section = new Section();
+
+        $section->setPageBackgroundColor('#F0F0F0');
+
+        $this->assertSame('#F0F0F0', $section->getPageSetup()->getBackgroundColor());
+    }
+
+    public function test_set_page_background_image_propagates(): void
+    {
+        $section = new Section();
+        $image = Image::make('/cover.jpg');
+
+        $section->setPageBackgroundImage($image);
+
+        $this->assertSame($image, $section->getPageSetup()->getBackgroundImage());
+    }
+
+    public function test_page_setup_chain_is_fluent(): void
+    {
+        $section = new Section();
+
+        $result = $section
+            ->setPageSize(PageSize::A4)
+            ->setPagePadding(20.0)
+            ->setPageBackgroundColor('#FFF');
+
+        $this->assertSame($section, $result);
+    }
+
+    public function test_page_setup_serialised_when_present(): void
+    {
+        $section = new Section('cover');
+        $section->setPageSize(PageSize::A4);
+
+        $json = json_decode(json_encode($section), true);
+
+        $this->assertArrayHasKey('pageSetup', $json);
+        $this->assertSame('a4', $json['pageSetup']['size']);
+    }
+
+    public function test_page_setup_omitted_from_json_when_null(): void
+    {
+        $section = new Section('plain');
+
+        $json = json_decode(json_encode($section), true);
+
+        $this->assertArrayNotHasKey('pageSetup', $json);
+    }
+
+    /* -------------------------------------------------------------
+     | TextZone shortcut — v0.5.0
+     |------------------------------------------------------------- */
+
+    public function test_add_text_zone_appends_and_returns_zone(): void
+    {
+        $section = new Section();
+
+        $zone = $section->addTextZone(40.0, 60.0, 200.0, 80.0);
+
+        $this->assertInstanceOf(TextZone::class, $zone);
+        $this->assertSame(40.0, $zone->getX());
+        $this->assertSame(60.0, $zone->getY());
+        $this->assertSame(200.0, $zone->getWidth());
+        $this->assertSame(80.0, $zone->getHeight());
+        $this->assertSame([$zone], $section->getElements());
+    }
+
+    public function test_add_text_zone_default_values(): void
+    {
+        $section = new Section();
+
+        $zone = $section->addTextZone();
+
+        $this->assertSame(0.0, $zone->getX());
+        $this->assertSame(0.0, $zone->getY());
     }
 }

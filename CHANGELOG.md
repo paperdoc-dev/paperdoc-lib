@@ -12,6 +12,156 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.7.0] — 2026-05-04
+
+> **Page layout & text zones** — every page can now be configured
+> independently (size, padding, full-page background image or color)
+> and absolutely-positioned `TextZone` blocks make pixel-perfect
+> layouts trivial. Document-wide running headers/footers with
+> placeholder substitution (`{page}`, `{pages}`, `{title}`, `{date}`,
+> `{datetime}`) are wired into the PDF and HTML renderers. Fully
+> **non-breaking** — every existing `Section` continues to render with
+> sensible A4 defaults if no `PageSetup` is attached.
+
+### Added — Page layout
+
+- **`Paperdoc\Enum\PageSize`** — typed enum for the standard formats
+  (`A3`, `A4`, `A5`, `A6`, `LETTER`, `LEGAL`, `TABLOID`, `EXECUTIVE`).
+  `dimensions()`, `width()` and `height()` return the portrait values
+  in PDF points.
+- **`Paperdoc\Document\Style\PageSetup`** — value object describing
+  the physical page : `width`/`height` (or `fromSize()` /
+  `custom($w, $h)`), `orientation` (`portrait` / `landscape` with
+  `landscape()` and `portrait()` flippers), `padding` (CSS shorthand —
+  1, 2, 3 or 4 values), `backgroundImage` and `backgroundColor`.
+  `getContentWidth()` / `getContentHeight()` expose the inner usable
+  area. Implements `JsonSerializable`.
+- **`Section::setPageSetup(?PageSetup)`** plus convenience setters
+  delegating to `PageSetup` : `setPageSize()`, `setPageDimensions()`,
+  `setPagePadding()`, `setPageBackgroundImage()`,
+  `setPageBackgroundColor()`. Any section can therefore declare its
+  own page size and background — chain several sections to obtain
+  per-page configurations (cover/portrait, body/landscape, tear-out
+  square, etc.).
+
+### Added — Absolute text positioning
+
+- **`Paperdoc\Document\TextZone`** — a new `BlockElementInterface`
+  block that places text in an absolutely-positioned rectangle
+  (`x`, `y`, `width`, `height` in points, top-left origin to match
+  CSS and user expectations). Supports per-zone `padding`,
+  `backgroundColor`, `border` (`setBorder($color, $width)`) and
+  three overflow strategies :
+  - `OVERFLOW_CLIP` (default) — silently truncates content that does
+    not fit in the box.
+  - `OVERFLOW_ELLIPSIS` — truncates and ends the last visible line
+    with an ellipsis (`…`).
+  - `OVERFLOW_VISIBLE` — no clipping; content may flow outside the
+    box (rarely useful, kept for parity with CSS).
+- **`Section::addTextZone($x, $y, $w, $h)`** — fluent shortcut that
+  appends a `TextZone` to the section and returns it so paragraphs
+  can be added immediately.
+
+### Added — Running headers & footers
+
+- **`Paperdoc\Document\Style\RunningElement`** — value object for a
+  document-wide running header or footer. `template`, `alignment`
+  (`Paperdoc\Enum\Alignment`) and `style` (`TextStyle`) are
+  configurable; `resolve($pageNumber, $totalPages, $title)` substitutes
+  the supported placeholders : `{page}`, `{pages}`, `{title}`,
+  `{date}` (`Y-m-d`) and `{datetime}` (`Y-m-d H:i`).
+- **`Document::setHeader(?RunningElement)`** /
+  **`Document::setFooter(?RunningElement)`** — register a running
+  header or footer applied uniformly to every page (header/footer is
+  drawn after the page background but before content, ensuring it is
+  always visible).
+
+### Added — PDF engine
+
+- **`PdfEngine::setPageGeometry($width, $height, $marginTop, $marginRight, $marginBottom, $marginLeft)`**
+  — adjusts the active page's `MediaBox` and content margins on the
+  fly. Each emitted page now records its own geometry, so a single
+  PDF can mix portrait, landscape and custom-size pages within a
+  document.
+- **`PdfEngine::drawPageBackgroundColor($hex)`** /
+  **`drawPageBackgroundImage(Image $image)`** — paint a full-bleed
+  background as the very first operation of the current content
+  stream, behind every subsequent draw call.
+- **`PdfEngine::drawRectTopLeft()`** / **`drawImageTopLeft()`** —
+  top-left-origin variants that translate into the PDF
+  bottom-left-origin coordinate system internally; used by the
+  `TextZone` painter.
+- **`PdfEngine::writeWrappedTextAt()`** — now accepts an optional
+  `maxHeight` and `ellipsis` string and returns
+  `['consumed', 'truncated', 'totalLines', 'drawnLines']`, allowing the
+  renderer to honour `OVERFLOW_CLIP` and `OVERFLOW_ELLIPSIS`
+  precisely.
+- **`PdfEngine::getCurrentPageNumber()`** — 1-indexed accessor used
+  by the running-element pipeline.
+
+### Added — Renderers
+
+- **`PdfRenderer`** — full pipeline for the new model:
+  - per-section `PageSetup` is applied at section start and after
+    every page break (so auto-paginated content keeps its background
+    when overflowing to additional pages),
+  - `TextZone` is drawn with optional fill/border, then text is
+    written through `writeWrappedTextAt()` with the user-selected
+    overflow strategy,
+  - `Document` header/footer is rendered on every page (initial,
+    page-break and final pages alike) with placeholder resolution.
+- **`HtmlRenderer`**:
+  - `<section class="paperdoc-page">` now reflects per-page width,
+    height, padding, `background-color` and `background-image`
+    (local files are inlined as `data:` URIs so previews work
+    without an HTTP host).
+  - `TextZone` becomes a `<div class="paperdoc-text-zone">` with
+    `position:absolute`, font/color metrics propagated to the wrapper
+    and an inner `<div class="paperdoc-clamp">` whose
+    `max-height = N × line-height` clips at an exact integer number
+    of lines (much more reliable than `-webkit-line-clamp`, which
+    occasionally leaks content past the clamp on fixed-height
+    parents). `OVERFLOW_ELLIPSIS` adds an ellipsis pseudo-element in
+    the bottom-right corner backed by the zone's own background to
+    blend seamlessly.
+  - Headers and footers are rendered as `.paperdoc-running.header` /
+    `.paperdoc-running.footer` bars with a translucent backdrop and a
+    blur filter — guaranteed legible on top of any background image.
+
+### Tests
+
+- **`tests/Unit/Enum/PageSizeTest.php`** — dimensions and helpers for
+  every standard format.
+- **`tests/Unit/Document/Style/PageSetupTest.php`** — factories
+  (`make`, `fromSize`, `custom`), orientation flipping, padding
+  shorthand, background setters, content width/height,
+  JSON serialisation.
+- **`tests/Unit/Document/Style/RunningElementTest.php`** — template,
+  alignment, style, height accessors and placeholder resolution
+  (including `{date}` / `{datetime}` formatting).
+- **`tests/Unit/Document/TextZoneTest.php`** — geometry, padding,
+  background, border, overflow validation (`InvalidArgumentException`
+  on unknown mode), paragraph addition, JSON serialisation.
+- **`tests/Unit/Document/SectionTest.php`** /
+  **`tests/Unit/Document/DocumentTest.php`** updated for the new
+  setters and JSON output.
+
+### Notes / migration
+
+- 100% non-breaking: any `Section` without a `PageSetup` keeps
+  rendering on the historical A4-portrait default with 40-pt margins.
+- The library does not automatically reserve vertical space for
+  headers / footers — placement of `TextZone` blocks remains under
+  the user's control. The HTML renderer adds a translucent strip
+  behind the running elements as a built-in safety net so the
+  text stays legible on busy backgrounds.
+- The standalone `examples/` folder has been removed; minimal
+  snippets demonstrating every new API now live directly in
+  `README.md` and `resources/views/documents/index.blade.php` so
+  package consumers can copy/paste without cloning the repo.
+
+---
+
 ## [0.6.0] — 2026-04-29
 
 > Bug-fix release on the road to **1.0**: makes tables and images
