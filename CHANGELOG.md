@@ -12,6 +12,85 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.7.3] — 2026-05-04
+
+> **Typography quality patch** — four fixes that materially improve
+> the visual quality of PDF output, with no breaking API changes.
+> Documents that rendered "almost right" before (slightly off-centre
+> titles, baselines colliding between an "eyebrow" line and the
+> title that follows it, justified lines with conspicuous "rivers"
+> of whitespace) now look correct.
+
+### Fixed
+
+- **A1 — Vertical overlap between consecutive paragraphs of very
+  different font sizes.** `PdfRenderer::writeParagraph()` now reserves
+  enough vertical space before each new paragraph so the top of its
+  glyphs (ascender) doesn't collide with the previous paragraph's
+  baseline. Symptom that this addresses: a small "TABLE" eyebrow line
+  followed by a 28pt "Sommaire" title visibly overlapping each other.
+  The same logic is mirrored inside `writeTextZone()` so stacked
+  paragraphs of different sizes within a single zone behave identically.
+- **A2 — Imprecise text measurement.** `PdfEngine::measureTextWidth()`
+  was using a single per-font average width (e.g. Times-Bold = 530/1000
+  for every glyph), which made centring, right-alignment and
+  word-wrapping noticeably off for titles full of narrow letters. The
+  engine now ships per-glyph metric tables for the **14 standard PDF
+  fonts** (Core 14: Helvetica, Times, Courier × {regular, bold,
+  italic, bold-italic} + Symbol + ZapfDingbats), generated from the
+  metric-compatible URW Base35 AFM files. As a side effect,
+  `wrapText()` is also more precise — long lines wrap at the right word.
+- **B1 — Justification with visible "rivers".** `emitTextLine()` now
+  combines word-spacing (`Tw`) and character-spacing (`Tc`), with a
+  per-line threshold: when the missing space would produce a
+  word-spacing gap greater than ~3pt, the line silently falls back to
+  flush-left rather than producing an unevenly-spaced "river". Last
+  line of a paragraph stays left-aligned (unchanged).
+- **C3 — Silent character drop.** `escapePdfString()` used
+  `mb_convert_encoding()` with PHP's default of *silently dropping*
+  any UTF-8 sequence not representable in WinAnsi (cp1252). Greek
+  letters, mathematical symbols and CJK characters would simply
+  disappear from the output, leaving wrong widths and unexpected
+  word-spacing. The engine now substitutes a `?` for any such
+  character so problems are visible in the output instead of haunting
+  layout calculations.
+
+### Added
+
+- **`PdfEngine::getFontMetrics(string $fontName): array`** — returns
+  ascender / descender / capHeight (in 1000em units) for any Core 14
+  font. Used internally by the ascent reservation logic; exposed
+  publicly so downstream renderers and tests can reproduce the same
+  geometric reasoning.
+- **`Paperdoc\Support\Pdf\Core14Widths`** — public-final class
+  shipping the 14 width tables (256 ints each, indexed by WinAnsi byte
+  code). Pure metric data (numbers), generated at build time from the
+  AFM files; no font binaries shipped.
+- **`tools/build-afm-widths.php`** — regeneration script for the
+  width tables. Run it whenever the URW Base35 AFM files are updated
+  upstream (extremely rare).
+
+### Tests
+
+- **+11 new regression tests** covering each of A1, A2, B1, C3 and
+  the C1/C2 drawing-order contracts. **707 / 707** tests passing.
+- New tests verify: 'WWWW' measures > 2.5× wider than 'iiii' in
+  Helvetica-Bold; French typography glyphs (`é à è ç î ï « » œ`)
+  measure within sane bounds; a small eyebrow followed by a 28pt
+  title produces a baseline gap ≥ 21pt (= title ascender); a short
+  justified line falls back to flush-left; the page background image
+  is drawn before the running header/footer; the page background
+  color is drawn before the background image.
+
+### Compatibility
+
+- Fully backward-compatible. Existing documents render with the same
+  layout, only crisper (alignment is now where you asked it to be).
+- The `CHAR_WIDTHS` per-font averages remain as a fallback for any
+  custom font registered outside the Core 14.
+
+---
+
 ## [0.7.2] — 2026-05-04
 
 > **Bug fix** — `ParagraphStyle::alignment` was only honoured by

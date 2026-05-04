@@ -45,6 +45,16 @@ class PdfRenderer extends AbstractRenderer
     private int $totalPages = 1;
     private ?Section $currentSection = null;
 
+    /**
+     * Effective line height (in points) of the last drawn line on the
+     * current page — used to compute how much extra vertical space to
+     * reserve when a new paragraph uses a noticeably bigger font, so
+     * the top of the new glyphs doesn't collide with the previous
+     * baseline. Zero means "first block on the page, no reservation
+     * needed". Reset on every newPage().
+     */
+    private float $lastBlockLineHeight = 0.0;
+
     public function getFormat(): string { return 'pdf'; }
 
     public function render(DocumentInterface $document): string
@@ -71,6 +81,7 @@ class PdfRenderer extends AbstractRenderer
         $this->engine = new PdfEngine();
         $this->engine->setTitle($document->getTitle());
         $this->documentTitle = $document->getTitle();
+        $this->lastBlockLineHeight = 0.0;
 
         $author = null;
         $this->header = null;
@@ -93,6 +104,7 @@ class PdfRenderer extends AbstractRenderer
         foreach ($document->getSections() as $section) {
             if (! $isFirst) {
                 $this->engine->newPage();
+                $this->lastBlockLineHeight = 0.0;
             }
 
             $this->currentSection = $section;
@@ -258,13 +270,51 @@ class PdfRenderer extends AbstractRenderer
             $element instanceof PageBreak  => $this->handlePageBreak(),
             default                        => null,
         };
+
+        // Non-paragraph blocks (heading, image, table, list, …) reset
+        // the trailing line metric — paragraphs handle the bookkeeping
+        // themselves inside writeParagraph(), and the next text block
+        // doesn't need ascent reservation against a non-text or
+        // already-spaced block (writeHeading bakes its own clearance).
+        if (! ($element instanceof Paragraph)) {
+            $this->lastBlockLineHeight = 0.0;
+        }
     }
 
     private function handlePageBreak(): void
     {
         $this->engine->newPage();
+        $this->lastBlockLineHeight = 0.0;
         $this->applyPageSetup($this->currentSection?->getPageSetup());
         $this->drawHeaderFooter();
+    }
+
+    /**
+     * Reserves enough vertical space before drawing a new block so the
+     * top of its first glyphs (ascender) doesn't collide with the
+     * previous baseline. Returns the actual amount of `spaceBefore` to
+     * apply (= max of the user-requested spaceBefore and the geometric
+     * minimum). When this is the first block on a page, the engine's
+     * cursor already sits at the ideal first-baseline position so we
+     * just honour the user's spaceBefore as-is.
+     *
+     * Computation:
+     *  - top of new glyphs (in PDF coords) = cursorY + ascender_pt
+     *  - previous baseline                 = cursorY + lastBlockLineHeight
+     *  - overlap if `ascender_pt > lastBlockLineHeight`
+     *  - reservation = max(0, ascender_pt - lastBlockLineHeight)
+     */
+    private function reserveAscentFor(float $fontSize, string $fontName, float $userSpaceBefore): float
+    {
+        if ($this->lastBlockLineHeight <= 0.0) {
+            return $userSpaceBefore;
+        }
+
+        $ascentEm  = $this->engine->getFontMetrics($fontName)['ascender'];
+        $ascentPt  = $ascentEm * $fontSize / 1000.0;
+        $needed    = max(0.0, $ascentPt - $this->lastBlockLineHeight);
+
+        return max($userSpaceBefore, $needed);
     }
 
     /* =============================================================
@@ -346,9 +396,25 @@ class PdfRenderer extends AbstractRenderer
             $spaceAfter  = max($spaceAfter, 8.0);
         }
 
-        if ($spaceBefore > 0) {
-            $this->engine->moveCursorY(-$spaceBefore);
+        // Reserve enough vertical space so the new paragraph's ascender
+        // doesn't overlap the previous paragraph's baseline (otherwise a
+        // small "eyebrow" line followed by a 28pt title would visibly
+        // collide on the eyebrow's baseline). See reserveAscentFor().
+        $firstRun       = $paragraph->getRuns()[0] ?? null;
+        $firstRunStyle  = ($headingFont !== null && ($firstRun?->getStyle()) === null)
+            ? TextStyle::make()->setFontSize($headingFont)->setBold()
+            : ($firstRun?->getStyle() ?? $document->getDefaultTextStyle());
+        $effectiveSpaceBefore = $this->reserveAscentFor(
+            $firstRunStyle->getFontSize(),
+            $firstRunStyle->getPdfFontName(),
+            $spaceBefore,
+        );
+
+        if ($effectiveSpaceBefore > 0) {
+            $this->engine->moveCursorY(-$effectiveSpaceBefore);
         }
+
+        $lastFontSize = $firstRunStyle->getFontSize();
 
         foreach ($paragraph->getRuns() as $run) {
             $runStyle = $run->getStyle();
@@ -359,9 +425,19 @@ class PdfRenderer extends AbstractRenderer
                     ->setBold();
                 $styledRun = new TextRun($run->getText(), $headingStyle);
                 $this->writeTextRun($styledRun, $document, $lineSpacing, $indent, $align);
+                $lastFontSize = $headingStyle->getFontSize();
             } else {
                 $this->writeTextRun($run, $document, $lineSpacing, $indent, $align);
+                $lastFontSize = ($runStyle ?? $document->getDefaultTextStyle())->getFontSize();
             }
+        }
+
+        // Track the trailing line height so the next block can compute
+        // its own ascent reservation (only meaningful if the paragraph
+        // actually rendered something — empty paragraphs leave the
+        // previous trailing metric unchanged).
+        if ($paragraph->getRuns() !== []) {
+            $this->lastBlockLineHeight = $lastFontSize * $lineSpacing;
         }
 
         if ($spaceAfter > 0) {
@@ -757,13 +833,34 @@ class PdfRenderer extends AbstractRenderer
         $maxHeight = $hasMaxHeight ? max(0.0, $zone->getHeight() - 2 * $padding) : null;
         $ellipsis  = $overflow === TextZone::OVERFLOW_ELLIPSIS;
 
-        $cursorOffset = 0.0;
+        $cursorOffset      = 0.0;
+        $prevLineHeightPt  = 0.0;
+        // Local mirror of lastBlockLineHeight for in-zone stacking —
+        // each TextZone is independent so we track its own "tail line"
+        // separately and don't pollute the page-level state.
 
         foreach ($zone->getParagraphs() as $paragraph) {
             $paraStyle   = $paragraph->getStyle();
             $lineSpacing = $paraStyle?->getLineSpacing() ?? 1.15;
             $spaceAfter  = $paraStyle?->getSpaceAfter() ?? 4.0;
+            $spaceBefore = $paraStyle?->getSpaceBefore() ?? 0.0;
             $align       = $paraStyle?->getAlignment()->value ?? 'left';
+
+            // Same overlap-prevention logic as writeParagraph(): if the
+            // first run's font is much bigger than the previous tail
+            // line, push the cursor down enough so its ascender clears
+            // the previous baseline. cursorOffset uses top-down
+            // coordinates here, so we ADD the reservation.
+            $firstRun      = $paragraph->getRuns()[0] ?? null;
+            $firstRunStyle = $firstRun?->getStyle() ?? $document->getDefaultTextStyle();
+            if ($prevLineHeightPt > 0.0) {
+                $ascentEm = $this->engine->getFontMetrics($firstRunStyle->getPdfFontName())['ascender'];
+                $ascentPt = $ascentEm * $firstRunStyle->getFontSize() / 1000.0;
+                $needed   = max(0.0, $ascentPt - $prevLineHeightPt);
+                $cursorOffset += max($spaceBefore, $needed);
+            } elseif ($spaceBefore > 0.0) {
+                $cursorOffset += $spaceBefore;
+            }
 
             foreach ($paragraph->getRuns() as $run) {
                 if ($maxHeight !== null && $cursorOffset >= $maxHeight) {
@@ -791,7 +888,8 @@ class PdfRenderer extends AbstractRenderer
                     align:       $align,
                 );
 
-                $cursorOffset += $result['consumed'];
+                $cursorOffset    += $result['consumed'];
+                $prevLineHeightPt = $style->getFontSize() * $lineSpacing;
 
                 if ($result['truncated']) {
                     break 2;

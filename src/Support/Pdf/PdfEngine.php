@@ -65,7 +65,14 @@ class PdfEngine
     private string $title   = '';
     private string $creator = 'Paperdoc';
 
-    /** Approximate character widths for standard fonts (per 1000 units) */
+    /**
+     * Coarse per-font average width fallback (1000em units), used only
+     * when neither a per-glyph table from {@see Core14Widths::FONTS}
+     * nor the requested glyph itself is available. Centring,
+     * right-alignment, justification and word wrapping all read from
+     * the precise per-glyph table by default — these averages exist
+     * just so the engine still produces something for unknown fonts.
+     */
     private const CHAR_WIDTHS = [
         'Helvetica' => 550,
         'Helvetica-Bold' => 580,
@@ -79,6 +86,8 @@ class PdfEngine
         'Courier-Bold' => 600,
         'Courier-Oblique' => 600,
         'Courier-BoldOblique' => 600,
+        'Symbol' => 500,
+        'ZapfDingbats' => 800,
     ];
 
     public function __construct(
@@ -509,11 +518,72 @@ class PdfEngine
      | Text Measurement
      |------------------------------------------------------------- */
 
+    /**
+     * Mesure la largeur réelle d'une chaîne dans une police PDF en
+     * utilisant la table de métriques per-glyphe Core 14 (générée à
+     * partir des AFM URW Base35, métriquement compatibles avec les
+     * polices standard PDF). Les calculs de centrage,
+     * d'alignement-droit, de justification et de wrapping reposent
+     * tous sur cette mesure, donc une bonne précision ici fait
+     * littéralement la différence entre un titre centré et un titre
+     * « presque centré ».
+     *
+     * Pipeline :
+     *   1. La chaîne UTF-8 est convertie en WinAnsi (cp1252) — c'est
+     *      l'encodage qu'on émet réellement dans le PDF, donc c'est
+     *      bien sur cette représentation qu'il faut additionner.
+     *   2. Pour chaque octet, on lit la largeur dans la table Core 14.
+     *   3. Si la police n'est pas dans la table (police custom future)
+     *      ou si l'octet n'a pas de largeur (cas .notdef), on retombe
+     *      sur la largeur moyenne par police (CHAR_WIDTHS).
+     */
     public function measureTextWidth(string $text, string $fontName, float $fontSize): float
     {
-        $avgWidth = self::CHAR_WIDTHS[$fontName] ?? 550;
+        $fontTable = Core14Widths::FONTS[$fontName] ?? null;
 
-        return mb_strlen($text) * $avgWidth * $fontSize / 1000;
+        if ($fontTable === null) {
+            $avgWidth = self::CHAR_WIDTHS[$fontName] ?? 550;
+            return mb_strlen($text) * $avgWidth * $fontSize / 1000;
+        }
+
+        $widths   = $fontTable['widths'];
+        $default  = $fontTable['default'];
+        $winAnsi  = mb_convert_encoding($text, 'Windows-1252', 'UTF-8');
+        // mb_convert_encoding can fall back to PHP's substitute character
+        // (often '?', code 0x3F) for any UTF-8 codepoint not representable
+        // in cp1252; we just measure that substitute, which is exactly
+        // what we'll be drawing anyway.
+        $units    = 0;
+        $len      = strlen($winAnsi);
+
+        for ($i = 0; $i < $len; $i++) {
+            $code = ord($winAnsi[$i]);
+            $units += $widths[$code] ?? $default;
+        }
+
+        return $units * $fontSize / 1000.0;
+    }
+
+    /**
+     * Returns vertical metrics for a font in 1000em units. Used by the
+     * renderer to reserve enough vertical space when the next paragraph
+     * uses a much larger font size than the previous one (otherwise the
+     * top of the new glyphs collides with the previous baseline).
+     *
+     * @return array{ascender:int, descender:int, capHeight:int}
+     */
+    public function getFontMetrics(string $fontName): array
+    {
+        $t = Core14Widths::FONTS[$fontName] ?? null;
+        if ($t === null) {
+            return ['ascender' => 718, 'descender' => -207, 'capHeight' => 718];
+        }
+
+        return [
+            'ascender'  => $t['ascender'],
+            'descender' => $t['descender'],
+            'capHeight' => $t['capHeight'],
+        ];
     }
 
     /**
@@ -635,6 +705,24 @@ class PdfEngine
      *                garde l'alignement gauche pour ne pas étirer une
      *                ligne courte.
      */
+    /**
+     * If a justified line ends up needing more than this much extra
+     * word-spacing per inter-word gap, we silently fall back to
+     * left-alignment for that line. Stretching beyond ~3pt produces
+     * the visible "rivers" you can see in cheap typesetting; better to
+     * accept a ragged right edge than a galleried look.
+     */
+    private const JUSTIFY_MAX_EXTRA_TW_PT = 3.0;
+
+    /**
+     * Cap on character-spacing assistance for justification, in 1000em
+     * units. We split the leftover space between Tw (word spacing) and
+     * Tc (character spacing) — Tc is per glyph so even small values
+     * compound; we conservatively limit it to 0.10 em (= 1.2pt at 12pt
+     * size) so individual letters never look unnaturally pulled apart.
+     */
+    private const JUSTIFY_MAX_TC_EM = 0.10;
+
     private function emitTextLine(
         string $line,
         string $fontRef,
@@ -652,6 +740,7 @@ class PdfEngine
         $lineWidth = $this->measureTextWidth($line, $fontName, $fontSize);
         $drawX     = $x;
         $extraTw   = 0.0;
+        $extraTc   = 0.0;
 
         switch ($align) {
             case 'right':
@@ -662,9 +751,13 @@ class PdfEngine
                 break;
             case 'justify':
                 if (! $isLastLine && $lineWidth < $maxWidth) {
-                    $spaces = substr_count($line, ' ');
-                    if ($spaces > 0) {
-                        $extraTw = ($maxWidth - $lineWidth) / $spaces;
+                    [$extraTw, $extraTc] = $this->computeJustifySpacing($line, $maxWidth, $lineWidth, $fontSize);
+                    // Couldn't reach a reasonable Tw under the threshold —
+                    // fall back to left-alignment for this single line so
+                    // we don't produce a visually ugly "river".
+                    if ($extraTw === null) {
+                        $extraTw = 0.0;
+                        $extraTc = 0.0;
                     }
                 }
                 break;
@@ -679,13 +772,86 @@ class PdfEngine
         if ($extraTw > 0.0) {
             $this->currentPageContent .= sprintf("%.3f Tw\n", $extraTw);
         }
+        if ($extraTc > 0.0) {
+            $this->currentPageContent .= sprintf("%.3f Tc\n", $extraTc);
+        }
         $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $drawX, $baselineY);
         $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
         if ($extraTw > 0.0) {
             // Always reset Tw so subsequent text isn't accidentally justified.
             $this->currentPageContent .= "0 Tw\n";
         }
+        if ($extraTc > 0.0) {
+            $this->currentPageContent .= "0 Tc\n";
+        }
         $this->currentPageContent .= "ET\n";
+    }
+
+    /**
+     * Splits the missing horizontal space between word-spacing (Tw)
+     * and character-spacing (Tc), so a justified line doesn't
+     * concentrate all of the extra slack on inter-word gaps (which is
+     * what creates the visual "rivers" of whitespace classic to cheap
+     * justification).
+     *
+     * Strategy:
+     *   1. Try pure word-spacing first (visually preferred).
+     *   2. If Tw alone would exceed JUSTIFY_MAX_EXTRA_TW_PT, give part
+     *      of the gap to Tc (character spacing). Tc is bounded to
+     *      JUSTIFY_MAX_TC_EM × fontSize — beyond that, individual
+     *      letters look unnaturally stretched.
+     *   3. If even with Tc capped we still need Tw above the threshold,
+     *      give up: return [null, 0] and the caller falls back to
+     *      left-alignment for this single line.
+     *
+     * @return array{0:?float,1:float} [Tw_pt, Tc_pt] or [null, 0] when
+     *         the line should fall back to flush-left
+     */
+    private function computeJustifySpacing(string $line, float $maxWidth, float $lineWidth, float $fontSize): array
+    {
+        $spaces = substr_count(rtrim($line), ' ');
+        // Approximate glyph count (without trying to be exact about
+        // multi-byte) — we only use it to spread the Tc adjustment.
+        $glyphs = max(0, mb_strlen($line) - 1);
+
+        $missing = $maxWidth - $lineWidth;
+        if ($missing <= 0.0) {
+            return [0.0, 0.0];
+        }
+
+        // First, attempt with Tw only.
+        if ($spaces > 0) {
+            $twOnly = $missing / $spaces;
+            if ($twOnly <= self::JUSTIFY_MAX_EXTRA_TW_PT) {
+                return [$twOnly, 0.0];
+            }
+        }
+
+        // Tw alone would be too large. Cap Tw at the threshold and use
+        // Tc to absorb the remainder.
+        $maxTcPt = self::JUSTIFY_MAX_TC_EM * $fontSize;
+
+        $tw = ($spaces > 0) ? min(self::JUSTIFY_MAX_EXTRA_TW_PT, $missing / $spaces) : 0.0;
+        $contributedByTw = $tw * $spaces;
+        $remaining       = $missing - $contributedByTw;
+
+        if ($glyphs > 0 && $remaining > 0.0) {
+            $tcNeeded = $remaining / $glyphs;
+            $tc = min($maxTcPt, max(0.0, $tcNeeded));
+
+            // After applying capped Tc, is the residual gap still too
+            // big? If so, this line is just too short to justify
+            // gracefully; fall back to flush-left.
+            $contributedByTc = $tc * $glyphs;
+            if ($contributedByTw + $contributedByTc + 0.5 < $missing) {
+                return [null, 0.0];
+            }
+
+            return [$tw, $tc];
+        }
+
+        // Lonely-word lines (0 spaces, 0 inter-glyph candidates) — never justify.
+        return [null, 0.0];
     }
 
     /**
@@ -1037,13 +1203,35 @@ class PdfEngine
      | Internal: Helpers
      |------------------------------------------------------------- */
 
+    /**
+     * Encode a PHP UTF-8 string for inclusion in a PDF text string
+     * literal. PDF Type 1 fonts using /WinAnsiEncoding can only
+     * represent characters present in cp1252; anything outside
+     * (Greek, CJK, mathematical operators not in WinAnsi, …) is
+     * replaced by '?' rather than silently dropped, so the missing
+     * characters are visible in the output instead of producing
+     * mysterious word-spacing or wrong widths downstream.
+     *
+     * Backslash, '(' and ')' are escaped per PDF 1.7 §7.3.4.2.
+     */
     private function escapePdfString(string $text): string
     {
         $text = str_replace('\\', '\\\\', $text);
         $text = str_replace('(', '\\(', $text);
         $text = str_replace(')', '\\)', $text);
 
-        return mb_convert_encoding($text, 'Windows-1252', 'UTF-8');
+        // mb_convert_encoding() drops un-representable UTF-8 sequences
+        // by default. Substitute them with '?' explicitly so the user
+        // can see something is missing instead of getting silent gaps.
+        $prevSubstitute = mb_substitute_character();
+        mb_substitute_character(0x3F); // '?'
+        try {
+            $encoded = mb_convert_encoding($text, 'Windows-1252', 'UTF-8');
+        } finally {
+            mb_substitute_character($prevSubstitute);
+        }
+
+        return $encoded;
     }
 
     /**

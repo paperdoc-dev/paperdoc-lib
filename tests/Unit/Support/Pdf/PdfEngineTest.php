@@ -255,4 +255,132 @@ class PdfEngineTest extends TestCase
             @unlink($tmp);
         }
     }
+
+    /* =============================================================
+     | A2 — Per-glyph AFM metrics (regression for v0.7.3)
+     |============================================================= */
+
+    /**
+     * Before v0.7.3, all characters in a font shared a single average
+     * width per font, so 'WWWW' and 'iiii' measured identically. The
+     * Core 14 width tables make 'W' come out roughly 4× wider than
+     * 'i' in Helvetica-Bold.
+     */
+    public function test_measure_text_width_distinguishes_narrow_and_wide_glyphs(): void
+    {
+        $engine = new PdfEngine();
+        $narrow = $engine->measureTextWidth('iiii', 'Helvetica-Bold', 12.0);
+        $wide   = $engine->measureTextWidth('WWWW', 'Helvetica-Bold', 12.0);
+
+        $this->assertGreaterThan($narrow * 2.5, $wide,
+            'Wide glyphs (W) should measure noticeably wider than narrow ones (i)');
+    }
+
+    public function test_measure_text_width_handles_french_typography(): void
+    {
+        $engine = new PdfEngine();
+        $w = $engine->measureTextWidth('éàèçôîï«»œ', 'Times-Roman', 12.0);
+
+        $this->assertGreaterThan(40.0, $w);
+        $this->assertLessThan(80.0, $w);
+    }
+
+    public function test_get_font_metrics_returns_real_values(): void
+    {
+        $engine = new PdfEngine();
+        $m = $engine->getFontMetrics('Helvetica-Bold');
+
+        $this->assertGreaterThan(700, $m['ascender']);
+        $this->assertLessThan(0, $m['descender']);
+        $this->assertGreaterThan(600, $m['capHeight']);
+    }
+
+    public function test_get_font_metrics_falls_back_for_unknown_font(): void
+    {
+        $engine = new PdfEngine();
+        $m = $engine->getFontMetrics('SomeCustomFontNotInCore14');
+
+        $this->assertSame(718, $m['ascender']);
+        $this->assertSame(-207, $m['descender']);
+    }
+
+    /* =============================================================
+     | B1 — Justification with combined Tw + Tc + threshold
+     |============================================================= */
+
+    public function test_justified_short_line_falls_back_to_flush_left(): void
+    {
+        $engine = new PdfEngine();
+        // A 3-word fragment in a wide column would need extreme word
+        // spacing to fill the line — much larger than the 3pt threshold.
+        // The engine should detect this and fall back to flush-left.
+        $engine->writeWrappedTextAt(
+            text:        'Hi there.',
+            fontName:    'Helvetica',
+            fontSize:    12.0,
+            x:           40.0,
+            yTopLeft:    100.0,
+            maxWidth:    400.0,
+            lineSpacing: 1.15,
+            align:       'justify',
+        );
+
+        $output = $engine->output();
+
+        // A fall-back should not have emitted any non-zero Tw operator.
+        $this->assertDoesNotMatchRegularExpression('/[1-9]\d*\.\d+ Tw/', $output);
+    }
+
+    public function test_justified_normal_line_emits_word_spacing(): void
+    {
+        $engine = new PdfEngine();
+        $engine->writeWrappedTextAt(
+            text:        'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do.',
+            fontName:    'Helvetica',
+            fontSize:    11.0,
+            x:           40.0,
+            yTopLeft:    100.0,
+            maxWidth:    300.0,
+            lineSpacing: 1.3,
+            align:       'justify',
+        );
+
+        $output = $engine->output();
+
+        $this->assertMatchesRegularExpression('/\d+\.\d+ Tw/', $output);
+        // Reset operator must always be present so subsequent text
+        // isn't accidentally justified.
+        $this->assertStringContainsString('0 Tw', $output);
+    }
+
+    /* =============================================================
+     | C3 — escapePdfString fallback for non-WinAnsi
+     |============================================================= */
+
+    public function test_french_typography_glyphs_round_trip(): void
+    {
+        $engine = new PdfEngine();
+        $engine->writeText("« Café — où ? » … 'œuvre'", 'Times-Roman', 12.0);
+
+        $output = $engine->output();
+        // Each unique cp1252 byte should appear in the literal string;
+        // we just spot-check that the encoded content is non-empty and
+        // doesn't carry raw UTF-8 sequences (which would mean encoding
+        // silently failed).
+        $this->assertStringNotContainsString("\xC3\xA9", $output, // UTF-8 'é'
+            'UTF-8 sequences should have been transcoded to cp1252');
+    }
+
+    public function test_non_winansi_chars_are_replaced_with_question_mark(): void
+    {
+        $engine = new PdfEngine();
+        $engine->writeText("Pi: π — square root: √2", 'Times-Roman', 12.0);
+
+        $output = $engine->output();
+
+        // π and √ aren't in cp1252 → must be substituted with '?',
+        // never silently dropped (which would leave wrong widths
+        // downstream).
+        $this->assertStringContainsString('?', $output);
+    }
 }

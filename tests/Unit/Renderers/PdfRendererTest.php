@@ -6,9 +6,9 @@ namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, Paragraph, Section, Table, TextRun};
-use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
-use Paperdoc\Enum\Alignment;
+use Paperdoc\Document\{Document, Image, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, RunningElement, TextStyle};
+use Paperdoc\Enum\{Alignment, PageSize};
 use Paperdoc\Renderers\PdfRenderer;
 
 class PdfRendererTest extends TestCase
@@ -244,6 +244,153 @@ class PdfRendererTest extends TestCase
         $content = $renderer->render($doc);
         $this->assertMatchesRegularExpression('/\d+\.\d+ Tw/', $content,
             'JUSTIFY paragraphs should emit a word-spacing (Tw) operator');
+    }
+
+    /**
+     * Regression — v0.7.3 fixes the visible overlap between a small
+     * "eyebrow" line and a much-larger title that follows it. The
+     * symptom: the title's ascender extends above the eyebrow's
+     * baseline because the renderer only advanced by `lineHeight` of
+     * the previous (small) line. Now the renderer reserves additional
+     * vertical space when the new ascender is taller than the previous
+     * line height.
+     *
+     * We render an 8pt eyebrow followed by a 28pt title, extract the
+     * vertical positions of the two `Td` operators (Y = baseline in
+     * PDF coords, larger Y = higher on page), and assert that the
+     * baseline gap is at least equal to the title's ascender — i.e.
+     * the title's top sits AT MOST at the eyebrow's baseline (no
+     * overlap), not above it.
+     */
+    public function test_small_eyebrow_then_large_title_does_not_overlap(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s');
+
+        $section->addElement(
+            Paragraph::make()->addRun(new TextRun(
+                'TABLE',
+                TextStyle::make()->setFontSize(8.0)->setColor('#888888'),
+            ))
+        );
+
+        $section->addElement(
+            Paragraph::make()->addRun(new TextRun(
+                'Sommaire',
+                TextStyle::make()->setBold()->setFontSize(28.0),
+            ))
+        );
+
+        $doc->addSection($section);
+        $content = (new PdfRenderer())->render($doc);
+
+        preg_match_all('/(?<x>-?\d+\.\d+) (?<y>-?\d+\.\d+) Td/', $content, $matches, PREG_SET_ORDER);
+        $this->assertGreaterThanOrEqual(2, count($matches),
+            'Expected at least two Td operators (eyebrow + title)');
+
+        // PDF Y axis: bigger = higher. The eyebrow is the FIRST Td
+        // (drawn at top of page) so it has a LARGER Y than the title.
+        $eyebrowBaselineY = (float) $matches[0]['y'];
+        $titleBaselineY   = (float) $matches[1]['y'];
+
+        $baselineGap = $eyebrowBaselineY - $titleBaselineY;
+
+        // The title is 28pt with ascender ~770/1000em → ~21.6pt above
+        // its baseline. We need at least that much gap so glyph tops
+        // don't punch through the eyebrow's baseline.
+        $this->assertGreaterThanOrEqual(21.0, $baselineGap,
+            "Eyebrow→title baseline gap ({$baselineGap}pt) must accommodate "
+            . 'the title ascender (~21.6pt) to prevent glyph overlap');
+    }
+
+    /**
+     * Regression — C1: the page background image must be drawn BEFORE
+     * the running header/footer so the latter is visible on top of
+     * the image (otherwise the footer disappears under the image on
+     * full-bleed/cover pages).
+     */
+    public function test_background_image_is_drawn_before_header_footer(): void
+    {
+        // Generate a tiny 1px synthetic JPEG to serve as page background.
+        $bgPath = sys_get_temp_dir() . '/paperdoc_bg_smoke_' . uniqid() . '.jpg';
+        $im = imagecreatetruecolor(2, 2);
+        imagefilledrectangle($im, 0, 0, 1, 1, imagecolorallocate($im, 255, 0, 0));
+        imagejpeg($im, $bgPath, 90);
+        unset($im);
+
+        try {
+            $doc = Document::make('pdf');
+            $doc->setFooter(
+                RunningElement::make('Page {page}')
+                    ->setStyle(TextStyle::make()->setFontSize(10))
+                    ->setAlignment(Alignment::CENTER)
+            );
+
+            $section = Section::make('cover')->setPageSetup(
+                PageSetup::fromSize(PageSize::A5)
+                    ->setBackgroundImage(Image::make($bgPath))
+                    ->setBackgroundSize(PageSetup::BG_SIZE_COVER)
+            );
+            $doc->addSection($section);
+
+            $content = (new PdfRenderer())->render($doc);
+
+            // The image XObject must be invoked (`/Im1 Do`) before the
+            // footer text (`(Page 1) Tj`) in the page stream. We locate
+            // both and assert their offsets.
+            $imagePos  = strpos($content, ' Do');
+            $footerPos = strpos($content, '(Page 1)');
+
+            $this->assertNotFalse($imagePos, 'expected image XObject draw');
+            $this->assertNotFalse($footerPos, 'expected footer text');
+            $this->assertLessThan($footerPos, $imagePos,
+                'background image must be drawn BEFORE footer text');
+        } finally {
+            @unlink($bgPath);
+        }
+    }
+
+    /**
+     * Regression — C2: when both backgroundColor and backgroundImage
+     * are set, the COLOR is laid down first (entire page) then the
+     * IMAGE is drawn on top. With `BG_SIZE_CONTAIN` this means the
+     * color shows through in the empty bands left by the contained
+     * image — a useful affordance documented for users.
+     */
+    public function test_background_color_underlays_background_image(): void
+    {
+        $bgPath = sys_get_temp_dir() . '/paperdoc_bg_color_' . uniqid() . '.jpg';
+        $im = imagecreatetruecolor(2, 2);
+        imagefilledrectangle($im, 0, 0, 1, 1, imagecolorallocate($im, 0, 255, 0));
+        imagejpeg($im, $bgPath, 90);
+        unset($im);
+
+        try {
+            $doc = Document::make('pdf');
+            $section = Section::make('p')->setPageSetup(
+                PageSetup::fromSize(PageSize::A5)
+                    ->setBackgroundColor('#FFEEDD')
+                    ->setBackgroundImage(Image::make($bgPath))
+                    ->setBackgroundSize(PageSetup::BG_SIZE_CONTAIN)
+            );
+            $doc->addSection($section);
+
+            $content = (new PdfRenderer())->render($doc);
+
+            // The color rectangle (rg + re + f) must come before the
+            // image draw (` Do`) — otherwise the color would punch
+            // out the image instead of underlaying it.
+            // #FFEEDD → 255/255 = 1.00 ; 238/255 = 0.93 ; 221/255 = 0.87
+            $colorPos = strpos($content, '1.00 0.93 0.87 rg');
+            $imagePos = strpos($content, ' Do');
+
+            $this->assertNotFalse($colorPos, 'expected page background color fill');
+            $this->assertNotFalse($imagePos, 'expected page background image draw');
+            $this->assertLessThan($imagePos, $colorPos,
+                'background color must underlay the image');
+        } finally {
+            @unlink($bgPath);
+        }
     }
 
     public function test_pdf_with_multiple_text_runs(): void
