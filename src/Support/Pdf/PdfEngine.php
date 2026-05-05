@@ -184,6 +184,20 @@ class PdfEngine
 
     public function getCursorY(): float { return $this->cursorY; }
 
+    /* -------------------------------------------------------------
+     | Page margins — getters (read-only)
+     |
+     | The setters are bundled into setPageGeometry(); these getters
+     | exist so the renderer can place absolute-coordinate elements
+     | (tables, images, horizontal rules, …) flush against the actual
+     | left/right margins of the current page instead of relying on
+     | hardcoded values. Critical for documents with non-default
+     | gutters.
+     |------------------------------------------------------------- */
+
+    public function getLeftMargin(): float   { return $this->marginLeft; }
+    public function getRightMargin(): float  { return $this->marginRight; }
+    public function getTopMargin(): float    { return $this->marginTop; }
     public function getBottomMargin(): float { return $this->marginBottom; }
 
     public function moveCursorY(float $delta): void

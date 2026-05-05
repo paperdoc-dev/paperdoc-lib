@@ -660,4 +660,132 @@ class PdfRendererTest extends TestCase
         $this->assertMatchesRegularExpression('/[\d\.]+ [\d\.]+ m [\d\.]+ [\d\.]+ l S/', $content,
             'rule should be drawn with moveto+lineto+stroke');
     }
+
+    /* =============================================================
+     | v0.8.2 — Renderer respects engine's actual page margins
+     |
+     | Before v0.8.2 the renderer hardcoded 40pt as the left-edge of
+     | the content area when drawing a HorizontalRule, a Table or an
+     | Image. Sections with a non-default gutter (typical for books:
+     | 18mm ≈ 51pt, magazines: 25mm ≈ 71pt) ended up with their rules
+     | / tables / images shifted left of the body text. These three
+     | tests pin down the fix by using a page with `paddingLeft = 60`
+     | and asserting the corresponding PDF operators emit x ≥ 60.
+     |============================================================= */
+
+    /**
+     * v0.8.2 regression — A left-aligned HorizontalRule must start
+     * at the section's actual `paddingLeft`, not at the legacy 40pt.
+     *
+     * Symptom (Lumières, 18mm gutter ≈ 51pt): the rule was drawn at
+     * x=40 while the chapter title above it (which honours cursorX
+     * from the engine) was centred at x=51. → 11pt visual offset.
+     */
+    public function test_horizontal_rule_uses_engine_left_margin(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s')
+            ->setPageSetup(
+                PageSetup::fromSize(PageSize::A4)
+                    ->setPadding(60.0, 40.0, 40.0, 60.0) // top, right, bottom, left
+            );
+        $section->addRule()->setWidth(180.0)->setAlignment(Alignment::LEFT)->setColor('#000000');
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        // Capture the `m` operator that immediately precedes the
+        // single `l ... S` rule stroke. Regex anchored to the
+        // sequence emitted by drawColoredLine() / drawLine().
+        $this->assertMatchesRegularExpression(
+            '/(\d+\.\d+) \d+\.\d+ m \d+\.\d+ \d+\.\d+ l S/',
+            $content,
+            'rule should be drawn with moveto+lineto+stroke'
+        );
+        preg_match('/(\d+\.\d+) \d+\.\d+ m (\d+\.\d+) \d+\.\d+ l S/', $content, $m);
+        $startX = (float) $m[1];
+        $endX   = (float) $m[2];
+
+        $this->assertEqualsWithDelta(60.0, $startX, 0.5,
+            'left-aligned rule must start at paddingLeft (60), not at the legacy 40pt');
+        $this->assertEqualsWithDelta(60.0 + 180.0, $endX, 0.5,
+            'rule end-x must equal startX + width');
+    }
+
+    /**
+     * v0.8.2 regression — Tables must start at the section's actual
+     * `paddingLeft`, not at the legacy 40pt. Otherwise a table on a
+     * page with a 60pt gutter overlaps the inner edge of the page.
+     */
+    public function test_table_uses_engine_left_margin(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('s')
+            ->setPageSetup(
+                PageSetup::fromSize(PageSize::A4)
+                    ->setPadding(60.0)
+            );
+        $table = Table::make()
+            ->setHeaders(['A', 'B']);
+        $table->addRowFromArray(['1', '2']);
+        $section->addElement($table);
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        // Tables are drawn with `re` (rectangle) operators. The first
+        // header rect's x must be 60, not 40.
+        // Format from drawRect: "<x> <y> <w> <h> re ..."
+        $this->assertMatchesRegularExpression(
+            '/(\d+\.\d+) \d+\.\d+ \d+\.\d+ \d+\.\d+ re/',
+            $content,
+            'table header should emit a rect operator'
+        );
+        preg_match('/(\d+\.\d+) \d+\.\d+ \d+\.\d+ \d+\.\d+ re/', $content, $m);
+        $tableLeftX = (float) $m[1];
+
+        $this->assertEqualsWithDelta(60.0, $tableLeftX, 0.5,
+            'table must start at paddingLeft (60), not at the legacy 40pt');
+    }
+
+    /**
+     * v0.8.2 regression — Inline images must be placed at the
+     * section's actual `paddingLeft`, not at the legacy 40pt.
+     */
+    public function test_image_uses_engine_left_margin(): void
+    {
+        // 1×1 transparent JPEG (smallest decodable JPEG).
+        $jpegBase64 = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ'
+                    . 'EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ'
+                    . 'EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQ'
+                    . 'ABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAA'
+                    . 'AAAP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AL+AAH//2Q==';
+        $imgPath = $this->outputPath('px.jpg');
+        file_put_contents($imgPath, base64_decode($jpegBase64));
+
+        $doc = Document::make('pdf');
+        $section = Section::make('s')
+            ->setPageSetup(
+                PageSetup::fromSize(PageSize::A4)
+                    ->setPadding(60.0)
+            );
+        $section->addElement(Image::make($imgPath, 80, 80));
+        $doc->addSection($section);
+
+        $content = (new PdfRenderer())->render($doc);
+
+        // drawImage emits a `cm` (concatenate matrix) op that
+        // positions the XObject; its translation tx is the image x.
+        // Format: "<sx> 0 0 <sy> <tx> <ty> cm"
+        $this->assertMatchesRegularExpression(
+            '/[\d\.]+ 0 0 [\d\.]+ (\d+\.\d+) \d+\.\d+ cm/',
+            $content,
+            'image should be placed via a `cm` matrix'
+        );
+        preg_match('/[\d\.]+ 0 0 [\d\.]+ (\d+\.\d+) \d+\.\d+ cm/', $content, $m);
+        $imageLeftX = (float) $m[1];
+
+        $this->assertEqualsWithDelta(60.0, $imageLeftX, 0.5,
+            'image must be placed at paddingLeft (60), not at the legacy 40pt');
+    }
 }

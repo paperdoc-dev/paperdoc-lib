@@ -225,9 +225,12 @@ class PdfRenderer extends AbstractRenderer
 
         $setup            = $section->getPageSetup();
         $contentAreaTopY  = $startCursorY;
+        // When the section has no PageSetup, fall back to the
+        // engine's actual bottom margin (since v0.8.2). The previous
+        // 40.0 fallback was incorrect for any non-default gutter.
         $contentAreaBottomY = $setup !== null
             ? $setup->getPaddingBottom()
-            : 40.0;
+            : $this->engine->getBottomMargin();
         $available = max(0.0, $contentAreaTopY - $contentAreaBottomY);
         $slack     = $available - $contentHeight;
 
@@ -573,7 +576,7 @@ class PdfRenderer extends AbstractRenderer
             g:               $g,
             b:               $b,
             lineSpacing:     $lineSpacing,
-            x:               $indent > 0 ? 40 + $indent : 0,
+            x:               $this->engine->getLeftMargin() + $indent,
             align:           $align,
             letterSpacing:   $style->getLetterSpacing(),
             firstLineIndent: $firstLineIndent,
@@ -626,7 +629,7 @@ class PdfRenderer extends AbstractRenderer
             g: $g,
             b: $b,
             lineSpacing: 1.15,
-            x: 40 + $indent,
+            x: $this->engine->getLeftMargin() + $indent,
         );
     }
 
@@ -697,7 +700,7 @@ class PdfRenderer extends AbstractRenderer
                 g: 0.16,
                 b: 0.18,
                 lineSpacing: 1.2,
-                x: 40 + $indent,
+                x: $this->engine->getLeftMargin() + $indent,
             );
         }
 
@@ -738,7 +741,7 @@ class PdfRenderer extends AbstractRenderer
         $defaultStyle = $document->getDefaultTextStyle();
         $fontSize     = $defaultStyle->getFontSize();
         $rowHeight    = $fontSize * 1.15 + ($cellPadding * 2);
-        $startX       = 40.0;
+        $startX       = $this->engine->getLeftMargin();
 
         foreach ($table->getRows() as $row) {
             if ($this->engine->needsNewPage($rowHeight)) {
@@ -1026,9 +1029,14 @@ class PdfRenderer extends AbstractRenderer
             $this->engine->moveCursorY(-$rule->getMarginTop());
         }
 
-        // Horizontal placement inside the content area (40pt left margin
-        // + page padding already baked in via setPageGeometry).
-        $contentLeftX = 40.0;
+        // Horizontal placement uses the engine's ACTUAL left margin
+        // (since v0.8.2). Previously this was hardcoded to 40pt, which
+        // misaligned the rule with the body text whenever the section's
+        // gutter differed from 40pt — e.g. a custom 18mm (≈51pt) gutter
+        // would centre the rule 11pt to the LEFT of the title that
+        // follows it (because writeWrappedText inherits cursorX = the
+        // real marginLeft, while this method assumed 40).
+        $contentLeftX = $this->engine->getLeftMargin();
         $x = match ($rule->getAlignment()) {
             Alignment::CENTER => $contentLeftX + max(0.0, ($contentWidth - $width) / 2.0),
             Alignment::RIGHT  => $contentLeftX + max(0.0, $contentWidth - $width),
@@ -1115,7 +1123,7 @@ class PdfRenderer extends AbstractRenderer
 
         $y = $this->engine->getCursorY() - $pdfH;
 
-        $this->engine->drawImage($src, 40, $y, $pdfW, $pdfH);
+        $this->engine->drawImage($src, $this->engine->getLeftMargin(), $y, $pdfW, $pdfH);
         $this->engine->moveCursorY(-($pdfH + 10));
 
         if ($tmpPath !== null) {

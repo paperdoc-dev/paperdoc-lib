@@ -12,6 +12,61 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.8.2] — 2026-05-05
+
+> **Bug fix patch.** A small but visible alignment bug in the PDF
+> renderer: every absolute-positioned element (horizontal rules,
+> tables, images, vertical-alignment fallback) was hardcoding `40pt`
+> as the content area's left edge instead of reading the engine's
+> actual `marginLeft`. Sections with a non-default gutter ended up
+> with their rules / tables / images shifted left of the body text
+> they should align with. No API break — purely a fix.
+
+### Fixed
+
+- **`PdfRenderer` no longer hardcodes 40pt as the content-area left
+  edge.** Reported by a downstream user (Lumières, 18mm gutter ≈
+  51pt): a centred `HorizontalRule` was being drawn 11pt to the left
+  of the chapter title that followed it, because
+  `writeHorizontalRule()` started its centring math at `x = 40` while
+  `writeWrappedText()` correctly inherited `cursorX = marginLeft`.
+  The same bug affected:
+
+  - `writeHorizontalRule()` — start-x for left/center/right alignment.
+  - `writeTable()` — `$startX` used to draw cell rectangles.
+  - `writeImage()` — top-left of the image XObject placement.
+  - `writeListItemLine()` — start-x of `<marker> <text>` lines.
+  - `writeCodeBlock()` — start-x of code lines.
+  - `writeTextRun()` — paragraph indent reference (the `0`-sentinel
+    branch already worked because the engine's cursorX was correct;
+    the bug only triggered when `indent > 0`, e.g. nested lists).
+  - `writeSection()` — vertical-alignment fallback when no
+    `PageSetup` is set; the bottom-of-content reference was 40 instead
+    of `engine->getBottomMargin()`.
+
+  All sites now read `$this->engine->getLeftMargin()` (or
+  `getBottomMargin()` for the vertical-align fallback). Documents
+  using the default 40pt gutter are byte-identical to v0.8.1.
+
+### Added
+
+- **`PdfEngine::getLeftMargin() / getRightMargin() / getTopMargin()`**
+  — read-only getters mirroring the existing `getBottomMargin()`. The
+  PDF renderer needs them now, but they're public so any
+  consumer-side absolute positioning code (overlays, watermarks,
+  custom decorations) can stop guessing where the content area
+  actually starts.
+
+### Tests
+
+- `test_horizontal_rule_uses_engine_left_margin` — pins down the
+  reported bug: a left-aligned rule on a section with
+  `paddingLeft = 60` is drawn at `x = 60` (was `40`).
+- `test_table_uses_engine_left_margin` — same guarantee for tables.
+- `test_image_uses_engine_left_margin` — same guarantee for images.
+
+---
+
 ## [0.8.1] — 2026-05-05
 
 > **Bug fix patch.** A single corner-case fix in the
