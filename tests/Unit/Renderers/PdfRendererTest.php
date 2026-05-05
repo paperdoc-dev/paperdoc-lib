@@ -582,6 +582,61 @@ class PdfRendererTest extends TestCase
     }
 
     /**
+     * B5 / v0.8.1 regression — `writeHorizontalRule` must store its
+     * `marginBottom` in `lastBlockLineHeight` so that
+     * `reserveAscentFor()` correctly protects a following large-font
+     * paragraph from punching through the rule. Without the fix, a 28pt
+     * title after a tightly-spaced rule (`marginBottom = 2pt`) ends up
+     * with its glyphs visually overlapping the line.
+     *
+     * Methodology: render the same "rule + 28pt title" twice — once
+     * with a tiny `marginBottom` (which forces the renderer to
+     * compensate via ascent reservation) and once with a generous
+     * `marginBottom` >= title ascender (no reservation needed). The
+     * title's baseline Y must come out approximately equal in both
+     * cases — that's the proof that the small-margin variant
+     * correctly compensated.
+     */
+    public function test_horizontal_rule_marginBottom_protects_following_large_title(): void
+    {
+        $build = function (float $marginBottom) {
+            $doc = Document::make('pdf');
+            $section = Section::make('s')->setPageSetup(PageSetup::fromSize(PageSize::A5));
+            $section->addRule()->setMargins(2.0, $marginBottom)->setThickness(0.5);
+            $section->addElement(
+                (new Paragraph())->addRun(new TextRun(
+                    'TITRE',
+                    TextStyle::make()->setFontSize(28)->setBold()
+                ))
+            );
+            $doc->addSection($section);
+
+            return (new PdfRenderer())->render($doc);
+        };
+
+        $extractTitleBaselineY = function (string $pdf): float {
+            // The title is the only `(TITRE) Tj` in the stream; pick up
+            // the matching `<x> <y> Td` immediately preceding it.
+            preg_match('/(\d+\.\d+) (\d+\.\d+) Td\s*\(TITRE\) Tj/', $pdf, $m);
+            $this->assertNotEmpty($m, 'expected to locate the title baseline Td');
+
+            return (float) $m[2];
+        };
+
+        // ascender for Helvetica-Bold ≈ 718/1000 → 28pt × 0.718 = 20.1pt.
+        // With marginBottom = 2pt, reserveAscentFor must add ~18pt.
+        // With marginBottom = 22pt, no reservation needed.
+        // → both setups should yield the same title baseline Y (within
+        // rounding noise).
+        $tightY  = $extractTitleBaselineY($build(2.0));
+        $looseY  = $extractTitleBaselineY($build(22.0));
+
+        $this->assertEqualsWithDelta($looseY, $tightY, 1.0,
+            'tight marginBottom + ascent reservation should produce the same title baseline as a wide marginBottom alone'
+        );
+    }
+
+    /**
      * B5 — HorizontalRule renders as a stroked PDF line.
      */
     public function test_horizontal_rule_emits_stroked_line(): void

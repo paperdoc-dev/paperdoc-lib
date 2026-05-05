@@ -352,13 +352,18 @@ class PdfRenderer extends AbstractRenderer
             default                            => null,
         };
 
-        // Non-paragraph blocks (heading, image, table, list, rule, …)
-        // reset the trailing line metric — paragraphs handle the
-        // bookkeeping themselves inside writeParagraph(), and the next
-        // text block doesn't need ascent reservation against a
-        // non-text or already-spaced block (writeHeading bakes its own
-        // clearance, writeHorizontalRule resets explicitly).
-        if (! ($element instanceof Paragraph)) {
+        // Non-paragraph blocks (heading, image, table, list, …) reset
+        // the trailing line metric — paragraphs handle the bookkeeping
+        // themselves inside writeParagraph(), and the next text block
+        // doesn't need ascent reservation against a non-text or
+        // already-spaced block (writeHeading bakes its own clearance).
+        //
+        // HorizontalRule is exempt (v0.8.1): writeHorizontalRule sets
+        // lastBlockLineHeight = marginBottom so a following paragraph
+        // with a much larger ascender (e.g. a 28pt title after a 6pt
+        // marginBottom rule) gets the right ascent reservation rather
+        // than punching through the rule.
+        if (! ($element instanceof Paragraph) && ! ($element instanceof HorizontalRule)) {
             $this->lastBlockLineHeight = 0.0;
         }
     }
@@ -1007,10 +1012,11 @@ class PdfRenderer extends AbstractRenderer
         $contentWidth = $this->engine->getContentWidth();
         $width        = $rule->resolveWidth($contentWidth);
         $thickness    = $rule->getThickness();
+        $marginBottom = $rule->getMarginBottom();
 
         // We want the rule to break to a new page if there isn't enough
         // room for it plus its bottom margin.
-        $totalNeeded = $rule->getMarginTop() + $thickness + $rule->getMarginBottom();
+        $totalNeeded = $rule->getMarginTop() + $thickness + $marginBottom;
         if ($this->engine->needsNewPage($totalNeeded)) {
             $this->engine->newPage();
             $this->lastBlockLineHeight = 0.0;
@@ -1040,12 +1046,22 @@ class PdfRenderer extends AbstractRenderer
         // the same convention as cursorY.
         $this->engine->drawColoredLine($x, $bottomY, $x + $width, $bottomY, $thickness, $rr, $gg, $bb);
 
-        $this->engine->moveCursorY(-($thickness + $rule->getMarginBottom()));
+        $this->engine->moveCursorY(-($thickness + $marginBottom));
 
-        // A horizontal rule resets the trailing line metric so the next
-        // paragraph doesn't think it should reserve ascent against the
-        // (non-existent) "previous baseline".
-        $this->lastBlockLineHeight = 0.0;
+        // Trailing-line bookkeeping (v0.8.1): the rule's bottom edge sits
+        // exactly `marginBottom` ABOVE the post-rule cursor, so a
+        // following paragraph whose ascender > marginBottom would punch
+        // through the rule visually. Storing marginBottom here lets
+        // reserveAscentFor() compute the right deficit for the NEXT
+        // text block — `needed = max(0, ascender - marginBottom)` — and
+        // automatically pad spaceBefore so the title's top of glyphs
+        // lands exactly at the rule's bottom edge.
+        //
+        // (The rule's own thickness is excluded on purpose: the rule
+        //  line is drawn centred on cursorY+marginBottom+thickness/2, so
+        //  the BOTTOM of the rule already sits at cursorY+marginBottom.
+        //  Adding thickness back in would over-reserve.)
+        $this->lastBlockLineHeight = $marginBottom;
     }
 
     /**

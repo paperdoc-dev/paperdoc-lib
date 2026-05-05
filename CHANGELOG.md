@@ -12,6 +12,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.8.1] — 2026-05-05
+
+> **Bug fix patch.** A single corner-case fix in the
+> `HorizontalRule` ↔ `reserveAscentFor()` interaction reported by
+> a downstream user. No API change.
+
+### Fixed
+
+- **`writeHorizontalRule()` now feeds `lastBlockLineHeight` instead
+  of zeroing it.** In v0.8.0, `writeHorizontalRule()` reset
+  `lastBlockLineHeight = 0` at the end, which made the next
+  paragraph's `reserveAscentFor()` short-circuit and skip ascent
+  reservation. Symptom: a 28pt title placed immediately after a
+  rule with `marginBottom = 6pt` (default) had its ascender
+  (~20pt) punching through the rule line. The only workaround was
+  to manually pad `marginBottom` to `~32pt` per case.
+
+  The fix stores the rule's `marginBottom` as the trailing-line
+  metric, so a following paragraph automatically gets
+  `needed = max(0, ascender - marginBottom)` reserved before
+  drawing — its top of glyphs lands exactly at the rule's bottom
+  edge regardless of the rule's actual `marginBottom`. `writeBlock()`
+  has been adjusted to NOT auto-reset `lastBlockLineHeight` after
+  a `HorizontalRule` (paragraphs and rules now share that
+  exemption).
+
+  Practical effect: a default-margin rule followed by a big title
+  now renders correctly without any margin tweaking.
+
+### Tests
+
+- New regression `test_horizontal_rule_marginBottom_protects_following_large_title`:
+  asserts that the title's baseline Y is the same whether the rule's
+  `marginBottom` is small (forcing reservation) or large (no
+  reservation needed) — proof that the small-margin case correctly
+  compensated.
+- Full suite: **751 tests / 1816 assertions**, all green.
+
+---
+
 ## [0.8.0] — 2026-05-05
 
 > **Layout & typography APIs (additive).** Five fully additive APIs
