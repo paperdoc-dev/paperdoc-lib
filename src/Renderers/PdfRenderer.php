@@ -107,22 +107,39 @@ class PdfRenderer extends AbstractRenderer
 
         $this->totalPages = $this->countDeclaredPages($document);
 
+        // Single source of truth for "what every brand-new physical page
+        // must receive before any body content lands on it". Branched on
+        // the engine so a mid-paragraph overflow page (writeWrappedText
+        // → newPage), or any auto-pagination from tables / images /
+        // rules, repaints background + header + footer just like the
+        // explicit section break paths do. Without this hook those
+        // continuation pages came out blank-chromed (bug fixed in
+        // v0.8.3).
+        $this->engine->setOnNewPage(function (): void {
+            $this->paintPageChrome();
+        });
+
         $isFirst = true;
 
         foreach ($document->getSections() as $section) {
+            $this->currentSection = $section;
+
             if (! $isFirst) {
+                // The hook will paint chrome for the new section's page.
                 $this->engine->newPage();
-                $this->lastBlockLineHeight = 0.0;
+            } else {
+                // The very first page was created by the engine
+                // constructor BEFORE we registered the hook, so paint
+                // its chrome explicitly here.
+                $this->paintPageChrome();
             }
 
-            $this->currentSection = $section;
-            $this->applyPageSetup($section->getPageSetup());
-            $this->drawHeaderFooter();
             $this->writeSection($section, $document);
             $isFirst = false;
         }
 
         $this->currentSection = null;
+        $this->engine->setOnNewPage(null);
         $this->engine->save($filename);
     }
 
@@ -150,9 +167,45 @@ class PdfRenderer extends AbstractRenderer
     }
 
     /**
+     * Re-paints every "per-page" element on the page the engine just
+     * opened: geometry + background + header/footer. Called exactly
+     * once per physical page — either explicitly for the very first
+     * page of the document, or implicitly via the {@see PdfEngine}
+     * onNewPage hook for every subsequent page (whether the break was
+     * caused by an explicit `PageBreak`, a new section, or an
+     * automatic overflow from a long paragraph / table / image).
+     *
+     * Order matters: geometry first (so width/height/margins are
+     * already correct), then the background fill (so it lands at the
+     * head of the content stream and is overdrawn by everything that
+     * follows), then header/footer (so they sit on top of the
+     * background but below the body).
+     *
+     * Also resets the trailing-line metric so the first paragraph of
+     * the new page can compute its ascent reservation against an empty
+     * baseline.
+     */
+    private function paintPageChrome(): void
+    {
+        $this->applyPageSetup($this->currentSection?->getPageSetup());
+        $this->drawHeaderFooter();
+        $this->lastBlockLineHeight = 0.0;
+    }
+
+    /**
      * Applique la configuration de page (taille, marges, fonds) à la
-     * page courante du PdfEngine. Doit être appelé après newPage() et
-     * avant tout autre dessin.
+     * page courante du PdfEngine.
+     *
+     * Convention `null` (héritée — section sans `PageSetup`) : on ne
+     * réinitialise NI la géométrie NI le fond. La page conserve donc
+     * la géométrie courante du moteur et reste sur son fond par défaut
+     * (transparent / blanc). Le header/footer, lui, est traité
+     * séparément dans {@see paintPageChrome()} et reste appliqué même
+     * sans `PageSetup`.
+     *
+     * Cette méthode est volontairement bas-niveau ; les appelants
+     * devraient passer par {@see paintPageChrome()} pour bénéficier de
+     * l'ordre correct (geometry → background → header/footer → body).
      */
     private function applyPageSetup(?PageSetup $setup): void
     {
@@ -373,10 +426,11 @@ class PdfRenderer extends AbstractRenderer
 
     private function handlePageBreak(): void
     {
+        // The engine's onNewPage hook (set in buildPdf) calls
+        // paintPageChrome(), which already replays geometry +
+        // background + header/footer AND resets lastBlockLineHeight.
+        // So an explicit PageBreak now reduces to a single newPage().
         $this->engine->newPage();
-        $this->lastBlockLineHeight = 0.0;
-        $this->applyPageSetup($this->currentSection?->getPageSetup());
-        $this->drawHeaderFooter();
     }
 
     /**
@@ -1018,17 +1072,17 @@ class PdfRenderer extends AbstractRenderer
         $marginBottom = $rule->getMarginBottom();
 
         // We want the rule to break to a new page if there isn't enough
-        // room for it plus its bottom margin.
+        // room for it plus its bottom margin. The engine's onNewPage
+        // hook (set in buildPdf) handles chrome repaint and the
+        // lastBlockLineHeight reset.
         $totalNeeded = $rule->getMarginTop() + $thickness + $marginBottom;
         if ($this->engine->needsNewPage($totalNeeded)) {
             $this->engine->newPage();
-            $this->lastBlockLineHeight = 0.0;
         }
 
         if ($rule->getMarginTop() > 0) {
             $this->engine->moveCursorY(-$rule->getMarginTop());
         }
-
         // Horizontal placement uses the engine's ACTUAL left margin
         // (since v0.8.2). Previously this was hardcoded to 40pt, which
         // misaligned the rule with the body text whenever the section's

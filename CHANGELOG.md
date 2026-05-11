@@ -12,6 +12,65 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [0.8.3] — 2026-05-11
+
+> **Bug fix patch (PDF).** Continuation pages created by automatic
+> overflow (long paragraphs, tables, horizontal rules, images) now
+> receive the same page chrome (background, header, footer) as the
+> first page of each section.
+
+### Fixed
+
+- **Page chrome (background, header, footer) is now repainted on every
+  physical page**, including pages created mid-paragraph by
+  `PdfEngine::writeWrappedText()` auto-overflow and the
+  needs-new-page paths inside `writeTable()`, `writeHorizontalRule()`
+  and `writeImage()`. Previously a single long paragraph in a section
+  with `PageSetup::backgroundColor` and a document-level footer would
+  render the first page correctly but every continuation page came
+  out blank-chromed (no background, no footer) — because those auto
+  page breaks bypassed the `applyPageSetup` / `drawHeaderFooter`
+  sequence wired only at the section-break level.
+
+### Added
+
+- **`PdfEngine::setOnNewPage(?Closure $hook)`** — registers a callback
+  fired on every page started by the engine *except* the constructor's
+  initial page. The hook runs after the cursor reset so
+  `getCurrentPageNumber()` already returns the new page number and any
+  drawing performed by the hook (e.g. background fill) lands at the
+  head of the new page's content stream, guaranteeing correct z-order
+  (background → header/footer → body).
+
+- **Internal `PdfRenderer::paintPageChrome()`** — single source of truth
+  for what every new physical page receives before body content
+  (geometry + background + header/footer + trailing-line metric reset),
+  driven by the engine `setOnNewPage` hook.
+
+### Changed
+
+- **`PdfRenderer::handlePageBreak()`** and `writeHorizontalRule()`'s
+  internal break path no longer call `applyPageSetup` /
+  `drawHeaderFooter` / reset `lastBlockLineHeight` explicitly — the
+  engine's hook handles all three. Documents using the default 40pt
+  gutter and no per-section overrides remain byte-identical; documents
+  that previously suffered from the blank-continuation-page bug now
+  paint chrome on every page.
+
+- **`PdfRenderer::applyPageSetup(null)`** is now explicitly documented
+  as a no-op (geometry untouched, no background fill). Header/footer
+  is no longer this method's concern — it is applied separately by
+  `paintPageChrome()` and therefore continues to render even on
+  sections without a `PageSetup`.
+
+### Added (tests)
+
+- **`PdfRendererContinuationPagesTest`** — regression coverage for
+  background/footer on multi-page overflow, `hideFooter` on continuations,
+  vertical alignment overflow, and z-order per page stream.
+
+---
+
 ## [0.8.2] — 2026-05-05
 
 > **Bug fix patch.** A small but visible alignment bug in the PDF

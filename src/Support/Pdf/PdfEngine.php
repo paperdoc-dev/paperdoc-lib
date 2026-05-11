@@ -66,6 +66,22 @@ class PdfEngine
     private string $creator = 'Paperdoc';
 
     /**
+     * Callback fired right after {@see newPage()} has flushed the
+     * previous page and reset the cursor — i.e. when a brand-new empty
+     * page is ready to receive content. The renderer uses this to
+     * repaint the per-page "chrome" (page background, header, footer)
+     * on EVERY physical page, including those created mid-paragraph by
+     * automatic text overflow in {@see writeWrappedText()}.
+     *
+     * The hook is NOT called by the constructor's initial newPage()
+     * because it is set after construction — callers are expected to
+     * paint the chrome of the first page manually (the renderer does).
+     *
+     * Set to null to disable.
+     */
+    private ?\Closure $onNewPage = null;
+
+    /**
      * Coarse per-font average width fallback (1000em units), used only
      * when neither a per-glyph table from {@see Core14Widths::FONTS}
      * nor the requested glyph itself is available. Centring,
@@ -118,6 +134,26 @@ class PdfEngine
     public function setTitle(string $title): void { $this->title = $title; }
     public function setCreator(string $creator): void { $this->creator = $creator; }
 
+    /**
+     * Registers a hook fired on every new page started by the engine,
+     * EXCEPT the first one created by the constructor (because at that
+     * point no caller has had the chance to register a hook yet).
+     *
+     * The hook runs AFTER `flushPage()` has stored the previous page
+     * and AFTER the cursor has been reset to the top-left of the new
+     * page — meaning {@see getCurrentPageNumber()} already returns the
+     * new page number and `cursorY` is at its initial value. Anything
+     * the hook draws lands on the new page, at the very beginning of
+     * its content stream, so a page-background fill emitted by the
+     * hook is guaranteed to sit UNDER the body text.
+     *
+     * Pass `null` to disable a previously-registered hook.
+     */
+    public function setOnNewPage(?\Closure $callback): void
+    {
+        $this->onNewPage = $callback;
+    }
+
     /* -------------------------------------------------------------
      | Page Management
      |------------------------------------------------------------- */
@@ -131,6 +167,14 @@ class PdfEngine
         $this->currentPageContent = '';
         $this->cursorX = $this->marginLeft;
         $this->cursorY = $this->pageHeight - $this->marginTop;
+
+        // Fire the per-page hook AFTER cursor reset so getCurrentPageNumber()
+        // already returns the new page index and any drawing the hook does
+        // (e.g. page background fill) lands at the head of the content stream
+        // — i.e. under the body text drawn next by the caller.
+        if ($this->onNewPage !== null) {
+            ($this->onNewPage)();
+        }
     }
 
     /**
