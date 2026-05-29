@@ -7,7 +7,7 @@ namespace Paperdoc\Tests\Unit\Parsers;
 use Paperdoc\Support\DocumentManager;
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\ParserInterface;
-use Paperdoc\Document\{Image, Paragraph, Table};
+use Paperdoc\Document\{Image, ListBlock, Paragraph, Section, Table};
 use Paperdoc\Parsers\DocxParser;
 
 class DocxParserTest extends TestCase
@@ -238,6 +238,56 @@ class DocxParserTest extends TestCase
         $texts = $this->collectText($doc);
         $this->assertStringContainsString('Titre Principal', $texts);
         $this->assertStringContainsString('Sous-titre', $texts);
+    }
+
+    public function test_parse_docx_with_bullet_list(): void
+    {
+        $doc = DocumentManager::create('docx', 'Liste à puces');
+        $section = Section::make('liste');
+        $list = $section->addBulletList();
+        $list->addText('Premier élément');
+        $list->addText('Deuxième élément');
+        $doc->addSection($section);
+
+        $path = $this->tmpDir . '/list.docx';
+        DocumentManager::save($doc, $path);
+
+        $parsed = $this->parser->parse($path);
+        $elements = $parsed->getSections()[0]->getElements();
+        $lists = array_values(array_filter($elements, fn ($e) => $e instanceof ListBlock));
+
+        $this->assertCount(1, $lists);
+
+        $parsedList = $lists[0];
+        $this->assertTrue($parsedList->isBullet());
+        $this->assertCount(2, $parsedList->getItems());
+        $this->assertSame('Premier élément', $parsedList->getItems()[0]->getPlainText());
+        $this->assertSame('Deuxième élément', $parsedList->getItems()[1]->getPlainText());
+    }
+
+    public function test_parse_docx_with_numbered_list(): void
+    {
+        $doc = DocumentManager::create('docx', 'Liste numérotée');
+        $section = Section::make('liste');
+        $list = $section->addOrderedList();
+        $list->addText('Étape 1');
+        $list->addText('Étape 2');
+        $doc->addSection($section);
+
+        $path = $this->tmpDir . '/ordered-list.docx';
+        DocumentManager::save($doc, $path);
+
+        $parsed = $this->parser->parse($path);
+        $elements = $parsed->getSections()[0]->getElements();
+        $lists = array_values(array_filter($elements, fn ($e) => $e instanceof ListBlock));
+
+        $this->assertCount(1, $lists);
+
+        $parsedList = $lists[0];
+        $this->assertTrue($parsedList->isOrdered());
+        $this->assertCount(2, $parsedList->getItems());
+        $this->assertSame('Étape 1', $parsedList->getItems()[0]->getPlainText());
+        $this->assertSame('Étape 2', $parsedList->getItems()[1]->getPlainText());
     }
 
     public function test_nonexistent_file_throws(): void

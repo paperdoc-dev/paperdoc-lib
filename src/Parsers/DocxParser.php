@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
-use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\{Document, Image, ListBlock, ListItem, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
 use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
@@ -39,6 +39,15 @@ class DocxParser extends AbstractParser implements ParserInterface
     /** @var array<string, string> styleId → baseOn/name mapping for heading detection */
     private array $styleMap = [];
 
+    /** @var array<int, array{style: string, start: int}> */
+    private array $numbering = [];
+
+    /** @var array<int, string> */
+    private array $abstractNumFormats = [];
+
+    /** @var array<int, array{list: ListBlock, numId: int, last_item: ?ListItem}> */
+    private array $listStack = [];
+
     public function supports(string $extension): bool
     {
         return in_array(strtolower($extension), ['docx'], true);
@@ -58,6 +67,7 @@ class DocxParser extends AbstractParser implements ParserInterface
 
         $this->loadRelationships($zip);
         $this->loadStyles($zip);
+        $this->loadNumbering($zip);
         $this->extractMetadata($zip, $document);
 
 
@@ -88,12 +98,16 @@ class DocxParser extends AbstractParser implements ParserInterface
         }
 
         $section = new Section('main');
+        $this->listStack = [];
         $this->parseBody($body, $section, $xpath, $zip);
         $document->addSection($section);
 
         $zip->close();
         $this->relationships = [];
         $this->styleMap = [];
+        $this->numbering = [];
+        $this->abstractNumFormats = [];
+        $this->listStack = [];
 
         return $document;
     }
@@ -198,6 +212,61 @@ class DocxParser extends AbstractParser implements ParserInterface
         }
     }
 
+    private function loadNumbering(\ZipArchive $zip): void
+    {
+        $this->numbering = [];
+        $this->abstractNumFormats = [];
+
+        $xml = $zip->getFromName('word/numbering.xml');
+
+        if ($xml === false) {
+            return;
+        }
+
+        $dom = new \DOMDocument();
+        $dom->loadXML($xml);
+
+        $xpath = new \DOMXPath($dom);
+        $xpath->registerNamespace('w', self::NS_MAIN);
+
+        foreach ($xpath->query('//w:abstractNum') as $abstract) {
+            if (! $abstract instanceof \DOMElement) {
+                continue;
+            }
+
+            $abstractId = (int) $this->getAttributeValue($abstract, 'abstractNumId');
+            $fmtNode = $xpath->query('w:lvl[@w:ilvl="0"]/w:numFmt', $abstract)->item(0);
+            $fmtVal = $fmtNode instanceof \DOMElement ? $this->getAttributeValue($fmtNode, 'val') : '';
+
+            $this->abstractNumFormats[$abstractId] = $this->numFmtToStyle($fmtVal);
+        }
+
+        foreach ($xpath->query('//w:num') as $num) {
+            if (! $num instanceof \DOMElement) {
+                continue;
+            }
+
+            $numId = (int) $this->getAttributeValue($num, 'numId');
+            $abstractNode = $xpath->query('w:abstractNumId', $num)->item(0);
+            if (! $abstractNode instanceof \DOMElement) {
+                continue;
+            }
+
+            $abstractId = (int) $this->getAttributeValue($abstractNode, 'val');
+            $style = $this->abstractNumFormats[$abstractId] ?? ListBlock::STYLE_BULLET;
+
+            $startNode = $xpath->query('w:lvlOverride/w:startOverride', $num)->item(0);
+            $start = $startNode instanceof \DOMElement
+                ? max(1, (int) $this->getAttributeValue($startNode, 'val'))
+                : 1;
+
+            $this->numbering[$numId] = [
+                'style' => $style,
+                'start' => $start,
+            ];
+        }
+    }
+
     /* =============================================================
      | Body Parsing
      |============================================================= */
@@ -212,9 +281,20 @@ class DocxParser extends AbstractParser implements ParserInterface
             $localName = $node->localName;
 
             if ($localName === 'p') {
+                $numInfo = $this->extractNumberingInfo($node, $xpath);
+
+                if ($numInfo !== null) {
+                    $this->handleListParagraph($node, $section, $xpath, $zip, $numInfo);
+                    continue;
+                }
+
+                $this->resetListState();
                 $this->parseParagraph($node, $section, $xpath, $zip);
             } elseif ($localName === 'tbl') {
+                $this->resetListState();
                 $this->parseTable($node, $section, $xpath, $zip);
+            } else {
+                $this->resetListState();
             }
         }
     }
@@ -249,6 +329,114 @@ class DocxParser extends AbstractParser implements ParserInterface
         if (count($paragraph->getRuns()) > 0) {
             $section->addElement($paragraph);
         }
+    }
+
+    private function extractNumberingInfo(\DOMNode $node, \DOMXPath $xpath): ?array
+    {
+        $numPr = $xpath->query('w:pPr/w:numPr', $node)->item(0);
+
+        if (! $numPr instanceof \DOMElement) {
+            return null;
+        }
+
+        $numIdNode = $xpath->query('w:numId', $numPr)->item(0);
+        if (! $numIdNode instanceof \DOMElement) {
+            return null;
+        }
+
+        $numId = (int) $this->getAttributeValue($numIdNode, 'val');
+        $ilvlNode = $xpath->query('w:ilvl', $numPr)->item(0);
+        $ilvl = $ilvlNode instanceof \DOMElement ? (int) $this->getAttributeValue($ilvlNode, 'val') : 0;
+
+        return [
+            'numId' => $numId,
+            'ilvl' => max(0, $ilvl),
+            'style' => $this->numbering[$numId]['style'] ?? ListBlock::STYLE_BULLET,
+            'start' => $this->numbering[$numId]['start'] ?? 1,
+        ];
+    }
+
+    private function handleListParagraph(\DOMNode $node, Section $section, \DOMXPath $xpath, \ZipArchive $zip, array $numInfo): void
+    {
+        $list = $this->ensureListForNumbering($section, $numInfo);
+
+        if ($list === null) {
+            return;
+        }
+
+        $paragraph = new Paragraph();
+        $this->parseRuns($node, $paragraph, $xpath, $zip, $section);
+
+        $runs = $paragraph->getRuns();
+
+        if ($runs === []) {
+            return;
+        }
+
+        $item = new ListItem();
+
+        foreach ($runs as $run) {
+            $item->addRun(new TextRun($run->getText(), $run->getStyle(), $run->getLink()));
+        }
+
+        $list->addItem($item);
+        $this->listStack[$numInfo['ilvl']]['last_item'] = $item;
+    }
+
+    private function ensureListForNumbering(Section $section, array $numInfo): ?ListBlock
+    {
+        $level = $numInfo['ilvl'];
+        $numId = $numInfo['numId'];
+
+        if ($level === 0 && isset($this->listStack[0]) && $this->listStack[0]['numId'] !== $numId) {
+            $this->listStack = [];
+        }
+
+        $this->pruneListStack($level);
+
+        if (isset($this->listStack[$level]) && $this->listStack[$level]['numId'] === $numId) {
+            return $this->listStack[$level]['list'];
+        }
+
+        if ($level > 0 && (! isset($this->listStack[$level - 1]) || $this->listStack[$level - 1]['last_item'] === null)) {
+            return null;
+        }
+
+        $list = ListBlock::make($numInfo['style'], $numInfo['start']);
+
+        if ($level === 0) {
+            $section->addElement($list);
+        } else {
+            $parentItem = $this->listStack[$level - 1]['last_item'];
+
+            if ($parentItem === null) {
+                return null;
+            }
+
+            $parentItem->addList($list);
+        }
+
+        $this->listStack[$level] = [
+            'list' => $list,
+            'numId' => $numId,
+            'last_item' => null,
+        ];
+
+        return $list;
+    }
+
+    private function pruneListStack(int $maxLevel): void
+    {
+        foreach (array_keys($this->listStack) as $level) {
+            if ($level > $maxLevel) {
+                unset($this->listStack[$level]);
+            }
+        }
+    }
+
+    private function resetListState(): void
+    {
+        $this->listStack = [];
     }
 
     private function detectHeadingLevel(\DOMNode $node, \DOMXPath $xpath): ?int
@@ -694,6 +882,26 @@ class DocxParser extends AbstractParser implements ParserInterface
     /* =============================================================
      | Helpers
      |============================================================= */
+
+    private function numFmtToStyle(string $fmt): string
+    {
+        return $fmt === 'bullet' ? ListBlock::STYLE_BULLET : ListBlock::STYLE_ORDERED;
+    }
+
+    private function getAttributeValue(\DOMElement $element, string $name): string
+    {
+        $value = $element->getAttributeNS(self::NS_MAIN, $name);
+        if ($value !== '') {
+            return $value;
+        }
+
+        $value = $element->getAttribute($name);
+        if ($value !== '') {
+            return $value;
+        }
+
+        return $element->getAttribute('w:' . $name);
+    }
 
     private function extractPlainText(\DOMNode $node, \DOMXPath $xpath): string
     {
