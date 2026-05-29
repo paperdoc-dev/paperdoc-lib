@@ -195,6 +195,29 @@ class MarkdownRendererTest extends TestCase
         $this->assertStringContainsString('---', $markdown);
     }
 
+    public function test_renders_bullet_and_numbered_lists(): void
+    {
+        $doc = Document::make('markdown');
+        $section = Section::make('lists');
+
+        $bulletList = $section->addBulletList();
+        $bulletList->addText('Point A');
+        $bulletList->addText('Point B');
+
+        $orderedList = $section->addOrderedList();
+        $orderedList->addText('Étape 1');
+        $orderedList->addText('Étape 2');
+
+        $doc->addSection($section);
+
+        $markdown = (new MarkdownRenderer())->render($doc);
+
+        $this->assertStringContainsString('- Point A', $markdown);
+        $this->assertStringContainsString('- Point B', $markdown);
+        $this->assertStringContainsString('1. Étape 1', $markdown);
+        $this->assertStringContainsString('2. Étape 2', $markdown);
+    }
+
 
     public function test_creates_directory_if_needed(): void
     {
