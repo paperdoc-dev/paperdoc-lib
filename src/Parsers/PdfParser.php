@@ -350,7 +350,7 @@ class PdfParser extends AbstractParser implements ParserInterface
             return $bytes !== false ? $this->decodePdfString($bytes) : '';
         }
 
-        $charLen = strlen(array_key_first($cmap));
+        $charLen = strlen((string) array_key_first($cmap));
 
         if ($charLen < 2) {
             $charLen = 2;
