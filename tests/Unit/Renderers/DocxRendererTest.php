@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
-use Paperdoc\Document\{Document, HorizontalRule, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\{Document, HorizontalRule, Link\TextLink, Paragraph, Section, Table, TableCell, TableRow, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Parsers\DocxParser;
@@ -232,5 +232,29 @@ class DocxRendererTest extends TestCase
         $this->assertStringContainsString('<w:pBdr>', $xml);
         $this->assertStringContainsString('<w:bottom', $xml);
         $this->assertStringContainsString('w:color="999999"', $xml);
+    }
+
+    public function test_renders_external_link_with_hyperlink_element_and_relationship(): void
+    {
+        $doc = new Document('docx');
+        $section = Section::make();
+        $paragraph = new Paragraph();
+        $paragraph->addRun(new TextRun('Click here', null, new TextLink('https://example.com')));
+        $section->addElement($paragraph);
+        $doc->addSection($section);
+
+        (new DocxRenderer())->save($doc, $this->tmp);
+
+        $zip = new \ZipArchive();
+        $zip->open($this->tmp);
+        $documentXml = $zip->getFromName('word/document.xml');
+        $relsXml = $zip->getFromName('word/_rels/document.xml.rels');
+        $zip->close();
+
+        $this->assertStringContainsString('<w:hyperlink', $documentXml);
+        $this->assertStringContainsString('r:id="rId', $documentXml);
+        $this->assertStringContainsString('>Click here<', $documentXml);
+        $this->assertStringContainsString('Target="https://example.com"', $relsXml);
+        $this->assertStringContainsString('TargetMode="External"', $relsXml);
     }
 }
