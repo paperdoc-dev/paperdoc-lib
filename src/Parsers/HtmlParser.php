@@ -26,6 +26,11 @@ class HtmlParser extends AbstractParser implements ParserInterface
         $this->assertFileReadable($filename);
 
         $html = file_get_contents($filename);
+
+        if ($html === false) {
+            throw new \RuntimeException("Impossible de lire le fichier HTML : {$filename}");
+        }
+
         $document = new Document('html');
 
         $dom = new \DOMDocument();
@@ -54,7 +59,7 @@ class HtmlParser extends AbstractParser implements ParserInterface
 
         if ($sections->length > 0) {
             foreach ($sections as $sectionNode) {
-                $section = new Section($sectionNode->getAttribute('id') ?? '');
+                $section = new Section($sectionNode->getAttribute('id'));
                 $this->parseChildNodes($sectionNode, $section);
                 $document->addSection($section);
             }
@@ -181,7 +186,7 @@ class HtmlParser extends AbstractParser implements ParserInterface
             $isHeader = false;
 
             foreach ($tr->childNodes as $td) {
-                if ($td->nodeType !== XML_ELEMENT_NODE) {
+                if (! $td instanceof \DOMElement) {
                     continue;
                 }
 
@@ -232,8 +237,8 @@ class HtmlParser extends AbstractParser implements ParserInterface
 
     private function parseImage(\DOMElement $node, Section $section): void
     {
-        $src = $node->getAttribute('src') ?? '';
-        $alt = $node->getAttribute('alt') ?? '';
+        $src = $node->getAttribute('src');
+        $alt = $node->getAttribute('alt');
         $width = (int) ($node->getAttribute('width') ?: 0);
         $height = (int) ($node->getAttribute('height') ?: 0);
 

@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace Paperdoc\Renderers;
 
 use Paperdoc\Contracts\DocumentInterface;
-use Paperdoc\Document\{Paragraph, Table, TableRow};
+use Paperdoc\Document\{Paragraph, Table};
+use Paperdoc\Support\Cast;
 
 /**
  * Renderer XLSX natif utilisant ZipArchive + XML.
@@ -100,7 +101,7 @@ class XlsxRenderer extends AbstractRenderer
 
             if (! empty($rows)) {
                 $name = $section->getName() ?: 'Sheet' . (count($sheets) + 1);
-                $name = substr(preg_replace('/[\\\\\/\?\*\[\]:]+/', '_', $name), 0, 31);
+                $name = substr(Cast::asString(preg_replace('/[\\\\\/\?\*\[\]:]+/', '_', $name), $name), 0, 31);
                 $sheets[] = ['name' => $name, 'rows' => $rows];
             }
         }
@@ -130,7 +131,7 @@ class XlsxRenderer extends AbstractRenderer
                 $colLetter = $this->colIndexToLetter($colIdx);
                 $ref = $colLetter . $rowNum;
 
-                if (is_numeric($value) && $value !== '') {
+                if (is_numeric($value)) {
                     $xml .= "<c r=\"{$ref}\"><v>" . $this->escapeXml($value) . "</v></c>";
                 } else {
                     $stringIdx = array_search($value, $allStrings, true);
@@ -181,7 +182,7 @@ class XlsxRenderer extends AbstractRenderer
     }
 
     /**
-     * @param array<int, array{name: string, rows: array}> $sheets
+     * @param array<int, array{name: string, rows: array<int, string[]>}> $sheets
      */
     private function buildContentTypes(array $sheets): string
     {
@@ -214,7 +215,7 @@ class XlsxRenderer extends AbstractRenderer
     }
 
     /**
-     * @param array<int, array{name: string, rows: array}> $sheets
+     * @param array<int, array{name: string, rows: array<int, string[]>}> $sheets
      */
     private function buildWorkbook(array $sheets): string
     {
@@ -234,7 +235,7 @@ class XlsxRenderer extends AbstractRenderer
     }
 
     /**
-     * @param array<int, array{name: string, rows: array}> $sheets
+     * @param array<int, array{name: string, rows: array<int, string[]>}> $sheets
      */
     private function buildWorkbookRels(array $sheets): string
     {
@@ -271,7 +272,7 @@ class XlsxRenderer extends AbstractRenderer
     private function buildCoreMeta(DocumentInterface $document): string
     {
         $title = $this->escapeXml($document->getTitle());
-        $author = $this->escapeXml($document->getMetadata()['author'] ?? 'Paperdoc');
+        $author = $this->escapeXml(Cast::asString($document->getMetadata()['author'] ?? null, 'Paperdoc'));
 
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
             . '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">'

@@ -12,6 +12,152 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
+## [1.0.0] — 2026-07-15
+
+> **First stable release.** 🎉 The public API is now covered by the
+> semantic-versioning contract: no breaking change will ship without a
+> major version bump. This release closes the long-standing "roadmap"
+> items of the rendering matrix (clickable PDF links, PDF outline,
+> HTML head metadata, Markdown frontmatter) and makes the library
+> truly **zero-dependency**: the AI layer's `neuron-ai` requirement is
+> replaced by built-in, SDK-free HTTP providers.
+
+### Added
+
+- **Clickable PDF hyperlinks (`/Annots`).** `TextLink` runs are now
+  real PDF Link annotations, not just blue underlined text:
+  - External URLs (`http`, `https`, `mailto`, …) become `/A << /S /URI >>`
+    actions — the full `getHref()` (URL + optional fragment) is used.
+  - Anchor links (`TextLink::make('', 'my-anchor')`) become internal
+    GoTo destinations targeting the page and vertical position of the
+    matching `Bookmark` or `Heading` id — **forward references work**
+    (a table of contents on page 1 can point at a heading on page 12).
+  - Multi-line (wrapped) links produce one clickable rectangle per
+    rendered line, and links crossing an automatic page break attach
+    each rectangle to its own page.
+  - Links inside `TextZone` blocks are clickable too.
+  - A link pointing at an anchor that is never declared is silently
+    dropped (the text still renders, it just isn't clickable).
+- **PDF document outline (bookmarks panel, `/Outlines`).** Every
+  `Heading` (levels 1–6) becomes an outline entry; the tree hierarchy
+  is rebuilt from heading levels (skipped levels are clamped so the
+  tree stays well-formed), and the catalog opts into
+  `/PageMode /UseOutlines` so readers show the panel by default.
+- **Full PDF `/Info` dictionary.** `Metadata` now maps to `/Title`,
+  `/Author`, `/Subject`, `/Keywords`, `/CreationDate` and `/ModDate`
+  (previously only `/Creator` was written). Empty fields are omitted.
+- **HTML head metadata.** `Metadata` emits `<meta name="author">`,
+  `description` (falls back to `subject`), `keywords`,
+  `dcterms.created` / `dcterms.modified`, and the `<html lang>`
+  attribute now uses `Metadata::getLanguage()` (default `en` — it was
+  previously hardcoded to `fr`).
+- **Markdown YAML frontmatter for typed properties.** `title`,
+  `author`, `subject`, `description`, `keywords`, `language`,
+  `created`, `modified` are merged with the existing loose metadata
+  bag (typed keys win). YAML-sensitive values (colons, quotes, …) are
+  emitted as JSON-quoted scalars, which are valid YAML.
+- **Native LLM provider layer** — the AI features (OCR post-correction
+  via `enhance()`, structured extraction via `structureDocument()`) now
+  ship with **built-in HTTP clients** for OpenAI (and any
+  OpenAI-compatible endpoint via `base_url`), Anthropic, Gemini and
+  Ollama: `Paperdoc\Llm\Providers\*` implementing the new
+  `Paperdoc\Contracts\LlmProviderInterface`. Vision (page image) input
+  is supported by all four. Transport prefers ext-curl and falls back
+  to PHP streams. Structured extraction requests strict JSON and
+  retries up to 3 times before throwing.
+- **`Paperdoc\Exceptions\LlmException`** — typed error for LLM
+  transport/HTTP/response failures (`forHttp`, `forTransport`,
+  `forResponse`).
+- **`TableOfContents` block element** (`Section::addTableOfContents($maxLevel, $title)`).
+  Auto-generated from the document's headings, once per renderer:
+  - **PDF**: indented, clickable entries (internal GoTo links to each
+    heading — anchors are generated automatically for headings without
+    an explicit id).
+  - **HTML**: `<nav class="paperdoc-toc">` with anchor links; headings
+    get auto-generated ids only when a TOC is present.
+  - **Markdown**: nested link list using GitHub-style slugs.
+  - **DOCX**: native Word `TOC` field (readers offer "Update Field"
+    to fill in page numbers).
+- **`Watermark`** (`Document::setWatermark(Watermark::make('DRAFT'))`).
+  Rotated, semi-transparent text stamped on every page — including
+  auto-created continuation pages. Configurable text, font, size,
+  color, opacity and angle. PDF uses a native `ExtGState` alpha +
+  rotation matrix; HTML uses a centred, rotated overlay `<div>`.
+- **Rich text styles** — `TextStyle::setStrikethrough()` and
+  `TextStyle::setHighlight(?string $color)` across all four renderers
+  (`<w:strike/>` / `<w:shd>` in DOCX, `text-decoration` /
+  `background-color` in HTML, `~~text~~` in Markdown). The PDF engine
+  now **actually draws** underline, strikethrough and highlight
+  rectangles (underline was previously style-only and silently
+  ignored in PDF output).
+- **String I/O** — `DocumentManager::openString($content, $format)`
+  parses a document from raw content without a source file, and
+  `DocumentManager::convertString($content, $from, $to)` converts
+  between formats fully in memory.
+- **`Paperdoc\Enum\Format` accepted everywhere** — `create()`,
+  `save()`, `renderAs()`, `convert()`, `openString()`,
+  `convertString()`, `Document::make()` and the factories accept
+  `Format|string`, e.g. `DocumentManager::create(Format::PDF)`.
+- **DOCX running headers/footers** — `Document::setHeader()` /
+  `setFooter()` are now honoured by the DOCX renderer (previously PDF
+  and HTML only): native `header1.xml` / `footer1.xml` parts wired
+  through `headerReference`/`footerReference`, with `{page}` /
+  `{pages}` emitted as live Word `PAGE` / `NUMPAGES` fields and
+  `{title}` / `{date}` / `{datetime}` resolved at generation time.
+  Validated by LibreOffice round-trip (footer present on every page).
+- **PDF content streams are Flate-compressed** by default — typical
+  documents shrink 3-5×. `PdfEngine::setCompression(false)` restores
+  human-readable streams for debugging.
+- **CI workflow** (`.github/workflows/tests.yml`) — the README badge
+  now points at a real matrix build (PHP 8.2 / 8.3 / 8.4 / 8.5).
+- **PdfEngine public API**: `beginLink()` / `endLink()`,
+  `registerAnchor()`, `addOutlineEntry()`, `setAuthor()`,
+  `setSubject()`, `setKeywords()`, `setCreationDate()`,
+  `setModificationDate()`, `setTextDecorations()` /
+  `clearTextDecorations()`, `drawWatermarkText()`,
+  `setCompression()`.
+
+### Changed
+
+- **`neuron-core/neuron-ai` is removed entirely.** The library now has
+  **zero Composer dependencies** — including the AI layer, which is
+  implemented natively (see above). `LlmAugmenter`'s public API and the
+  `config/paperdoc.php` shape (`provider`, `model`, `api_key`,
+  `base_url`, `options`) are unchanged;
+  `DocumentManager::open(['llm' => true])` behaves as before.
+  `LlmAugmenter` also accepts an optional `LlmProviderInterface` as a
+  second constructor argument for custom providers or testing.
+- `Heading` runs carrying a `TextLink` keep their link in PDF output
+  (it was previously dropped by the heading restyling pass).
+
+### Compatibility
+
+- Documents without links, headings or typed metadata render
+  byte-identically except for object numbering (page objects are now
+  allocated before page dictionaries are built, to support forward
+  destination references).
+- The `/Info` dictionary no longer emits an empty `/Title ()` for
+  untitled documents.
+
+### Tests
+
+- `PdfRendererLinksOutlineTest` (12 tests) — URI annotations, escaped
+  URIs, rect sanity, GoTo destinations across pages, unknown-anchor
+  fallback, outline tree shape, level clamping, `/Info` mapping.
+- `MetadataRenderingTest` (8 tests) — HTML meta tags / lang attribute /
+  escaping, Markdown frontmatter (typed + loose bag, YAML quoting).
+- `FeatureSuiteTest` (16 tests) — strikethrough/highlight across the
+  four renderers, drawn PDF decorations, TOC in PDF/HTML/Markdown/DOCX,
+  watermark (ExtGState + rotation, HTML overlay), `openString` /
+  `convertString`, `Format` enum round-trip.
+- `DocxRunningElementsTest` (5 tests) — header/footer parts, rels,
+  content types, PAGE/NUMPAGES fields, alignment and style mapping.
+- Full suite: **824 tests / 2148 assertions**, all green. Generated
+  PDFs validated externally with Ghostscript and `pdfinfo`; DOCX
+  headers/footers validated through a LibreOffice PDF conversion.
+
+---
+
 ## [0.8.3] — 2026-05-11
 
 > **Bug fix patch (PDF).** Continuation pages created by automatic
@@ -921,7 +1067,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ---
 
-[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/paperdoc-dev/paperdoc-lib/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v1.0.0
+[0.8.3]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.8.3
+[0.8.2]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.8.2
+[0.8.1]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.8.1
+[0.8.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.8.0
+[0.7.3]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.7.3
+[0.7.2]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.7.2
+[0.7.1]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.7.1
+[0.7.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.7.0
+[0.6.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.6.0
+[0.5.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.5.0
 [0.4.0]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.4.0
 [0.3.8]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.8
 [0.3.7]: https://github.com/paperdoc-dev/paperdoc-lib/releases/tag/v0.3.7

@@ -1,10 +1,11 @@
 # Paperdoc Library
 
 [![Latest Version](https://img.shields.io/packagist/v/paperdoc-dev/paperdoc-lib.svg?style=flat-square)](https://packagist.org/packages/paperdoc-dev/paperdoc-lib)
-[![Pre-release](https://img.shields.io/badge/stability-unstable-orange?style=flat-square)](https://github.com/paperdoc-dev/paperdoc-lib/releases)
+[![Stable](https://img.shields.io/badge/stability-stable-brightgreen?style=flat-square)](https://github.com/paperdoc-dev/paperdoc-lib/releases)
 [![PHP Version](https://img.shields.io/badge/php-%5E8.2-blue?style=flat-square)](https://www.php.net)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/paperdoc-dev/paperdoc-lib/tests.yml?label=tests&style=flat-square)](https://github.com/paperdoc-dev/paperdoc-lib/actions)
+[![PHPStan](https://img.shields.io/github/actions/workflow/status/paperdoc-dev/paperdoc-lib/tests.yml?label=phpstan&style=flat-square)](https://github.com/paperdoc-dev/paperdoc-lib/actions)
 
 > A zero-dependency PHP library for generating, parsing and converting documents — PDF, HTML, CSV, DOCX, XLSX, PPTX, Markdown and more.
 
@@ -12,20 +13,23 @@
 
 ## Features
 
-- **Generate** documents from scratch (PDF, HTML, CSV, DOCX, XLSX, PPTX, Markdown)
+- **Generate** documents from scratch — PDF, HTML, CSV, DOCX, XLSX, PPTX, Markdown
 - **Parse** existing documents into a unified in-memory model
-- **Convert** between any supported formats in one call
-- **Rich document model** — typed headings, ordered/bullet lists (nested), bookmarks, code blocks, blockquotes, images, tables, page breaks and typed document properties (author, subject, dates…)
-- **Per-page layout** *(v0.7.0+)* — per-section `PageSetup` with custom size (or any `PageSize` enum), padding, full-page **background image** (`cover` / `contain` / `auto` / `stretch` since v0.7.1) **or color** ; absolutely-positioned **`TextZone`** blocks with `clip` / `ellipsis` / `visible` overflow strategies and **per-paragraph alignment** (`left` / `center` / `right` / `justify`, *v0.7.1*) ; document-wide running **headers / footers** with `{page}` / `{pages}` / `{title}` / `{date}` / `{datetime}` placeholders
-- **Typographic quality** *(v0.7.3)* — per-glyph metrics from the **14 standard PDF fonts** (Core 14, AFM-derived) so centering, right-alignment, justification and word-wrapping are pixel-accurate ; ascent-aware vertical stacking (no more eyebrow/title overlap) ; justification combines `Tw` (word-spacing) and `Tc` (character-spacing) and falls back to flush-left when a line would produce visible "rivers"
-- **Layout & typography APIs** *(v0.8.0)* — per-section header/footer override (`Section::setHeader/setFooter/hideHeader/hideFooter`) ; `Section::setVerticalAlignment(TOP/CENTER/BOTTOM)` for chapter openers / colophons ; per-side padding shortcuts (`setPagePaddingTop/Right/Bottom/Left`) ; `ParagraphStyle::setFirstLineIndent()` (CSS `text-indent`) ; `TextStyle::setLetterSpacing()` (PDF `Tc` operator, HTML `letter-spacing`) ; new **`HorizontalRule`** block element rendered to PDF (stroked line), HTML (`<hr>`), Markdown (`---`) and DOCX (bordered paragraph)
-- **Native rendering core** — every block element renders cleanly to **DOCX**, **PDF**, **HTML** and **Markdown**: typed headings (`<h1>`/`<w:pStyle>`), nested lists (`<ul>`/`<w:numPr>`), blockquotes, code blocks (with language hint), bookmarks, embedded or on-disk images
-- **Hyperlinks** — parse `<w:hyperlink>` from DOCX and round-trip them to HTML `<a>`, Markdown `[text](url)` and DOCX hyperlink relationships, with anchors and tooltips
+- **Convert** between any supported format in one call
+- **Rich document model** — headings, nested lists, bookmarks, code blocks, blockquotes, images, tables, page breaks, metadata
+- **Layout & typography** — per-page setup, multi-column layout, backgrounds, text zones, headers/footers, footnotes, vertical alignment, first-line indent, letter spacing, horizontal rules
+- **Native rendering** — block elements render cleanly to DOCX, PDF, HTML and Markdown
+- **Hyperlinks** — parse from DOCX and round-trip to HTML, Markdown, DOCX and PDF (external URLs and internal anchors)
+- **PDF outline & table of contents** — navigation panel and linked TOC across all formats
+- **Watermark & rich text styles** — strikethrough, highlight, underline across formats
+- **String I/O** — parse and convert content in memory, no file required
+- **Typed Format enum** — use strings or `Paperdoc\Enum\Format` everywhere
+- **Metadata** — title, author, subject, dates mapped to each format's native properties
 - **Batch processing** — open and process multiple files at once
-- **Laravel integration** — first-class ServiceProvider and Facade
-- **AI-powered** features via Neuron AI (OCR, LLM extraction)
-- **Typed exceptions** — `ParserException`, `RendererException`, `UnsupportedFormatException`, `InvalidDocumentException` all extending a common `PaperdocException`
-- Zero native binary dependencies — pure PHP
+- **Laravel integration** — ServiceProvider and Facade included
+- **AI-powered OCR** — post-correction and structured extraction via built-in HTTP providers (OpenAI, Anthropic, Gemini, Ollama)
+- **Typed exceptions** — clear error hierarchy for parsers, renderers and LLM calls
+- **Zero-dependency** — no third-party packages, no native binaries
 
 ---
 
@@ -39,11 +43,12 @@
 | ext-zip | * |
 | ext-zlib | * |
 
-**Optional (Laravel)**
+**Optional**
 
-| Package | Version |
-|---|---|
-| illuminate/support | ^11.0 \| ^12.0 |
+| Package | Version | Enables |
+|---|---|---|
+| illuminate/support | ^11.0 \| ^12.0 | Laravel integration (ServiceProvider, Facade) |
+| ext-curl | * | Preferred HTTP transport for the built-in LLM providers (PHP streams fallback otherwise) |
 
 ---
 
@@ -180,13 +185,12 @@ $section->addBlockquote()
 
 ## Page layout, text zones, headers & footers
 
-*Available since **v0.7.0**.* Each section can declare its own page
-geometry through a `PageSetup` value object, and place
-absolutely-positioned `TextZone` blocks anywhere on the page. Combine
-several sections (each with its own `PageSetup`) to build documents
-where every page has a different size and background. Add a global
-`RunningElement` to the `Document` to draw a header/footer on every
-page.
+Each section can declare its own page geometry through a `PageSetup`
+value object, and place absolutely-positioned `TextZone` blocks anywhere
+on the page. Combine several sections (each with its own `PageSetup`) to
+build documents where every page has a different size and background.
+Add a global `RunningElement` to the `Document` to draw a header/footer
+on every page.
 
 ### Configure a page
 
@@ -215,8 +219,9 @@ $square = Section::make('back-cover')->setPageSetup(
 
 `Section` exposes shortcut setters (`setPageSize()`,
 `setPageDimensions()`, `setPagePadding()`,
-`setPageBackgroundImage()`, `setPageBackgroundColor()`) that delegate
-to a lazily-created `PageSetup`.
+`setPageBackgroundImage()`, `setPageBackgroundColor()`,
+`setColumnCount()`, `setColumnGap()`) that delegate to a lazily-created
+`PageSetup`.
 
 | Setter / Factory                                            | Purpose                                                |
 |-------------------------------------------------------------|--------------------------------------------------------|
@@ -226,16 +231,44 @@ to a lazily-created `PageSetup`.
 | `setPadding(...)` (1–4 values)                              | CSS-style shorthand for top/right/bottom/left padding  |
 | `setBackgroundColor($hex)`                                  | Solid full-bleed background color                      |
 | `setBackgroundImage(Image)`                                 | Full-bleed image (on-disk or `Image::fromData()`)      |
-| `setBackgroundSize(string)` *(v0.7.1)*                      | `cover` (default), `contain`, `auto`, `stretch` (=`100% 100%`), or any CSS string |
-| `setBackgroundPosition(string)` *(v0.7.1)*                  | CSS string, default `'center center'`                  |
-| `setBackgroundRepeat(string)` *(v0.7.1)*                    | CSS string, default `'no-repeat'`                      |
+| `setBackgroundSize(string)`                                 | `cover` (default), `contain`, `auto`, `stretch`, or any CSS string |
+| `setBackgroundPosition(string)`                             | CSS string, default `'center center'`                  |
+| `setBackgroundRepeat(string)`                               | CSS string, default `'no-repeat'`                      |
+| `setColumnCount(int)` / `setColumnGap(float)`               | Multi-column body layout (PDF, HTML, DOCX)             |
 
-### Fit the background image — `cover` / `contain` / `auto` / `stretch`
+### Multi-column layout
 
-*Available since **v0.7.1**.* Both renderers (PDF and HTML) honour the
-same four CSS-like modes. `cover` and `auto` automatically clip the
-overflow with a clip path in the PDF and `overflow: hidden` in the HTML
-output.
+```php
+$section->setPageSetup(
+    PageSetup::fromSize(PageSize::A4)
+        ->setColumnCount(2)
+        ->setColumnGap(18.0) // points
+);
+```
+
+Text flows down each column, then onto the next page. Tables and
+full-width images still use the full content width.
+
+### Footnotes
+
+Attach a footnote to any `TextRun`. Markers (`[n]`) appear inline.
+PDF places the note at the bottom of the page; HTML/Markdown list notes
+at section end; DOCX appends a notes block at the end of the document.
+
+```php
+use Paperdoc\Document\Footnote;
+
+$paragraph->addRun(TextRun::make(
+    'See the specification',
+    null,
+    null,
+    Footnote::make('ISO 32000-1:2008, §7.5'),
+));
+```
+
+### Background image fit
+
+PDF and HTML share the same modes. `cover` and `auto` clip overflow.
 
 ```php
 use Paperdoc\Document\Style\PageSetup;
@@ -297,7 +330,7 @@ Coordinates use the top-left convention (`x=0, y=0` is the top-left
 of the page) for both PDF and HTML — the `PdfRenderer` flips to PDF's
 bottom-left origin internally.
 
-#### Per-paragraph alignment inside a zone — *v0.7.1*
+#### Per-paragraph alignment
 
 Each paragraph of a `TextZone` carries its own `ParagraphStyle`, so
 you can mix several alignments in the same zone (centred title,
@@ -355,6 +388,13 @@ page), `{pages}` (total pages), `{title}` (the document title),
 resolves them per page so you don't need to update the template
 between pages.
 
+Since **v1.0.0**, the **DOCX renderer** honours document-level running
+elements too: it writes native `header1.xml` / `footer1.xml` parts and
+emits `{page}` / `{pages}` as live Word `PAGE` / `NUMPAGES` fields, so
+page numbers stay correct when the document is edited in Word.
+(Per-section overrides below remain PDF/HTML-only — Word's section
+model differs.)
+
 The HTML renderer adds a translucent `rgba(255, 255, 255, 0.85)`
 backdrop with a `backdrop-filter: blur(2px)` behind the running
 elements so they remain legible on top of any background image. The
@@ -362,15 +402,14 @@ library does not automatically reserve vertical space for the
 header/footer — keep that in mind when positioning a `TextZone` close
 to a page edge.
 
-### Per-section header / footer override (v0.8.0)
+### Per-section header / footer override
 
 A document-level header/footer applies uniformly to every page by
 default. Often that's not what you want — a cover page should NOT
 carry the page-number footer (it would either disappear under the
 artwork or fight with the imagery for legibility), and a colophon
-on the last page might want a different label. Since v0.8.0,
-sections can override or suppress the document-level running
-elements:
+on the last page might want a different label. Sections can override
+or suppress the document-level running elements:
 
 ```php
 use Paperdoc\Document\Style\RunningElement;
@@ -400,7 +439,7 @@ Resolution rule — for every page, the renderer picks (in order) :
 
 Both PDF and HTML renderers honour this resolution.
 
-### Vertical alignment of section content (v0.8.0)
+### Vertical alignment
 
 By default the content of a section flows from the top padding
 downwards. For pages that should breathe vertically — chapter
@@ -435,7 +474,7 @@ Implementation notes :
   pages. If you need centring on a section with lots of content,
   reduce its content first.
 
-### Per-side padding shortcuts (v0.8.0)
+### Per-side padding shortcuts
 
 `Section::setPagePadding(...$values)` already accepts CSS-shorthand
 1-/2-/3-/4-value forms. When only ONE side needs tweaking — typical
@@ -456,7 +495,7 @@ Available : `setPagePaddingTop()`, `setPagePaddingRight()`,
 
 ---
 
-## First-line indent and letter-spacing (v0.8.0)
+## First-line indent and letter-spacing
 
 Two style-level additions that previously had to be hacked at the
 application layer :
@@ -512,7 +551,7 @@ correctly account for letter-spacing.
 
 ---
 
-## Horizontal rule (v0.8.0)
+## Horizontal rule
 
 A first-class block element for visual separators :
 
@@ -558,7 +597,7 @@ Renderers :
 
 ## Rendering
 
-Since **v0.5.0**, every element of the document model is natively rendered by **all four** core renderers — no element is silently dropped, every output is a valid file format.
+Every element of the document model is natively rendered by **all four** core renderers — no element is silently dropped, every output is a valid file format.
 
 | Element            | DOCX                                                    | PDF                                            | HTML                                  | Markdown                          |
 |--------------------|---------------------------------------------------------|------------------------------------------------|---------------------------------------|-----------------------------------|
@@ -567,13 +606,14 @@ Since **v0.5.0**, every element of the document model is natively rendered by **
 | `ListBlock`        | `<w:numPr>` + `word/numbering.xml`, nested `<w:ilvl>`   | `•` / `1.` markers, depth-based indent         | `<ul>` / `<ol start="N">`, nested     | `-` / `1.`, two-space indent      |
 | `Blockquote`       | `<w:pStyle w:val="Quote"/>` + indent                    | indented italic muted-grey                     | `<blockquote>` (nested children)      | `> ` prefixed lines               |
 | `CodeBlock`        | `<w:pStyle w:val="Code"/>` + Consolas + `<w:br/>`       | Courier, dedicated spacing                     | `<pre><code class="language-…">`      | fenced ` ```lang ` block          |
-| `Bookmark`         | `<w:bookmarkStart/>` / `<w:bookmarkEnd/>`               | rendered silently (PDF annotations: roadmap)   | `<a id="…" class="paperdoc-bookmark">`| inline `<a id="…"></a>`           |
-| `TextLink`         | `<w:hyperlink>` (external rels + `w:anchor` + tooltip)  | blue underlined run                            | `<a href>` with safe `target/rel`     | safe `[label](url "title")`       |
+| `Bookmark`         | `<w:bookmarkStart/>` / `<w:bookmarkEnd/>`               | named destination — internal link target *(v1.0.0)* | `<a id="…" class="paperdoc-bookmark">`| inline `<a id="…"></a>`           |
+| `TextLink`         | `<w:hyperlink>` (external rels + `w:anchor` + tooltip)  | clickable Link annotation (URI / GoTo) *(v1.0.0)* | `<a href>` with safe `target/rel`     | safe `[label](url "title")`       |
 | `Image`            | `<w:drawing>` + `word/media/imageN.ext` rel             | XObject DCT (JPEG/PNG/GIF via GD re-encode)    | `<img src>` or `data:` URI            | `![alt](path)` or `data:` URI     |
 | `Table`            | `<w:tbl>` with header rows + `gridSpan`                 | drawn cells with header bg                     | `<table>` + striped rows              | `\|` rows                         |
 | `PageBreak`        | `<w:br w:type="page"/>`                                 | `newPage()`                                    | `.page-break` divider                 | blank line                        |
-| `HorizontalRule` *(v0.8.0)* | bordered empty `<w:p>` (`<w:pBdr>`)            | stroked PDF line                               | `<hr>` with inline CSS                | `---` thematic break              |
-| `Metadata`         | `docProps/core.xml`                                     | PDF `/Creator`                                 | (HTML head meta — roadmap)            | (frontmatter — roadmap)           |
+| `HorizontalRule` | bordered empty `<w:p>` (`<w:pBdr>`)            | stroked PDF line                               | `<hr>` with inline CSS                | `---` thematic break              |
+| `Metadata`         | `docProps/core.xml`                                     | full `/Info` dict *(v1.0.0)*                   | `<head>` meta + `lang` *(v1.0.0)*     | YAML frontmatter *(v1.0.0)*       |
+| `Heading` → outline | (outline levels via `pStyle`)                          | `/Outlines` bookmarks panel *(v1.0.0)*         | `id` anchors                          | `{#id}` anchors                   |
 
 Both `Image::make($path)` (on-disk) and `Image::fromData($bytes, $mimeType)` (in-memory) are accepted everywhere; HTML and Markdown automatically inline embedded images as `data:` URIs, DOCX writes them to `word/media/`, and PDF embeds them as DCT XObjects (re-encoding GIF/PNG/WebP through GD when needed).
 
@@ -590,6 +630,7 @@ All library errors extend a single base so consumers can catch them uniformly:
 | `Paperdoc\Exceptions\RendererException` | A renderer cannot serialise a document (`::forFormat($fmt, $reason, $previous)`) |
 | `Paperdoc\Exceptions\UnsupportedFormatException` | Unknown format or extension (`::forFormat()` / `::forExtension()`) |
 | `Paperdoc\Exceptions\InvalidDocumentException` | Document is used in an invalid state (e.g. invalid heading level) |
+| `Paperdoc\Exceptions\LlmException` | An LLM provider request fails (transport, HTTP error, unusable response) |
 
 ```php
 use Paperdoc\Exceptions\PaperdocException;
@@ -605,7 +646,50 @@ try {
 
 ## Hyperlinks
 
-Every `TextRun` can carry an optional `Paperdoc\Document\Link\TextLink`. Links survive the full round-trip: they're parsed from DOCX (`<w:hyperlink>`) and rendered natively by the HTML and Markdown renderers.
+Every `TextRun` can carry an optional `Paperdoc\Document\Link\TextLink`. Links survive the full round-trip: they're parsed from DOCX (`<w:hyperlink>`) and rendered natively by the HTML, Markdown, DOCX **and PDF** renderers.
+
+### Clickable links in PDF (v1.0.0)
+
+The native PDF renderer emits real Link annotations:
+
+- **External URLs** become `/A << /S /URI >>` actions — clicking opens the browser.
+- **Internal anchors** (`TextLink::make('', 'my-anchor')`) become GoTo destinations pointing at the page and position of the matching `Bookmark` or `Heading` id. Forward references work: a table of contents on page 1 can target a heading on page 12.
+- Wrapped links get one clickable rectangle per line; links crossing an automatic page break attach each rectangle to its own page. Links inside `TextZone` blocks are clickable too.
+- A link to an anchor that is never declared renders as styled text without an annotation (nothing breaks).
+
+```php
+$section->addText('See chapter 2', null, TextLink::make('', 'chap-2'));
+// … later, possibly pages away:
+$section->addElement(Heading::make('Chapter 2', 1, 'chap-2'));
+```
+
+Headings also feed the **PDF outline** (the "bookmarks" side panel): every `Heading` becomes a navigable outline entry, nested by level, and the document opens with the panel visible (`/PageMode /UseOutlines`).
+
+---
+
+## Table of contents, watermark & rich styles (v1.0.0)
+
+```php
+use Paperdoc\Document\Style\{TextStyle, Watermark};
+use Paperdoc\Enum\Format;
+use Paperdoc\Support\DocumentManager;
+
+$doc = DocumentManager::create(Format::PDF, 'Rapport');
+$doc->setWatermark(Watermark::make('CONFIDENTIEL')->setOpacity(0.2)->setAngle(-45));
+
+$section = $doc->openSection();
+$section->addTableOfContents(maxLevel: 3, title: 'Sommaire'); // clickable in PDF/HTML/MD, native field in DOCX
+$section->addElement(\Paperdoc\Document\Heading::make('Introduction', 1));
+
+$section->addText('ancien prix', TextStyle::make()->setStrikethrough());
+$section->addText('à retenir', TextStyle::make()->setHighlight('#FFF3B0'));
+```
+
+```php
+// Parse & convert without touching the filesystem:
+$html = DocumentManager::convertString("# Titre\n\nCorps.", 'md', 'html');
+$doc  = DocumentManager::openString($csvContent, Format::CSV);
+```
 
 ### Add a link programmatically
 
@@ -676,6 +760,14 @@ composer test
 
 Integration tests live in `tests/Integration/`, unit tests in `tests/Unit/`.
 
+## Static Analysis
+
+```bash
+composer phpstan
+```
+
+PHPStan runs at `level: max` on `src/`. The initial adoption uses `phpstan-baseline.neon` to freeze the current legacy debt so new type regressions fail CI immediately.
+
 ---
 
 ## Architecture
@@ -690,7 +782,7 @@ src/
 ├── Exceptions/        # PaperdocException + typed exceptions
 ├── Facades/           # Laravel Facade
 ├── Factory/           # Document/Parser factories
-├── Llm/               # AI/LLM integration (Neuron AI)
+├── Llm/               # Native AI/LLM layer (built-in OpenAI/Anthropic/Gemini/Ollama HTTP providers)
 ├── Ocr/               # OCR integration
 ├── Parsers/           # Format-specific parsers
 ├── Renderers/         # Format-specific renderers

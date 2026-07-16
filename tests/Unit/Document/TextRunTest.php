@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Document;
 
 use PHPUnit\Framework\TestCase;
+use Paperdoc\Document\Footnote;
 use Paperdoc\Document\TextRun;
 use Paperdoc\Document\Style\TextStyle;
 
@@ -83,5 +84,17 @@ class TextRunTest extends TestCase
         $run = new TextRun('Prix: 120 000 € (+12%)');
 
         $this->assertSame('Prix: 120 000 € (+12%)', $run->getText());
+    }
+
+    public function test_footnote_is_serialized_and_accessible(): void
+    {
+        $footnote = Footnote::make('Texte de note');
+        $run = TextRun::make('Mot', null, null, $footnote);
+
+        $this->assertSame($footnote, $run->getFootnote());
+
+        $json = json_decode(json_encode($run, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertIsArray($json);
+        $this->assertSame('Texte de note', $json['footnote']['text']);
     }
 }

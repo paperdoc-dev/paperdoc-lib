@@ -8,6 +8,7 @@ use Paperdoc\Contracts\OcrProcessorInterface;
 use Paperdoc\Document\Image;
 use Paperdoc\Document\Section;
 use Paperdoc\Ocr\PostProcessing\PostProcessingPipeline;
+use Paperdoc\Support\Cast;
 
 class OcrManager
 {
@@ -128,7 +129,7 @@ class OcrManager
 
         $total = count($elements);
 
-        return $total > 0 && ($textCount / $total) < $this->minTextRatio;
+        return ($textCount / $total) < $this->minTextRatio;
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -278,7 +279,7 @@ class OcrManager
      * All images from all sections are submitted to the pool at once,
      * then results are grouped back per section and post-processed.
      *
-     * @param  Section[] $sections
+     * @param  list<Section> $sections
      * @return array<int, string> section index => processed text
      */
     public function processSections(array $sections, ?string $language = null): array
@@ -287,6 +288,7 @@ class OcrManager
 
         $pool = new ProcessPool($this->poolSize, $this->processTimeout);
         $tmpPaths = [];
+        /** @var array<int, list<string>> $sectionImageKeys */
         $sectionImageKeys = [];
 
         $jobId = 0;
@@ -309,7 +311,12 @@ class OcrManager
         }
 
         if ($jobId === 0) {
-            return array_fill_keys(array_keys($sectionImageKeys), '');
+            $empty = [];
+            foreach (array_keys($sectionImageKeys) as $sIdx) {
+                $empty[$sIdx] = '';
+            }
+
+            return $empty;
         }
 
         try {
@@ -383,7 +390,8 @@ class OcrManager
 
         $ordered = [];
         for ($i = 0, $count = count($images); $i < $count; $i++) {
-            $ordered[] = $results[(string) $i] ?? '';
+            $key = (string) $i;
+            $ordered[] = array_key_exists($key, $results) ? $results[$key] : '';
         }
 
         return $ordered;
@@ -391,6 +399,8 @@ class OcrManager
 
     /**
      * Resolve language from the first image across multiple sections.
+     *
+     * @param list<Section> $sections
      */
     private function resolveLanguageFromSections(array $sections): string
     {
@@ -489,7 +499,7 @@ class OcrManager
             $cleaned[] = self::cleanLineEdges($trimmed);
         }
 
-        $result = preg_replace('/\n{3,}/', "\n\n", implode("\n", $cleaned));
+        $result = Cast::asString(preg_replace('/\n{3,}/', "\n\n", implode("\n", $cleaned)));
 
         return trim($result);
     }
@@ -500,7 +510,7 @@ class OcrManager
 
     private static function isNoiseLine(string $line): bool
     {
-        $letters = preg_replace('/[^\\p{L}]/u', '', $line);
+        $letters = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $line));
         $letterCount = mb_strlen($letters);
         $lineLen = mb_strlen($line);
 
@@ -513,7 +523,7 @@ class OcrManager
         }
 
         // ── letter density: garbled lines are symbol/digit-heavy ─
-        $nonSpaceChars = mb_strlen(preg_replace('/\s/u', '', $line));
+        $nonSpaceChars = mb_strlen(Cast::asString(preg_replace('/\s/u', '', $line)));
         if ($nonSpaceChars > 0 && ($letterCount / $nonSpaceChars) < 0.4) {
             return true;
         }
@@ -527,13 +537,13 @@ class OcrManager
             if ($diversity < 0.40) {
                 return true;
             }
-            if (preg_match('/(.)\1{2,}/u', mb_strtolower($letters)) && $diversity < 0.50) {
+            if (preg_match('/(.)\1{2,}/u', mb_strtolower($letters)) === 1 && $diversity < 0.50) {
                 return true;
             }
         }
 
         // ── no actual word (3+ consecutive letters) ─────────────
-        if (! preg_match('/\\p{L}{3,}/u', $line)) {
+        if (preg_match('/\\p{L}{3,}/u', $line) !== 1) {
             return true;
         }
 
@@ -547,9 +557,9 @@ class OcrManager
         }
 
         // ── bracket/paren glued to a letter in short lines ──────
-        $words = preg_split('/\s+/', $line);
+        $words = preg_split('/\s+/', $line) ?: [];
         $wordCount = count($words);
-        if ($lineLen < 30 && preg_match('/\\p{L}[)\]]/u', $line) && $wordCount <= 5) {
+        if ($lineLen < 30 && preg_match('/\\p{L}[)\]]/u', $line) === 1 && $wordCount <= 5) {
             return true;
         }
 
@@ -576,7 +586,7 @@ class OcrManager
             $garbled = 0;
             $checked = 0;
             foreach ($words as $w) {
-                $clean = preg_replace('/[^\\p{L}]/u', '', $w);
+                $clean = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $w));
                 $wLen = mb_strlen($clean);
                 if ($wLen < 3) {
                     continue;
@@ -654,12 +664,12 @@ class OcrManager
     private static function hasNaturalWords(string $line): bool
     {
         $lineLen = mb_strlen($line);
-        $words = preg_split('/\s+/', $line);
+        $words = preg_split('/\s+/', $line) ?: [];
         $checked = 0;
         $natural = 0;
 
         foreach ($words as $w) {
-            $clean = preg_replace('/[^\\p{L}]/u', '', $w);
+            $clean = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $w));
             if (mb_strlen($clean) < 3) {
                 continue;
             }
@@ -687,19 +697,19 @@ class OcrManager
     private static function cleanLineEdges(string $line): string
     {
         // Leading single digit before a letter (margin artefact)
-        $line = preg_replace('/^\d\s+(?=\\p{L})/u', '', $line);
+        $line = Cast::asString(preg_replace('/^\d\s+(?=\\p{L})/u', '', $line), $line);
         // Leading parenthesized uppercase prefix "(G ", "(A "
-        $line = preg_replace('/^\(\\p{Lu}{1,2}\s+/u', '', $line);
+        $line = Cast::asString(preg_replace('/^\(\\p{Lu}{1,2}\s+/u', '', $line), $line);
         // Leading quoted single char: "Ü …
-        $line = preg_replace('/^["«»]\\p{L}{1,2}\s+/u', '', $line);
+        $line = Cast::asString(preg_replace('/^["«»]\\p{L}{1,2}\s+/u', '', $line), $line);
         // Leading 1-3 non-letter/digit chars + space
-        $line = preg_replace('/^[^\\p{L}\\d]{1,3}\s+/u', '', $line);
+        $line = Cast::asString(preg_replace('/^[^\\p{L}\\d]{1,3}\s+/u', '', $line), $line);
         // Leading 1-3 lowercase chars before uppercase word
-        $line = preg_replace('/^\\p{Ll}{1,3}\s+(?=\\p{Lu})/u', '', $line);
+        $line = Cast::asString(preg_replace('/^\\p{Ll}{1,3}\s+(?=\\p{Lu})/u', '', $line), $line);
         // Leading single uppercase letter + space before another letter
-        $line = preg_replace('/^\\p{Lu}\s+(?=\\p{L})/u', '', $line);
+        $line = Cast::asString(preg_replace('/^\\p{Lu}\s+(?=\\p{L})/u', '', $line), $line);
         // Leading 2-letter all-caps prefix before a Titlecase word
-        $line = preg_replace('/^\\p{Lu}{2}\s+(?=\\p{Lu}\\p{Ll})/u', '', $line);
+        $line = Cast::asString(preg_replace('/^\\p{Lu}{2}\s+(?=\\p{Lu}\\p{Ll})/u', '', $line), $line);
 
         // Garbled prefix before a valid capitalised word in long lines
         if (mb_strlen($line) > 30) {
@@ -707,9 +717,9 @@ class OcrManager
         }
 
         // Trailing noise symbols + optional digits/punct
-        $line = preg_replace('/\s*[|(\[<>)\]+=#&"]{1,2}\s*[\d\p{P}\s]{0,5}$/u', '', $line);
+        $line = Cast::asString(preg_replace('/\s*[|(\[<>)\]+=#&"]{1,2}\s*[\d\p{P}\s]{0,5}$/u', '', $line), $line);
         // Trailing isolated single letter or digit
-        $line = preg_replace('/\s+(?:\\p{L}{1,2}|\d)$/u', '', $line);
+        $line = Cast::asString(preg_replace('/\s+(?:\\p{L}{1,2}|\d)$/u', '', $line), $line);
 
         return trim($line);
     }
@@ -720,37 +730,40 @@ class OcrManager
      */
     private static function stripGarbledPrefix(string $line): string
     {
-        return preg_replace_callback(
-            '/^((?:\S{1,8}\s+){2,5})(\\p{Lu}\\p{Ll}{3,})/u',
-            function (array $m): string {
-                $tokens = preg_split('/\s+/', trim($m[1]));
-                $garbled = 0;
-                $checked = 0;
+        return Cast::asString(
+            preg_replace_callback(
+                '/^((?:\S{1,8}\s+){2,5})(\\p{Lu}\\p{Ll}{3,})/u',
+                function (array $m): string {
+                    $tokens = preg_split('/\s+/', trim(Cast::asString($m[1]))) ?: [];
+                    $garbled = 0;
+                    $checked = 0;
 
-                foreach ($tokens as $tok) {
-                    $clean = preg_replace('/[^\\p{L}]/u', '', $tok);
-                    $len = mb_strlen($clean);
+                    foreach ($tokens as $tok) {
+                        $clean = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $tok));
+                        $len = mb_strlen($clean);
 
-                    if ($len === 0) {
-                        continue;
+                        if ($len === 0) {
+                            continue;
+                        }
+                        if ($len <= 2) {
+                            continue; // skip short function words in any language
+                        }
+
+                        $checked++;
+
+                        if (! self::isNaturalWord($clean)) {
+                            $garbled++;
+                        }
                     }
-                    if ($len <= 2) {
-                        continue; // skip short function words in any language
+
+                    if ($checked >= 2 && $garbled / $checked >= 0.6) {
+                        return Cast::asString($m[2]);
                     }
 
-                    $checked++;
-
-                    if (! self::isNaturalWord($clean)) {
-                        $garbled++;
-                    }
-                }
-
-                if ($checked >= 2 && $garbled / $checked >= 0.6) {
-                    return $m[2];
-                }
-
-                return $m[0];
-            },
+                    return Cast::asString($m[0]);
+                },
+                $line,
+            ),
             $line,
         );
     }

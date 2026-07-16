@@ -9,9 +9,9 @@ interface PostProcessorInterface
     /**
      * Process OCR text and return the improved version.
      *
-     * @param  string $text    Raw or partially-processed OCR text
-     * @param  array  $context Shared context (language, entities found, etc.)
-     * @return string          Improved text
+     * @param  string                $text    Raw or partially-processed OCR text
+     * @param  array<string, mixed>  $context Shared context (language, entities found, etc.)
+     * @return string                         Improved text
      */
     public function process(string $text, array &$context): string;
 

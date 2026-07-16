@@ -6,7 +6,7 @@ namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\{Document, Footnote, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, RunningElement, TableStyle, TextStyle};
 use Paperdoc\Document\Link\{TextLink};
 use Paperdoc\Enum\{Alignment, VerticalAlignment};
@@ -382,5 +382,38 @@ class HtmlRendererTest extends TestCase
         $this->assertStringContainsString('width:60%', $html);
         $this->assertStringContainsString('#ff0000', $html);
         $this->assertStringContainsString('border-top:2.00pt solid', $html);
+    }
+
+    public function test_renders_section_footnotes(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('notes');
+        $paragraph = Paragraph::make();
+        $paragraph->addRun(TextRun::make('Hello', null, null, Footnote::make('Footnote text')));
+        $section->addElement($paragraph);
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('Hello<sup class="paperdoc-footnote-ref">[1]</sup>', $html);
+        $this->assertStringContainsString('<section class="paperdoc-footnotes">', $html);
+        $this->assertStringContainsString('<li>Footnote text</li>', $html);
+    }
+
+    public function test_renders_multi_column_page_setup(): void
+    {
+        $doc = Document::make('html');
+        $section = Section::make('cols')->setPageSetup(
+            \Paperdoc\Document\Style\PageSetup::fromSize(\Paperdoc\Enum\PageSize::A4)
+                ->setColumnCount(3)
+                ->setColumnGap(12.0)
+        );
+        $section->addText('Multi column body');
+        $doc->addSection($section);
+
+        $html = (new HtmlRenderer())->render($doc);
+
+        $this->assertStringContainsString('column-count:3', $html);
+        $this->assertStringContainsString('column-gap:12.00pt', $html);
     }
 }

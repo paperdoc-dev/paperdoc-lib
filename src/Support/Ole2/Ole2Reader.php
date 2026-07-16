@@ -19,9 +19,7 @@ namespace Paperdoc\Support\Ole2;
 class Ole2Reader
 {
     private const MAGIC = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
-
     private const ENDOFCHAIN = 0xFFFFFFFE;
-    private const FREESECT   = 0xFFFFFFFF;
 
     private string $data;
 
@@ -73,7 +71,12 @@ class Ole2Reader
             throw new \RuntimeException("Fichier introuvable ou illisible : {$filename}");
         }
 
-        return new self(file_get_contents($filename));
+        $content = file_get_contents($filename);
+        if ($content === false) {
+            throw new \RuntimeException("Impossible de lire le fichier : {$filename}");
+        }
+
+        return new self($content);
     }
 
     /**
@@ -149,19 +152,19 @@ class Ole2Reader
         $difatEntries = [];
         for ($i = 0; $i < 109; $i++) {
             $sect = $this->readInt32(76 + $i * 4);
-            if ($sect >= 0 && $sect < 0xFFFFFFFE) {
+            if ($sect >= 0 && $sect < self::ENDOFCHAIN) {
                 $difatEntries[] = $sect;
             }
         }
 
         $current = $difatStart;
-        while ($current >= 0 && $current < 0xFFFFFFFE && $numDifatSectors > 0) {
+        while ($current >= 0 && $current < self::ENDOFCHAIN && $numDifatSectors > 0) {
             $offset = $this->sectorOffset($current);
             $entriesPerSector = $this->sectorSize / 4 - 1;
 
             for ($i = 0; $i < $entriesPerSector; $i++) {
                 $sect = $this->readInt32($offset + $i * 4);
-                if ($sect >= 0 && $sect < 0xFFFFFFFE) {
+                if ($sect >= 0 && $sect < self::ENDOFCHAIN) {
                     $difatEntries[] = $sect;
                 }
             }
@@ -206,7 +209,7 @@ class Ole2Reader
 
             $entry = new Ole2DirEntry();
 
-            $nameLen = unpack('v', substr($raw, 64, 2))[1];
+            $nameLen = self::u16(substr($raw, 64, 2));
             $nameLen = min($nameLen, 64);
 
             if ($nameLen > 2) {
@@ -215,8 +218,8 @@ class Ole2Reader
             }
 
             $entry->type        = ord($raw[66]);
-            $entry->startSector = unpack('V', substr($raw, 116, 4))[1];
-            $entry->size        = unpack('V', substr($raw, 120, 4))[1];
+            $entry->startSector = self::u32(substr($raw, 116, 4));
+            $entry->size        = self::u32(substr($raw, 120, 4));
 
             $this->directory[] = $entry;
         }
@@ -231,7 +234,7 @@ class Ole2Reader
         $this->miniFat = [];
         $miniFatStart = $this->readInt32(60);
 
-        if ($miniFatStart < 0 || $miniFatStart >= 0xFFFFFFFE) {
+        if ($miniFatStart < 0 || $miniFatStart >= self::ENDOFCHAIN) {
             return;
         }
 
@@ -239,7 +242,7 @@ class Ole2Reader
         $entries = (int) floor(strlen($miniFatData) / 4);
 
         for ($i = 0; $i < $entries; $i++) {
-            $this->miniFat[] = unpack('V', substr($miniFatData, $i * 4, 4))[1];
+            $this->miniFat[] = self::u32(substr($miniFatData, $i * 4, 4));
         }
     }
 
@@ -253,7 +256,7 @@ class Ole2Reader
 
         $root = $this->directory[0];
 
-        if ($root->startSector < 0xFFFFFFFE && $root->size > 0) {
+        if ($root->startSector < self::ENDOFCHAIN && $root->size > 0) {
             $this->miniStream = $this->readStream($root->startSector, $root->size);
         }
     }
@@ -268,7 +271,7 @@ class Ole2Reader
         $current = $startSector;
         $remaining = $maxSize;
 
-        while ($current >= 0 && $current < 0xFFFFFFFE && $remaining > 0) {
+        while ($current >= 0 && $current < self::ENDOFCHAIN && $remaining > 0) {
             $offset = $this->sectorOffset($current);
             $chunk = min($this->sectorSize, $remaining);
 
@@ -299,7 +302,7 @@ class Ole2Reader
         $current = $startMiniSector;
         $remaining = $size;
 
-        while ($current >= 0 && $current < 0xFFFFFFFE && $remaining > 0) {
+        while ($current >= 0 && $current < self::ENDOFCHAIN && $remaining > 0) {
             $offset = $current * $this->miniSectorSize;
             $chunk = min($this->miniSectorSize, $remaining);
 
@@ -344,22 +347,44 @@ class Ole2Reader
 
     private function readUint16(int $offset): int
     {
-        return unpack('v', substr($this->data, $offset, 2))[1];
+        return self::u16(substr($this->data, $offset, 2));
     }
 
     private function readUint32(int $offset): int
     {
-        return unpack('V', substr($this->data, $offset, 4))[1];
+        return self::u32(substr($this->data, $offset, 4));
     }
 
     private function readInt32(int $offset): int
     {
-        $val = unpack('V', substr($this->data, $offset, 4))[1];
+        $val = self::u32(substr($this->data, $offset, 4));
 
         if ($val >= 0x80000000) {
             return (int) ($val - 0x100000000);
         }
 
-        return (int) $val;
+        return $val;
+    }
+
+    private static function u16(string $bin): int
+    {
+        $parts = unpack('v', $bin);
+
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            throw new \RuntimeException('OLE2: failed to unpack uint16');
+        }
+
+        return $parts[1];
+    }
+
+    private static function u32(string $bin): int
+    {
+        $parts = unpack('V', $bin);
+
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            throw new \RuntimeException('OLE2: failed to unpack uint32');
+        }
+
+        return $parts[1];
     }
 }

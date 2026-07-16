@@ -14,7 +14,7 @@ use Paperdoc\Contracts\LinkInterface;
  *  - Internal anchor  : setAnchor('section-1') → rendered as '#section-1'
  *  - Hybrid           : external URL with fragment anchor (url + anchor)
  */
-class TextLink implements LinkInterface, \JsonSerializable
+final class TextLink implements LinkInterface, \JsonSerializable
 {
     private string $url = '';
     private string $anchor = '';

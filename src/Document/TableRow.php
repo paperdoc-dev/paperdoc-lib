@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Paperdoc\Document;
 
-class TableRow implements \JsonSerializable
+final class TableRow implements \JsonSerializable
 {
     /** @var TableCell[] */
     private array $cells = [];

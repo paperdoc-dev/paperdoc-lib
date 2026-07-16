@@ -173,7 +173,9 @@ class PageSetupTest extends TestCase
     {
         $setup = PageSetup::fromSize(PageSize::A4)
             ->setPadding(10.0, 20.0)
-            ->setBackgroundColor('#FFFFFF');
+            ->setBackgroundColor('#FFFFFF')
+            ->setColumnCount(2)
+            ->setColumnGap(24.0);
 
         $json = json_decode(json_encode($setup), true);
 
@@ -185,5 +187,19 @@ class PageSetupTest extends TestCase
         $this->assertSame(PageSetup::BG_SIZE_COVER, $json['backgroundSize']);
         $this->assertSame('center center', $json['backgroundPosition']);
         $this->assertSame('no-repeat', $json['backgroundRepeat']);
+        $this->assertSame(2, $json['columnCount']);
+        $this->assertEqualsWithDelta(24.0, $json['columnGap'], 0.01);
+    }
+
+    public function test_column_width_accounts_for_gap(): void
+    {
+        $setup = PageSetup::fromSize(PageSize::A4)
+            ->setPadding(40.0)
+            ->setColumnCount(2)
+            ->setColumnGap(20.0);
+
+        $expected = ($setup->getContentWidth() - 20.0) / 2.0;
+        $this->assertEqualsWithDelta($expected, $setup->getColumnWidth(), 0.01);
+        $this->assertSame(1, PageSetup::make()->getColumnCount());
     }
 }

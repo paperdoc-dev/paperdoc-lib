@@ -13,6 +13,12 @@ External contributors are listed in chronological order of their first merged co
 - **Olivier Mourlevat** — [@olivM](https://github.com/olivM)
   - DOCX hyperlink parsing and HTML/Markdown hyperlink rendering
   - _PR [#4](https://github.com/paperdoc-dev/paperdoc-lib/pull/4) — v0.3.8_
+  - DOCX bullet/numbered list parsing and Markdown list rendering
+  - _PR [#7](https://github.com/paperdoc-dev/paperdoc-lib/pull/7)_
+
+- **Bogdan Hossu** — [@BogdanHossu](https://github.com/BogdanHossu)
+  - PDF CMap glyph code string cast fix
+  - _PR [#8](https://github.com/paperdoc-dev/paperdoc-lib/pull/8)_
 
 ---
 

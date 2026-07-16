@@ -162,7 +162,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Configuration for LLM-based post-processing of OCR output.
-    | Uses NeuronAI to connect to any supported provider.
+    | Built-in HTTP providers — no third-party SDK required.
     |
     | Supported providers: openai, anthropic, gemini, ollama
     |

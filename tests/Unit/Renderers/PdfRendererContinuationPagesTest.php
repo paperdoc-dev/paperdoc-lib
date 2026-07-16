@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
+use Paperdoc\Tests\Support\InflatesPdfStreams;
 use Paperdoc\Document\{Document, Section};
 use Paperdoc\Document\Style\{PageSetup, RunningElement, TextStyle};
 use Paperdoc\Enum\{Alignment, PageSize, VerticalAlignment};
@@ -28,6 +29,7 @@ use Paperdoc\Renderers\PdfRenderer;
  */
 class PdfRendererContinuationPagesTest extends TestCase
 {
+    use InflatesPdfStreams;
     /**
      * Builds a section with a paragraph long enough to be guaranteed
      * to overflow at least one A5 page (≈30 lines fit on an A5 with
@@ -68,7 +70,7 @@ class PdfRendererContinuationPagesTest extends TestCase
         $section->addParagraph($this->makeOverflowParagraph());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $pageCount = $this->countPdfPages($content);
         $this->assertGreaterThanOrEqual(2, $pageCount,
@@ -100,7 +102,7 @@ class PdfRendererContinuationPagesTest extends TestCase
         $section->addParagraph($this->makeOverflowParagraph());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $pageCount = $this->countPdfPages($content);
         $this->assertGreaterThanOrEqual(2, $pageCount);
@@ -134,7 +136,7 @@ class PdfRendererContinuationPagesTest extends TestCase
         $section->addParagraph($this->makeOverflowParagraph());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $pageCount = $this->countPdfPages($content);
         $this->assertGreaterThanOrEqual(2, $pageCount);
@@ -162,7 +164,7 @@ class PdfRendererContinuationPagesTest extends TestCase
         $section->addParagraph($this->makeOverflowParagraph());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertGreaterThanOrEqual(2, $this->countPdfPages($content));
         $this->assertStringNotContainsString('LEAKED-1', $content);
@@ -190,7 +192,7 @@ class PdfRendererContinuationPagesTest extends TestCase
         $section->addParagraph($this->makeOverflowParagraph());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $pageCount = $this->countPdfPages($content);
         $this->assertGreaterThanOrEqual(2, $pageCount,
@@ -216,7 +218,7 @@ class PdfRendererContinuationPagesTest extends TestCase
         $section->addParagraph($this->makeOverflowParagraph());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // Split the PDF stream by page content boundaries. Each
         // content stream is wrapped in `<< /Length ... >>\nstream\n`

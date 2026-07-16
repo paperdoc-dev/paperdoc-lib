@@ -8,6 +8,7 @@ use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
 use Paperdoc\Document\{Document, Image, Paragraph, Section, Table, TableCell, TableRow, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
+use Paperdoc\Support\Cast;
 
 /**
  * Parser Markdown natif — aucune dépendance tierce.
@@ -34,7 +35,7 @@ class MarkdownParser extends AbstractParser implements ParserInterface
     {
         $this->assertFileReadable($filename);
 
-        $raw = file_get_contents($filename);
+        $raw = Cast::asString(file_get_contents($filename));
         $document = new Document('md');
         $document->setTitle(pathinfo($filename, PATHINFO_FILENAME));
 
@@ -43,7 +44,7 @@ class MarkdownParser extends AbstractParser implements ParserInterface
         $lines = preg_split('/\r?\n/', $content);
         $section = new Section('main');
 
-        $this->parseLines($lines, $section);
+        $this->parseLines(is_array($lines) ? $lines : [], $section);
 
         $document->addSection($section);
 
@@ -132,7 +133,7 @@ class MarkdownParser extends AbstractParser implements ParserInterface
                     continue;
                 }
 
-                if (preg_match('/^-{3,}\s*$/', $nextLine) && $trimmed !== '' && ! preg_match('/^[-*_]{3,}\s*$/', $trimmed)) {
+                if (preg_match('/^-{3,}\s*$/', $nextLine) && ! preg_match('/^[-*_]{3,}\s*$/', $trimmed)) {
                     $section->addHeading($this->stripInlineFormatting($trimmed), 2);
                     $i += 2;
 
@@ -474,7 +475,8 @@ class MarkdownParser extends AbstractParser implements ParserInterface
         if (preg_match_all($pattern, $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
             foreach ($matches as $match) {
                 $matchStart = $match[0][1];
-                $matchLen = strlen($match[0][0]);
+                $fullMatch = $match[0][0];
+                $matchLen = strlen($fullMatch);
 
                 if ($matchStart > $lastPos) {
                     $before = substr($text, $lastPos, $matchStart - $lastPos);
@@ -483,32 +485,39 @@ class MarkdownParser extends AbstractParser implements ParserInterface
                     }
                 }
 
-                $fullMatch = $match[0][0];
+                $boldItalic = $this->offsetCapture($match, 2);
+                $bold = $this->offsetCapture($match, 3);
+                $boldAlt = $this->offsetCapture($match, 4);
+                $italic = $this->offsetCapture($match, 5);
+                $italicAlt = $this->offsetCapture($match, 6);
+                $strike = $this->offsetCapture($match, 7);
+                $code = $this->offsetCapture($match, 8);
+                $linkText = $this->offsetCapture($match, 9);
 
-                if (isset($match[2]) && $match[2][0] !== '') {
+                if ($boldItalic !== '') {
                     $style = TextStyle::make()->setBold()->setItalic();
-                    $paragraph->addRun(new TextRun($match[2][0], $style));
-                } elseif (isset($match[3]) && $match[3][0] !== '') {
+                    $paragraph->addRun(new TextRun($boldItalic, $style));
+                } elseif ($bold !== '') {
                     $style = TextStyle::make()->setBold();
-                    $paragraph->addRun(new TextRun($match[3][0], $style));
-                } elseif (isset($match[4]) && $match[4][0] !== '') {
+                    $paragraph->addRun(new TextRun($bold, $style));
+                } elseif ($boldAlt !== '') {
                     $style = TextStyle::make()->setBold();
-                    $paragraph->addRun(new TextRun($match[4][0], $style));
-                } elseif (isset($match[5]) && $match[5][0] !== '') {
+                    $paragraph->addRun(new TextRun($boldAlt, $style));
+                } elseif ($italic !== '') {
                     $style = TextStyle::make()->setItalic();
-                    $paragraph->addRun(new TextRun($match[5][0], $style));
-                } elseif (isset($match[6]) && $match[6][0] !== '') {
+                    $paragraph->addRun(new TextRun($italic, $style));
+                } elseif ($italicAlt !== '') {
                     $style = TextStyle::make()->setItalic();
-                    $paragraph->addRun(new TextRun($match[6][0], $style));
-                } elseif (isset($match[7]) && $match[7][0] !== '') {
+                    $paragraph->addRun(new TextRun($italicAlt, $style));
+                } elseif ($strike !== '') {
                     $style = TextStyle::make()->setItalic();
-                    $paragraph->addRun(new TextRun($match[7][0], $style));
-                } elseif (isset($match[8]) && $match[8][0] !== '') {
+                    $paragraph->addRun(new TextRun($strike, $style));
+                } elseif ($code !== '') {
                     $style = TextStyle::make()->setFontFamily('Courier')->setColor('#BE185D');
-                    $paragraph->addRun(new TextRun($match[8][0], $style));
-                } elseif (isset($match[9]) && $match[9][0] !== '') {
+                    $paragraph->addRun(new TextRun($code, $style));
+                } elseif ($linkText !== '') {
                     $style = TextStyle::make()->setUnderline()->setColor('#2563EB');
-                    $paragraph->addRun(new TextRun($match[9][0], $style));
+                    $paragraph->addRun(new TextRun($linkText, $style));
                 }
 
                 $lastPos = $matchStart + $matchLen;
@@ -523,17 +532,31 @@ class MarkdownParser extends AbstractParser implements ParserInterface
         }
     }
 
+    /**
+     * @param array<int|string, mixed> $match
+     */
+    private function offsetCapture(array $match, int $index): string
+    {
+        $part = $match[$index] ?? null;
+
+        if (! is_array($part)) {
+            return '';
+        }
+
+        return Cast::asString($part[0] ?? null);
+    }
+
     private function stripInlineFormatting(string $text): string
     {
-        $text = preg_replace('/\*\*\*(.+?)\*\*\*/', '$1', $text);
-        $text = preg_replace('/\*\*(.+?)\*\*/', '$1', $text);
-        $text = preg_replace('/__(.+?)__/', '$1', $text);
-        $text = preg_replace('/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/', '$1', $text);
-        $text = preg_replace('/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/', '$1', $text);
-        $text = preg_replace('/~~(.+?)~~/', '$1', $text);
-        $text = preg_replace('/`(.+?)`/', '$1', $text);
-        $text = preg_replace('/\[([^\]]+)\]\([^)]+\)/', '$1', $text);
-        $text = preg_replace('/!\[([^\]]*)\]\([^)]+\)/', '$1', $text);
+        $text = Cast::asString(preg_replace('/\*\*\*(.+?)\*\*\*/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/\*\*(.+?)\*\*/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/__(.+?)__/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/~~(.+?)~~/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/`(.+?)`/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/\[([^\]]+)\]\([^)]+\)/', '$1', $text), $text);
+        $text = Cast::asString(preg_replace('/!\[([^\]]*)\]\([^)]+\)/', '$1', $text), $text);
 
         return trim($text);
     }

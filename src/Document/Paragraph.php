@@ -7,7 +7,7 @@ namespace Paperdoc\Document;
 use Paperdoc\Contracts\BlockElementInterface;
 use Paperdoc\Document\Style\ParagraphStyle;
 
-class Paragraph implements BlockElementInterface, \JsonSerializable
+final class Paragraph implements BlockElementInterface, \JsonSerializable
 {
     /** @var TextRun[] */
     private array $runs = [];

@@ -6,6 +6,7 @@ namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
 use Paperdoc\Document\{Document, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Support\Cast;
 use Paperdoc\Support\Ole2\Ole2Reader;
 
 /**
@@ -23,7 +24,6 @@ use Paperdoc\Support\Ole2\Ole2Reader;
 class XlsParser extends AbstractParser implements ParserInterface
 {
     private const RECORD_BOF        = 0x0809;
-    private const RECORD_EOF        = 0x000A;
     private const RECORD_BOUNDSHEET = 0x0085;
     private const RECORD_SST        = 0x00FC;
     private const RECORD_CONTINUE   = 0x003C;
@@ -35,7 +35,6 @@ class XlsParser extends AbstractParser implements ParserInterface
     private const RECORD_FORMULA    = 0x0006;
     private const RECORD_STRING     = 0x0207;
     private const RECORD_BOOLERR    = 0x0205;
-    private const RECORD_SHEET      = 0x0085;
 
     /** @var string[] */
     private array $sst = [];
@@ -157,7 +156,7 @@ class XlsParser extends AbstractParser implements ParserInterface
                     if ($recordLen >= 14 && $currentSheet >= 0) {
                         $row = $this->readUint16($data, 0);
                         $col = $this->readUint16($data, 2);
-                        $val = unpack('d', substr($data, 6, 8))[1];
+                        $val = $this->unpackFloat(substr($data, 6, 8));
                         $this->cellData[$currentSheet][$row][$col] = $this->formatNumber($val);
                     }
                     break;
@@ -206,7 +205,7 @@ class XlsParser extends AbstractParser implements ParserInterface
                                 $this->cellData[$currentSheet][$row][$col] = $boolVal ? 'TRUE' : 'FALSE';
                             }
                         } else {
-                            $val = unpack('d', substr($data, 6, 8))[1];
+                            $val = $this->unpackFloat(substr($data, 6, 8));
                             $this->cellData[$currentSheet][$row][$col] = $this->formatNumber($val);
                         }
                     }
@@ -353,9 +352,12 @@ class XlsParser extends AbstractParser implements ParserInterface
      | Build Table from cell data
      |============================================================= */
 
+    /**
+     * @param array<int, array<int, string>> $rows
+     */
     private function buildTable(array $rows): ?Table
     {
-        if (empty($rows)) {
+        if ($rows === []) {
             return null;
         }
 
@@ -363,6 +365,10 @@ class XlsParser extends AbstractParser implements ParserInterface
 
         $maxCol = 0;
         foreach ($rows as $cols) {
+            if ($cols === []) {
+                continue;
+            }
+
             $maxCol = max($maxCol, max(array_keys($cols)));
         }
 
@@ -509,7 +515,7 @@ class XlsParser extends AbstractParser implements ParserInterface
             }
         } else {
             $packed = pack('VV', 0, $rk & 0xFFFFFFFC);
-            $val = unpack('d', $packed)[1];
+            $val = $this->unpackFloat($packed);
         }
 
         return $isDiv100 ? $val / 100.0 : $val;
@@ -524,13 +530,28 @@ class XlsParser extends AbstractParser implements ParserInterface
         return rtrim(rtrim(sprintf('%.10f', $val), '0'), '.');
     }
 
+    private function unpackFloat(string $bin): float
+    {
+        $parts = unpack('d', $bin);
+        if ($parts === false || ! isset($parts[1])) {
+            return 0.0;
+        }
+
+        return Cast::asFloat($parts[1]);
+    }
+
     private function readUint16(string $data, int $offset): int
     {
         if ($offset + 2 > strlen($data)) {
             return 0;
         }
 
-        return unpack('v', substr($data, $offset, 2))[1];
+        $parts = unpack('v', substr($data, $offset, 2));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
+        }
+
+        return $parts[1];
     }
 
     private function readUint32(string $data, int $offset): int
@@ -539,6 +560,11 @@ class XlsParser extends AbstractParser implements ParserInterface
             return 0;
         }
 
-        return unpack('V', substr($data, $offset, 4))[1];
+        $parts = unpack('V', substr($data, $offset, 4));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
+        }
+
+        return $parts[1];
     }
 }

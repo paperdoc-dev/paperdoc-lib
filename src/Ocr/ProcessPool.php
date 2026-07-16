@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Ocr;
 
+use Paperdoc\Support\Cast;
+
 /**
  * Manages a pool of concurrent shell processes via proc_open + stream_select.
  *
@@ -16,7 +18,7 @@ class ProcessPool
 
     private int $timeout;
 
-    /** @var array<int, array{command: string, key: string}> */
+    /** @var list<array{command: string, key: string}> */
     private array $queue = [];
 
     public function __construct(int $maxWorkers = 4, int $timeout = 60)
@@ -45,7 +47,7 @@ class ProcessPool
      */
     public function run(): array
     {
-        if (empty($this->queue)) {
+        if ($this->queue === []) {
             return [];
         }
 
@@ -53,13 +55,15 @@ class ProcessPool
         $pending = $this->queue;
         $this->queue = [];
 
-        /** @var array<int, array{proc: resource, pipes: array, key: string, started: float, output: string}> */
+        /** @var array<int, array{proc: resource, pipes: array<int, resource>, key: string, started: float}> $active */
         $active = [];
+        /** @var array<int, string> $outputs */
+        $outputs = [];
         $nextId = 0;
 
-        while (! empty($pending) || ! empty($active)) {
+        while ($pending !== [] || $active !== []) {
             // Fill worker slots
-            while (! empty($pending) && count($active) < $this->maxWorkers) {
+            while ($pending !== [] && count($active) < $this->maxWorkers) {
                 $job = array_shift($pending);
                 $proc = $this->startProcess($job['command']);
 
@@ -74,12 +78,12 @@ class ProcessPool
                     'pipes'   => $proc['pipes'],
                     'key'     => $job['key'],
                     'started' => microtime(true),
-                    'output'  => '',
                 ];
+                $outputs[$nextId] = '';
                 $nextId++;
             }
 
-            if (empty($active)) {
+            if ($active === []) {
                 break;
             }
 
@@ -94,17 +98,17 @@ class ProcessPool
                 }
             }
 
-            if (! empty($readStreams)) {
+            if ($readStreams !== []) {
                 $write = null;
                 $except = null;
                 $changed = @stream_select($readStreams, $write, $except, 0, 50_000);
 
-                if ($changed > 0) {
+                if ($changed !== false && $changed > 0) {
                     foreach ($readStreams as $stream) {
                         $id = $streamMap[(int) $stream];
                         $chunk = fread($stream, 65536);
                         if ($chunk !== false && $chunk !== '') {
-                            $active[$id]['output'] .= $chunk;
+                            $outputs[$id] .= $chunk;
                         }
                     }
                 }
@@ -129,10 +133,11 @@ class ProcessPool
                     }
                 } else {
                     // Process finished normally: drain remaining output
-                    stream_set_blocking($worker['pipes'][1], true);
-                    $remaining = stream_get_contents($worker['pipes'][1]);
+                    $stdout = $worker['pipes'][1];
+                    stream_set_blocking($stdout, true);
+                    $remaining = stream_get_contents($stdout);
                     if ($remaining !== false && $remaining !== '') {
-                        $active[$id]['output'] .= $remaining;
+                        $outputs[$id] .= $remaining;
                     }
                 }
 
@@ -142,8 +147,8 @@ class ProcessPool
 
                 $results[$worker['key']] = $timedOut
                     ? ''
-                    : $this->filterOutput($active[$id]['output']);
-                unset($active[$id]);
+                    : $this->filterOutput($outputs[$id] ?? '');
+                unset($active[$id], $outputs[$id]);
             }
         }
 
@@ -156,7 +161,7 @@ class ProcessPool
     }
 
     /**
-     * @return array{process: resource, pipes: array}|null
+     * @return array{process: resource, pipes: array<int, resource>}|null
      */
     private function startProcess(string $command): ?array
     {
@@ -166,10 +171,15 @@ class ProcessPool
             2 => ['pipe', 'w'],
         ];
 
-        $env = array_merge($_ENV, [
-            'OMP_THREAD_LIMIT' => '1',
-            'OMP_NUM_THREADS'  => '1',
-        ]);
+        /** @var array<string, mixed> $env */
+        $env = [];
+        foreach ($_ENV as $key => $value) {
+            if (is_string($key)) {
+                $env[$key] = $value;
+            }
+        }
+        $env['OMP_THREAD_LIMIT'] = '1';
+        $env['OMP_NUM_THREADS'] = '1';
 
         $process = proc_open($command, $descriptors, $pipes, null, $env);
 
@@ -178,6 +188,7 @@ class ProcessPool
         }
 
         fclose($pipes[0]);
+        unset($pipes[0]);
 
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
@@ -203,7 +214,7 @@ class ProcessPool
     public static function detectCpuCores(): int
     {
         if (PHP_OS_FAMILY === 'Linux' && is_readable('/proc/cpuinfo')) {
-            $content = file_get_contents('/proc/cpuinfo');
+            $content = Cast::asString(file_get_contents('/proc/cpuinfo'));
             $count = substr_count($content, 'processor');
             if ($count > 0) {
                 return $count;
@@ -213,7 +224,7 @@ class ProcessPool
         $output = [];
         $code = 0;
         exec('nproc 2>/dev/null', $output, $code);
-        if ($code === 0 && ! empty($output)) {
+        if ($code === 0 && $output !== []) {
             return max(1, (int) $output[0]);
         }
 

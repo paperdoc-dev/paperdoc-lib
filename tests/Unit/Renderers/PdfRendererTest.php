@@ -5,14 +5,16 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
+use Paperdoc\Tests\Support\InflatesPdfStreams;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, HorizontalRule, Image, Paragraph, Section, Table, TextRun};
-use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, RunningElement, TextStyle};
+use Paperdoc\Document\{Document, Footnote, HorizontalRule, Image, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, PdfProtection, RunningElement, TextStyle};
 use Paperdoc\Enum\{Alignment, PageSize, VerticalAlignment};
 use Paperdoc\Renderers\PdfRenderer;
 
 class PdfRendererTest extends TestCase
 {
+    use InflatesPdfStreams;
     private string $tmpDir;
 
     protected function setUp(): void
@@ -49,7 +51,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Hello PDF World');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertStringStartsWith('%PDF-1.4', $content);
         $this->assertStringContainsString('%%EOF', $content);
@@ -79,7 +81,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Content');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('Mon Rapport', $content);
     }
 
@@ -90,7 +92,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Le texte du document');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('Le texte du document', $content);
     }
 
@@ -101,7 +103,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Test');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('/Type /Catalog', $content);
         $this->assertStringContainsString('/Type /Pages', $content);
         $this->assertStringContainsString('/Type /Page', $content);
@@ -114,7 +116,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Font test');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('/Type /Font', $content);
         $this->assertStringContainsString('/BaseFont /Helvetica', $content);
     }
@@ -126,7 +128,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Bold text', TextStyle::make()->setBold());
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('/BaseFont /Helvetica-Bold', $content);
     }
 
@@ -158,7 +160,7 @@ class PdfRendererTest extends TestCase
             $section->addText('Content on this page');
         }
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertSame(3, substr_count($content, '/Type /Page '));
     }
 
@@ -169,7 +171,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Test');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('xref', $content);
         $this->assertStringContainsString('trailer', $content);
         $this->assertStringContainsString('startxref', $content);
@@ -223,7 +225,7 @@ class PdfRendererTest extends TestCase
             );
             $doc->addSection($section);
 
-            $content = $renderer->render($doc);
+            $content = $this->inflatePdf($renderer->render($doc));
             $this->assertMatchesRegularExpression('/(?<x>-?\d+\.\d+) -?\d+\.\d+ Td/', $content);
             preg_match('/(?<x>-?\d+\.\d+) -?\d+\.\d+ Td/', $content, $m);
             $tdX[$alignment->value] = (float) $m['x'];
@@ -241,7 +243,7 @@ class PdfRendererTest extends TestCase
                 ->addRun(new TextRun(str_repeat($sentence . ' ', 5)))
         );
         $doc->addSection($section);
-        $content = $renderer->render($doc);
+        $content = $this->inflatePdf($renderer->render($doc));
         $this->assertMatchesRegularExpression('/\d+\.\d+ Tw/', $content,
             'JUSTIFY paragraphs should emit a word-spacing (Tw) operator');
     }
@@ -282,7 +284,7 @@ class PdfRendererTest extends TestCase
         );
 
         $doc->addSection($section);
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         preg_match_all('/(?<x>-?\d+\.\d+) (?<y>-?\d+\.\d+) Td/', $content, $matches, PREG_SET_ORDER);
         $this->assertGreaterThanOrEqual(2, count($matches),
@@ -333,7 +335,7 @@ class PdfRendererTest extends TestCase
             );
             $doc->addSection($section);
 
-            $content = (new PdfRenderer())->render($doc);
+            $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
             // The image XObject must be invoked (`/Im1 Do`) before the
             // footer text (`(Page 1) Tj`) in the page stream. We locate
@@ -375,7 +377,7 @@ class PdfRendererTest extends TestCase
             );
             $doc->addSection($section);
 
-            $content = (new PdfRenderer())->render($doc);
+            $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
             // The color rectangle (rg + re + f) must come before the
             // image draw (` Do`) — otherwise the color would punch
@@ -404,7 +406,7 @@ class PdfRendererTest extends TestCase
         $section->addElement($p);
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
         $this->assertStringContainsString('Normal', $content);
         $this->assertStringContainsString('Bold', $content);
         $this->assertStringContainsString('Italic', $content);
@@ -453,7 +455,7 @@ class PdfRendererTest extends TestCase
         $body->addText('Body');
         $doc->addSection($body);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // Page 1 should NOT contain its footer literal; page 2 should.
         $this->assertStringNotContainsString('(PAGE-FOOTER-1)', $content);
@@ -473,7 +475,7 @@ class PdfRendererTest extends TestCase
         $section->addText('hi');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertStringContainsString('(SECTION-1)', $content);
         $this->assertStringNotContainsString('(DOC-1)', $content);
@@ -495,7 +497,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Just one line of text on a big page.');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertMatchesRegularExpression(
             '/q\s+1 0 0 1 0 -\d+\.\d+ cm/',
@@ -512,7 +514,7 @@ class PdfRendererTest extends TestCase
         $section->addText('hi');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertDoesNotMatchRegularExpression(
             '/q\s+1 0 0 1 0 -\d+\.\d+ cm/',
@@ -541,7 +543,7 @@ class PdfRendererTest extends TestCase
             );
             $doc->addSection($section);
 
-            $content = (new PdfRenderer())->render($doc);
+            $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
             // Pull out the first `<x> <y> Td` after a BT.
             preg_match('/BT\s+[^Z]*?(\d+\.\d+) (\d+\.\d+) Td/', $content, $m);
@@ -573,7 +575,7 @@ class PdfRendererTest extends TestCase
         );
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertMatchesRegularExpression('/2\.000 Tc/', $content,
             'letter-spacing of 2pt should emit a `2.000 Tc` operator');
@@ -611,7 +613,7 @@ class PdfRendererTest extends TestCase
             );
             $doc->addSection($section);
 
-            return (new PdfRenderer())->render($doc);
+            return $this->inflatePdf((new PdfRenderer())->render($doc));
         };
 
         $extractTitleBaselineY = function (string $pdf): float {
@@ -648,7 +650,7 @@ class PdfRendererTest extends TestCase
         $section->addText('Below');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // 1.50 w → line width op
         $this->assertMatchesRegularExpression('/1\.50 w/', $content,
@@ -692,7 +694,7 @@ class PdfRendererTest extends TestCase
         $section->addRule()->setWidth(180.0)->setAlignment(Alignment::LEFT)->setColor('#000000');
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // Capture the `m` operator that immediately precedes the
         // single `l ... S` rule stroke. Regex anchored to the
@@ -731,7 +733,7 @@ class PdfRendererTest extends TestCase
         $section->addElement($table);
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // Tables are drawn with `re` (rectangle) operators. The first
         // header rect's x must be 60, not 40.
@@ -772,7 +774,7 @@ class PdfRendererTest extends TestCase
         $section->addElement(Image::make($imgPath, 80, 80));
         $doc->addSection($section);
 
-        $content = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // drawImage emits a `cm` (concatenate matrix) op that
         // positions the XObject; its translation tx is the image x.
@@ -787,5 +789,56 @@ class PdfRendererTest extends TestCase
 
         $this->assertEqualsWithDelta(60.0, $imageLeftX, 0.5,
             'image must be placed at paddingLeft (60), not at the legacy 40pt');
+    }
+
+    public function test_pdf_renderer_emits_protected_pdf_when_document_requests_it(): void
+    {
+        $doc = Document::make('pdf', 'Protected PDF');
+        $doc->setProtection(
+            PdfProtection::make('reader', 'owner')
+                ->disallowPrint()
+                ->disallowCopy()
+        );
+        $doc->openSection()->addText('Confidentiel');
+
+        $content = (new PdfRenderer())->render($doc);
+
+        $this->assertStringStartsWith('%PDF-1.4', $content);
+        $this->assertStringContainsString('/Encrypt', $content);
+        $this->assertStringContainsString('/Filter /Standard', $content);
+        $this->assertStringNotContainsString('Confidentiel', $content);
+    }
+
+    public function test_pdf_renders_section_footnotes_block(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('notes');
+        $paragraph = Paragraph::make();
+        $paragraph->addRun(TextRun::make('Hello', null, null, Footnote::make('Footnote text')));
+        $section->addElement($paragraph);
+        $doc->addSection($section);
+
+        $content = $this->inflatePdf((new PdfRenderer())->render($doc));
+
+        $this->assertStringContainsString('[1]', $content);
+        $this->assertStringContainsString('Footnote text', $content);
+    }
+
+    public function test_pdf_two_column_layout_renders_content(): void
+    {
+        $doc = Document::make('pdf');
+        $section = Section::make('cols')->setPageSetup(
+            PageSetup::fromSize(PageSize::A4)->setColumnCount(2)->setColumnGap(18.0)
+        );
+
+        $long = str_repeat('Columnar flow text. ', 80);
+        $section->addText($long);
+        $doc->addSection($section);
+
+        $pdf = (new PdfRenderer())->render($doc);
+        $content = $this->inflatePdf($pdf);
+
+        $this->assertStringStartsWith('%PDF-1.4', $pdf);
+        $this->assertStringContainsString('Columnar flow text', $content);
     }
 }

@@ -7,7 +7,7 @@ namespace Paperdoc\Document\Style;
 use Paperdoc\Contracts\StyleInterface;
 use Paperdoc\Enum\Alignment;
 
-class ParagraphStyle implements StyleInterface, \JsonSerializable
+final class ParagraphStyle implements StyleInterface, \JsonSerializable
 {
     private Alignment $alignment       = Alignment::LEFT;
     private float     $spaceBefore     = 0.0;

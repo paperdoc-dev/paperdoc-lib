@@ -23,9 +23,12 @@ use Paperdoc\Document\{
     TextRun,
     TextZone,
 };
-use Paperdoc\Document\Style\{PageSetup, RunningElement, TextStyle};
+use Paperdoc\Document\Style\{PageSetup, RunningElement, TextStyle, Watermark};
+use Paperdoc\Document\TableOfContents;
 use Paperdoc\Enum\{Alignment, VerticalAlignment};
+use Paperdoc\Support\Cast;
 use Paperdoc\Support\Pdf\PdfEngine;
+use Paperdoc\Support\TocResolver;
 
 /**
  * Renderer PDF natif sans aucune dépendance tierce.
@@ -39,6 +42,15 @@ use Paperdoc\Support\Pdf\PdfEngine;
 class PdfRenderer extends AbstractRenderer
 {
     private PdfEngine $engine;
+
+    /**
+     * Footnotes collected per physical page number (1-indexed).
+     *
+     * @var array<int, list<array{num: int, text: string}>>
+     */
+    private array $pageFootnotes = [];
+
+    private int $footnoteCounter = 0;
 
     /**
      * Document-level header/footer fallback. The header/footer
@@ -62,6 +74,9 @@ class PdfRenderer extends AbstractRenderer
      * needed". Reset on every newPage().
      */
     private float $lastBlockLineHeight = 0.0;
+
+    private ?TocResolver $tocResolver = null;
+    private ?Watermark $watermark = null;
 
     public function getFormat(): string { return 'pdf'; }
 
@@ -90,20 +105,37 @@ class PdfRenderer extends AbstractRenderer
         $this->engine->setTitle($document->getTitle());
         $this->documentTitle = $document->getTitle();
         $this->lastBlockLineHeight = 0.0;
+        $this->tocResolver = new TocResolver($document);
+        $this->pageFootnotes = [];
+        $this->footnoteCounter = 0;
 
         $author = null;
         $this->documentHeader = null;
         $this->documentFooter = null;
 
+        $this->watermark = null;
+
         if ($document instanceof Document) {
-            $author = $document->getProperties()?->getAuthor();
+            $properties = $document->getProperties();
+            $author = $properties?->getAuthor();
             $this->documentHeader = $document->getHeader();
             $this->documentFooter = $document->getFooter();
+            $this->watermark = $document->getWatermark();
+            $this->engine->setProtection($document->getProtection());
+
+            // Full typed metadata → PDF /Info dictionary (v1.0.0).
+            if ($properties !== null) {
+                $this->engine->setAuthor($properties->getAuthor());
+                $this->engine->setSubject($properties->getSubject());
+                $this->engine->setKeywords($properties->getKeywords());
+                $this->engine->setCreationDate($properties->getCreatedAt());
+                $this->engine->setModificationDate($properties->getModifiedAt());
+            }
         }
 
         $this->engine->setCreator($author !== null && $author !== ''
             ? $author
-            : ($document->getMetadata()['creator'] ?? 'Paperdoc'));
+            : Cast::asString($document->getMetadata()['creator'] ?? null, 'Paperdoc'));
 
         $this->totalPages = $this->countDeclaredPages($document);
 
@@ -117,6 +149,9 @@ class PdfRenderer extends AbstractRenderer
         // v0.8.3).
         $this->engine->setOnNewPage(function (): void {
             $this->paintPageChrome();
+        });
+        $this->engine->setBeforeFlushPage(function (): void {
+            $this->paintPageFootnotes();
         });
 
         $isFirst = true;
@@ -139,8 +174,9 @@ class PdfRenderer extends AbstractRenderer
         }
 
         $this->currentSection = null;
-        $this->engine->setOnNewPage(null);
         $this->engine->save($filename);
+        $this->engine->setOnNewPage(null);
+        $this->engine->setBeforeFlushPage(null);
     }
 
     /**
@@ -188,6 +224,18 @@ class PdfRenderer extends AbstractRenderer
     private function paintPageChrome(): void
     {
         $this->applyPageSetup($this->currentSection?->getPageSetup());
+
+        if ($this->watermark !== null) {
+            $this->engine->drawWatermarkText(
+                $this->watermark->getText(),
+                TextStyle::make()->setFontFamily($this->watermark->getFontFamily())->setBold()->getPdfFontName(),
+                $this->watermark->getFontSize(),
+                $this->watermark->getColor(),
+                $this->watermark->getOpacity(),
+                $this->watermark->getAngle(),
+            );
+        }
+
         $this->drawHeaderFooter();
         $this->lastBlockLineHeight = 0.0;
     }
@@ -221,6 +269,7 @@ class PdfRenderer extends AbstractRenderer
             marginBottom: $setup->getPaddingBottom(),
             marginLeft:   $setup->getPaddingLeft(),
         );
+        $this->engine->setColumns($setup->getColumnCount(), $setup->getColumnGap());
 
         if ($setup->getBackgroundColor() !== null) {
             $this->engine->drawPageBackgroundColor($setup->getBackgroundColor());
@@ -248,6 +297,7 @@ class PdfRenderer extends AbstractRenderer
             foreach ($section->getElements() as $element) {
                 $this->writeBlock($element, $document, 0);
             }
+            // Footnotes are painted per-page via beforeFlushPage.
             return;
         }
 
@@ -284,6 +334,7 @@ class PdfRenderer extends AbstractRenderer
         $contentAreaBottomY = $setup !== null
             ? $setup->getPaddingBottom()
             : $this->engine->getBottomMargin();
+        $contentAreaBottomY += $this->engine->getReservedBottom();
         $available = max(0.0, $contentAreaTopY - $contentAreaBottomY);
         $slack     = $available - $contentHeight;
 
@@ -291,11 +342,9 @@ class PdfRenderer extends AbstractRenderer
             return; // Content already fills the area; nothing to centre.
         }
 
-        $dy = match ($verticalAlignment) {
-            VerticalAlignment::CENTER => -($slack / 2.0),
-            VerticalAlignment::BOTTOM => -$slack,
-            default                   => 0.0,
-        };
+        $dy = $verticalAlignment === VerticalAlignment::CENTER
+            ? -($slack / 2.0)
+            : -$slack;
 
         if (abs($dy) < 0.5) {
             return;
@@ -399,11 +448,12 @@ class PdfRenderer extends AbstractRenderer
             $element instanceof ListBlock      => $this->writeList($element, $document, 0, $indent),
             $element instanceof Blockquote     => $this->writeBlockquote($element, $document, $indent),
             $element instanceof CodeBlock      => $this->writeCodeBlock($element, $document, $indent),
-            $element instanceof Bookmark       => null, // invisible target; reserved for future link annotations
+            $element instanceof Bookmark       => $this->engine->registerAnchor($element->getId()),
             $element instanceof Table          => $this->writeTable($element, $document),
             $element instanceof Image          => $this->writeImage($element),
             $element instanceof TextZone       => $this->writeTextZone($element, $document),
             $element instanceof HorizontalRule => $this->writeHorizontalRule($element),
+            $element instanceof TableOfContents => $this->writeTableOfContents($element, $document),
             $element instanceof PageBreak      => $this->handlePageBreak(),
             default                            => null,
         };
@@ -493,6 +543,16 @@ class PdfRenderer extends AbstractRenderer
             default => 6.0,
         };
 
+        // Outline entry + named destination BEFORE moving the cursor,
+        // so the viewport target includes the heading's breathing space.
+        $anchorY = min($this->engine->getPageHeight(), $this->engine->getCursorY() + 4.0);
+        $this->engine->addOutlineEntry($level, $heading->getPlainText(), $anchorY);
+
+        $anchor = $this->tocResolver?->anchorFor($heading) ?? ($heading->hasId() ? $heading->getId() : '');
+        if ($anchor !== '') {
+            $this->engine->registerAnchor($anchor, $anchorY);
+        }
+
         $this->engine->moveCursorY(-($spaceBefore + $ascent));
 
         foreach ($heading->getRuns() as $run) {
@@ -502,7 +562,7 @@ class PdfRenderer extends AbstractRenderer
                 ->setFontSize($size)
                 ->setColor($style->getColor() === '#000000' ? '#1F3763' : $style->getColor())
                 ->setBold();
-            $styledRun = new TextRun($run->getText(), $headingStyle);
+            $styledRun = new TextRun($run->getText(), $headingStyle, $run->getLink());
             $this->writeTextRun($styledRun, $document, 1.15, $indent);
         }
 
@@ -614,6 +674,8 @@ class PdfRenderer extends AbstractRenderer
                 ->setBold($style->isBold())
                 ->setItalic($style->isItalic())
                 ->setUnderline(true)
+                ->setStrikethrough($style->isStrikethrough())
+                ->setHighlight($style->getHighlight())
                 ->setLetterSpacing($style->getLetterSpacing())
                 ->setColor($style->getColor() === '#000000' ? '#0563C1' : $style->getColor());
         }
@@ -622,19 +684,143 @@ class PdfRenderer extends AbstractRenderer
         $fontSize = $style->getFontSize();
         [$r, $g, $b] = $style->getColorRgb();
 
-        $this->engine->writeWrappedText(
-            text:            $run->getText(),
-            fontName:        $fontName,
-            fontSize:        $fontSize,
-            r:               $r,
-            g:               $g,
-            b:               $b,
-            lineSpacing:     $lineSpacing,
-            x:               $this->engine->getLeftMargin() + $indent,
-            align:           $align,
-            letterSpacing:   $style->getLetterSpacing(),
-            firstLineIndent: $firstLineIndent,
+        // Open a link scope so every line the engine emits for this run
+        // records a clickable rectangle (multi-line and page-spanning
+        // links included). External URLs become URI actions; anchor-only
+        // links resolve to the named destination registered by the
+        // matching Bookmark / Heading id.
+        if ($link !== null) {
+            if ($link->getUrl() !== '') {
+                $this->engine->beginLink($link->getHref());
+            } else {
+                $this->engine->beginLink(null, $link->getAnchor());
+            }
+        }
+
+        $this->engine->setTextDecorations(
+            $style->isUnderline(),
+            $style->isStrikethrough(),
+            $style->getHighlight(),
         );
+
+        try {
+            $this->engine->writeWrappedText(
+                text:            $run->getText(),
+                fontName:        $fontName,
+                fontSize:        $fontSize,
+                r:               $r,
+                g:               $g,
+                b:               $b,
+                maxWidth:        max(0.0, $this->engine->getColumnWidth() - $indent),
+                lineSpacing:     $lineSpacing,
+                x:               $this->engine->getColumnOriginX() + $indent,
+                align:           $align,
+                letterSpacing:   $style->getLetterSpacing(),
+                firstLineIndent: $firstLineIndent,
+            );
+
+            if ($run->getFootnote() !== null) {
+                $this->writeFootnoteMarker($run->getFootnote()->getText(), $document, $lineSpacing, $indent, $align);
+            }
+        } finally {
+            $this->engine->clearTextDecorations();
+            if ($link !== null) {
+                $this->engine->endLink();
+            }
+        }
+    }
+
+    private function writeFootnoteMarker(
+        string $text,
+        DocumentInterface $document,
+        float $lineSpacing,
+        float $indent,
+        string $align,
+    ): void {
+        $this->footnoteCounter++;
+        $number = $this->footnoteCounter;
+        $page = $this->engine->getCurrentPageNumber();
+        $this->pageFootnotes[$page][] = ['num' => $number, 'text' => $text];
+        $this->engine->setReservedBottom($this->estimatePageFootnotesHeight($page));
+
+        $base = $document->getDefaultTextStyle();
+        $markerStyle = TextStyle::make()
+            ->setFontFamily($base->getFontFamily())
+            ->setFontSize(max(7.0, $base->getFontSize() - 3.0))
+            ->setColor($base->getColor());
+
+        $this->writeTextRun(
+            new TextRun(sprintf('[%d]', $number), $markerStyle),
+            $document,
+            $lineSpacing,
+            $indent,
+            $align,
+        );
+    }
+
+    /**
+     * @return float Estimated height of the footnote band for a page
+     */
+    private function estimatePageFootnotesHeight(int $page): float
+    {
+        $notes = $this->pageFootnotes[$page] ?? [];
+        if ($notes === []) {
+            return 0.0;
+        }
+
+        // Separator + gap + ~1.25 lines per note at ~9pt.
+        return 18.0 + (count($notes) * 12.0);
+    }
+
+    /**
+     * Paint footnotes into the reserved bottom band of the current page.
+     * Invoked from the engine's beforeFlushPage hook.
+     */
+    private function paintPageFootnotes(): void
+    {
+        $page = $this->engine->getCurrentPageNumber();
+        $notes = $this->pageFootnotes[$page] ?? [];
+        if ($notes === []) {
+            return;
+        }
+
+        $fontName = 'Helvetica';
+        $fontSize = 9.0;
+        $lineSpacing = 1.1;
+        $lineHeight = $fontSize * $lineSpacing;
+        $left = $this->engine->getLeftMargin();
+        $width = $this->engine->getContentWidth();
+        $bandHeight = $this->estimatePageFootnotesHeight($page);
+        $bottom = $this->engine->getBottomMargin();
+        $separatorY = $bottom + $bandHeight;
+        $cursorY = $separatorY - 10.0;
+
+        $this->engine->drawLine($left, $separatorY, min($left + 120.0, $left + $width), $separatorY, 0.5);
+
+        foreach ($notes as $note) {
+            $text = sprintf('[%d] %s', $note['num'], $note['text']);
+            $yTop = $this->engine->getPageHeight() - $cursorY;
+            $this->engine->writeWrappedTextAt(
+                text: $text,
+                fontName: $fontName,
+                fontSize: $fontSize,
+                x: $left,
+                yTopLeft: $yTop,
+                maxWidth: $width,
+                r: 0.2,
+                g: 0.2,
+                b: 0.2,
+                lineSpacing: $lineSpacing,
+                maxHeight: max($lineHeight, $cursorY - $bottom),
+            );
+            $cursorY -= $lineHeight * max(1, (int) ceil(strlen($text) / 90));
+            if ($cursorY < $bottom + $lineHeight) {
+                break;
+            }
+        }
+
+        unset($this->pageFootnotes[$page]);
+        $this->engine->setReservedBottom(0.0);
     }
 
     /* =============================================================
@@ -703,9 +889,7 @@ class PdfRenderer extends AbstractRenderer
                 continue;
             }
 
-            if ($element instanceof DocumentElementInterface) {
-                $this->writeBlock($element, $document, $quoteIndent);
-            }
+            $this->writeBlock($element, $document, $quoteIndent);
         }
 
         $this->engine->moveCursorY(-10.0);
@@ -792,12 +976,33 @@ class PdfRenderer extends AbstractRenderer
         $borderColor  = $tableStyle?->getBorderColor() ?? '#000000';
         $headerBg     = $tableStyle?->getHeaderBg() ?? '#f3f4f6';
 
-        $defaultStyle = $document->getDefaultTextStyle();
-        $fontSize     = $defaultStyle->getFontSize();
-        $rowHeight    = $fontSize * 1.15 + ($cellPadding * 2);
-        $startX       = $this->engine->getLeftMargin();
+        $defaultStyle  = $document->getDefaultTextStyle();
+        $fontSize      = $defaultStyle->getFontSize();
+        $baseRowHeight = $fontSize * 1.15 + ($cellPadding * 2);
+        $startX        = $this->engine->getLeftMargin();
 
         foreach ($table->getRows() as $row) {
+            $cells = $row->getCells();
+
+            // Cell images make the row taller: fit each image to the
+            // cell's inner width, cap its height, stack below the text.
+            $rowImages = [];
+            $rowHeight = $baseRowHeight;
+
+            foreach ($cells as $i => $cell) {
+                $cw = $colWidths[$i] ?? $colWidths[0];
+                $images = $this->cellImagesForPdf($cell, $cw - 2 * $cellPadding);
+                if ($images === []) {
+                    continue;
+                }
+                $rowImages[$i] = $images;
+
+                $stackHeight = array_sum(array_column($images, 'h')) + 4.0 * count($images);
+                $hasText = $this->cellTextForPdf($cell) !== '';
+                $needed = ($hasText ? $baseRowHeight : $cellPadding * 2) + $stackHeight;
+                $rowHeight = max($rowHeight, $needed);
+            }
+
             if ($this->engine->needsNewPage($rowHeight)) {
                 $this->engine->newPage();
             }
@@ -811,7 +1016,6 @@ class PdfRenderer extends AbstractRenderer
                 $x += $cw;
             }
 
-            $cells = $row->getCells();
             $x = $startX;
 
             foreach ($cells as $i => $cell) {
@@ -836,11 +1040,24 @@ class PdfRenderer extends AbstractRenderer
                 $textX = $x + $cellPadding;
                 $textY = $startY - $cellPadding - $cellSize;
 
-                $lines = $this->engine->wrapText($text, $fontName, $cellSize, $cw - ($cellPadding * 2));
+                $lines = $text !== ''
+                    ? $this->engine->wrapText($text, $fontName, $cellSize, $cw - ($cellPadding * 2))
+                    : [];
 
                 foreach ($lines as $li => $line) {
                     $yPos = $textY - ($li * $cellSize * 1.15);
                     $this->engine->writeTextAt($line, $fontName, $cellSize, $textX, $yPos, $cr, $cg, $cb);
+                }
+
+                if (isset($rowImages[$i])) {
+                    $imgY = $startY - $cellPadding - ($text !== '' ? $baseRowHeight - $cellPadding : 0.0);
+                    foreach ($rowImages[$i] as $img) {
+                        $this->engine->drawImage($img['src'], $x + $cellPadding, $imgY - $img['h'], $img['w'], $img['h']);
+                        $imgY -= $img['h'] + 4.0;
+                        if ($img['tmp'] !== null) {
+                            @unlink($img['tmp']);
+                        }
+                    }
                 }
 
                 $x += $cw;
@@ -850,6 +1067,45 @@ class PdfRenderer extends AbstractRenderer
         }
 
         $this->engine->moveCursorY(-12);
+    }
+
+    /**
+     * Resolves the drawable images of a cell: source path (embedded
+     * data is materialised to a temp file the caller unlinks), scaled
+     * to fit the cell's inner width, height capped at 80pt.
+     *
+     * @return list<array{src: string, w: float, h: float, tmp: ?string}>
+     */
+    private function cellImagesForPdf(\Paperdoc\Document\TableCell $cell, float $maxWidth): array
+    {
+        $result = [];
+
+        foreach ($cell->getElements() as $el) {
+            if (! $el instanceof Image) {
+                continue;
+            }
+
+            $tmpPath = null;
+            $src = $this->resolveImagePath($el, $tmpPath);
+            if ($src === null || $maxWidth <= 1.0) {
+                continue;
+            }
+
+            $info = @getimagesize($src);
+            $natW = (float) max(1, $el->getWidth() ?: ($info[0] ?? 100));
+            $natH = (float) max(1, $el->getHeight() ?: ($info[1] ?? 75));
+
+            $w = min($natW, $maxWidth);
+            $h = $natH * ($w / $natW);
+            if ($h > 80.0) {
+                $w *= 80.0 / $h;
+                $h = 80.0;
+            }
+
+            $result[] = ['src' => $src, 'w' => $w, 'h' => $h, 'tmp' => $tmpPath];
+        }
+
+        return $result;
     }
 
     /**
@@ -873,12 +1129,11 @@ class PdfRenderer extends AbstractRenderer
             }
 
             if ($el instanceof ListBlock) {
-                $marker = $el->isOrdered() ? '%d. %s' : '• %s';
                 $i = $el->getStart();
                 foreach ($el->getItems() as $item) {
                     $parts[] = $el->isOrdered()
-                        ? sprintf($marker, $i++, $item->getPlainText())
-                        : sprintf($marker, $item->getPlainText());
+                        ? sprintf('%d. %s', $i++, $item->getPlainText())
+                        : sprintf('• %s', $item->getPlainText());
                 }
                 continue;
             }
@@ -893,13 +1148,17 @@ class PdfRenderer extends AbstractRenderer
             }
 
             if ($el instanceof Image) {
-                // Inline images inside table cells are not yet drawn by
-                // the PDF engine; surface the alt text so the cell is
-                // never empty.
-                $alt = $el->getAlt();
-                if ($alt !== '') {
-                    $parts[] = '[' . $alt . ']';
+                $tmpPath = null;
+                $src = $this->resolveImagePath($el, $tmpPath);
+
+                if ($tmpPath !== null) {
+                    @unlink($tmpPath);
                 }
+
+                if ($src === null && $el->getAlt() !== '') {
+                    $parts[] = $el->getAlt();
+                }
+
                 continue;
             }
 
@@ -1030,23 +1289,43 @@ class PdfRenderer extends AbstractRenderer
                 $isFirstRun  = ($runIndex === 0);
                 $runIndent   = $isFirstRun ? $firstLineIndent : 0.0;
 
-                $result = $this->engine->writeWrappedTextAt(
-                    text:            $run->getText(),
-                    fontName:        $style->getPdfFontName(),
-                    fontSize:        $style->getFontSize(),
-                    x:               $textX,
-                    yTopLeft:        $textTopY + $cursorOffset,
-                    maxWidth:        $maxWidth,
-                    r:               $r,
-                    g:               $g,
-                    b:               $b,
-                    lineSpacing:     $lineSpacing,
-                    maxHeight:       $remaining,
-                    ellipsis:        $ellipsis,
-                    align:           $align,
-                    letterSpacing:   $style->getLetterSpacing(),
-                    firstLineIndent: $runIndent,
+                $link = $run->getLink();
+                if ($link !== null) {
+                    $link->getUrl() !== ''
+                        ? $this->engine->beginLink($link->getHref())
+                        : $this->engine->beginLink(null, $link->getAnchor());
+                }
+
+                $this->engine->setTextDecorations(
+                    $style->isUnderline(),
+                    $style->isStrikethrough(),
+                    $style->getHighlight(),
                 );
+
+                try {
+                    $result = $this->engine->writeWrappedTextAt(
+                        text:            $run->getText(),
+                        fontName:        $style->getPdfFontName(),
+                        fontSize:        $style->getFontSize(),
+                        x:               $textX,
+                        yTopLeft:        $textTopY + $cursorOffset,
+                        maxWidth:        $maxWidth,
+                        r:               $r,
+                        g:               $g,
+                        b:               $b,
+                        lineSpacing:     $lineSpacing,
+                        maxHeight:       $remaining,
+                        ellipsis:        $ellipsis,
+                        align:           $align,
+                        letterSpacing:   $style->getLetterSpacing(),
+                        firstLineIndent: $runIndent,
+                    );
+                } finally {
+                    $this->engine->clearTextDecorations();
+                    if ($link !== null) {
+                        $this->engine->endLink();
+                    }
+                }
 
                 $cursorOffset    += $result['consumed'];
                 $prevLineHeightPt = $style->getFontSize() * $lineSpacing;
@@ -1058,6 +1337,62 @@ class PdfRenderer extends AbstractRenderer
 
             $cursorOffset += $spaceAfter;
         }
+    }
+
+    /* =============================================================
+     | Table of contents
+     |============================================================= */
+
+    private function writeTableOfContents(TableOfContents $toc, DocumentInterface $document): void
+    {
+        $entries = $this->tocResolver?->entries($toc->getMaxLevel()) ?? [];
+
+        if ($entries === []) {
+            return;
+        }
+
+        if ($toc->getTitle() !== '') {
+            $this->engine->moveCursorY(-24.0);
+            $this->engine->writeWrappedText(
+                text:     $toc->getTitle(),
+                fontName: 'Helvetica-Bold',
+                fontSize: 16.0,
+                r:        0.12,
+                g:        0.22,
+                b:        0.39,
+                x:        $this->engine->getLeftMargin(),
+            );
+            $this->engine->moveCursorY(-8.0);
+        }
+
+        foreach ($entries as $entry) {
+            $indent   = ($entry['level'] - 1) * 14.0;
+            $fontSize = $entry['level'] === 1 ? 12.0 : 11.0;
+            $fontName = $entry['level'] === 1 ? 'Helvetica-Bold' : 'Helvetica';
+
+            if ($this->engine->needsNewPage($fontSize * 1.4)) {
+                $this->engine->newPage();
+            }
+
+            $this->engine->beginLink(null, $entry['anchor']);
+            try {
+                $this->engine->writeWrappedText(
+                    text:        $entry['text'],
+                    fontName:    $fontName,
+                    fontSize:    $fontSize,
+                    r:           0.12,
+                    g:           0.22,
+                    b:           0.39,
+                    lineSpacing: 1.4,
+                    x:           $this->engine->getLeftMargin() + $indent,
+                );
+            } finally {
+                $this->engine->endLink();
+            }
+        }
+
+        $this->engine->moveCursorY(-12.0);
+        $this->lastBlockLineHeight = 0.0;
     }
 
     /* =============================================================
@@ -1128,6 +1463,8 @@ class PdfRenderer extends AbstractRenderer
 
     /**
      * Hex `#RRGGBB` (or `#RGB`) → 0..1 RGB triplet.
+     *
+     * @return array{0: float, 1: float, 2: float}
      */
     private function hexToRgb(string $hex): array
     {
@@ -1139,9 +1476,9 @@ class PdfRenderer extends AbstractRenderer
             return [0.6, 0.6, 0.6]; // sensible grey fallback
         }
         return [
-            hexdec(substr($hex, 0, 2)) / 255.0,
-            hexdec(substr($hex, 2, 2)) / 255.0,
-            hexdec(substr($hex, 4, 2)) / 255.0,
+            (float) (hexdec(substr($hex, 0, 2)) / 255.0),
+            (float) (hexdec(substr($hex, 2, 2)) / 255.0),
+            (float) (hexdec(substr($hex, 4, 2)) / 255.0),
         ];
     }
 

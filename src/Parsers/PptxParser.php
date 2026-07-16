@@ -78,13 +78,11 @@ class PptxParser extends AbstractParser implements ParserInterface
         $xpath->registerNamespace('p', self::NS_MAIN);
         $xpath->registerNamespace('r', self::NS_REL);
 
-        $sldIdLst = $xpath->query('//p:sldIdLst/p:sldId');
         $rels = $this->loadRelationships($zip, 'ppt/_rels/presentation.xml.rels');
 
         $slides = [];
 
-        foreach ($sldIdLst as $node) {
-            /** @var \DOMElement $node */
+        foreach ($this->queryElements($xpath, '//p:sldIdLst/p:sldId') as $node) {
             $rId = $node->getAttributeNS(self::NS_REL, 'id');
 
             if (isset($rels[$rId])) {
@@ -156,32 +154,26 @@ class PptxParser extends AbstractParser implements ParserInterface
 
     private function extractShapeText(\DOMXPath $xpath, Section $section): void
     {
-        $spNodes = $xpath->query('//p:sp');
-
-        foreach ($spNodes as $sp) {
-            $txBody = $xpath->query('.//p:txBody', $sp)->item(0);
+        foreach ($this->queryElements($xpath, '//p:sp') as $sp) {
+            $txBody = $this->queryElement($xpath, './/p:txBody', $sp);
 
             if ($txBody === null) {
                 continue;
             }
 
-            $paragraphs = $xpath->query('a:p', $txBody);
-
-            foreach ($paragraphs as $pNode) {
+            foreach ($this->queryElements($xpath, 'a:p', $txBody) as $pNode) {
                 $this->parseParagraph($pNode, $section, $xpath);
             }
         }
     }
 
-    private function parseParagraph(\DOMNode $pNode, Section $section, \DOMXPath $xpath): void
+    private function parseParagraph(\DOMElement $pNode, Section $section, \DOMXPath $xpath): void
     {
         $paragraph = new Paragraph();
         $hasContent = false;
 
-        $runs = $xpath->query('a:r', $pNode);
-
-        foreach ($runs as $run) {
-            $tNode = $xpath->query('a:t', $run)->item(0);
+        foreach ($this->queryElements($xpath, 'a:r', $pNode) as $run) {
+            $tNode = $this->queryElement($xpath, 'a:t', $run);
 
             if ($tNode === null) {
                 continue;
@@ -198,8 +190,7 @@ class PptxParser extends AbstractParser implements ParserInterface
             $hasContent = true;
         }
 
-        $fld = $xpath->query('a:fld/a:t', $pNode);
-        foreach ($fld as $t) {
+        foreach ($this->queryElements($xpath, 'a:fld/a:t', $pNode) as $t) {
             $text = $t->textContent;
             if ($text !== '') {
                 $paragraph->addRun(new TextRun($text));
@@ -208,7 +199,7 @@ class PptxParser extends AbstractParser implements ParserInterface
         }
 
         if ($hasContent) {
-            $pPr = $xpath->query('a:pPr', $pNode)->item(0);
+            $pPr = $this->queryElement($xpath, 'a:pPr', $pNode);
             $headingLevel = $this->detectHeadingLevel($pPr, $xpath);
 
             if ($headingLevel !== null) {
@@ -220,18 +211,18 @@ class PptxParser extends AbstractParser implements ParserInterface
         }
     }
 
-    private function detectHeadingLevel(?\DOMNode $pPr, \DOMXPath $xpath): ?int
+    private function detectHeadingLevel(?\DOMElement $pPr, \DOMXPath $xpath): ?int
     {
-        if ($pPr === null || ! $pPr instanceof \DOMElement) {
+        if ($pPr === null) {
             return null;
         }
 
         $lvl = $pPr->getAttribute('lvl');
 
         if ($lvl !== '' && (int) $lvl === 0) {
-            $defRPr = $xpath->query('a:defRPr', $pPr)->item(0);
+            $defRPr = $this->queryElement($xpath, 'a:defRPr', $pPr);
 
-            if ($defRPr instanceof \DOMElement) {
+            if ($defRPr !== null) {
                 $sz = $defRPr->getAttribute('sz');
 
                 if ($sz !== '' && (int) $sz >= 2400) {
@@ -246,11 +237,11 @@ class PptxParser extends AbstractParser implements ParserInterface
         return null;
     }
 
-    private function extractRunStyle(\DOMNode $run, \DOMXPath $xpath): ?TextStyle
+    private function extractRunStyle(\DOMElement $run, \DOMXPath $xpath): ?TextStyle
     {
-        $rPr = $xpath->query('a:rPr', $run)->item(0);
+        $rPr = $this->queryElement($xpath, 'a:rPr', $run);
 
-        if (! $rPr instanceof \DOMElement) {
+        if ($rPr === null) {
             return null;
         }
 
@@ -278,8 +269,8 @@ class PptxParser extends AbstractParser implements ParserInterface
             $hasProps = true;
         }
 
-        $solidFill = $xpath->query('a:solidFill/a:srgbClr', $rPr)->item(0);
-        if ($solidFill instanceof \DOMElement) {
+        $solidFill = $this->queryElement($xpath, 'a:solidFill/a:srgbClr', $rPr);
+        if ($solidFill !== null) {
             $color = $solidFill->getAttribute('val');
             if ($color !== '') {
                 $style->setColor('#' . $color);
@@ -287,8 +278,8 @@ class PptxParser extends AbstractParser implements ParserInterface
             }
         }
 
-        $latin = $xpath->query('a:latin', $rPr)->item(0);
-        if ($latin instanceof \DOMElement) {
+        $latin = $this->queryElement($xpath, 'a:latin', $rPr);
+        if ($latin !== null) {
             $typeface = $latin->getAttribute('typeface');
             if ($typeface !== '') {
                 $style->setFontFamily($typeface);
@@ -305,15 +296,11 @@ class PptxParser extends AbstractParser implements ParserInterface
 
     private function extractSlideTable(\DOMXPath $xpath, Section $section): void
     {
-        $tblNodes = $xpath->query('//a:tbl');
-
-        foreach ($tblNodes as $tblNode) {
+        foreach ($this->queryElements($xpath, '//a:tbl') as $tblNode) {
             $table = new Table();
             $isFirstRow = true;
 
-            $trNodes = $xpath->query('a:tr', $tblNode);
-
-            foreach ($trNodes as $tr) {
+            foreach ($this->queryElements($xpath, 'a:tr', $tblNode) as $tr) {
                 $row = new TableRow();
 
                 if ($isFirstRow) {
@@ -321,14 +308,11 @@ class PptxParser extends AbstractParser implements ParserInterface
                     $isFirstRow = false;
                 }
 
-                $tcNodes = $xpath->query('a:tc', $tr);
-
-                foreach ($tcNodes as $tc) {
+                foreach ($this->queryElements($xpath, 'a:tc', $tr) as $tc) {
                     $cell = new TableCell();
                     $text = $this->extractTextFromBody($tc, $xpath);
                     $cell->addElement((new Paragraph())->addRun(new TextRun($text)));
 
-                    /** @var \DOMElement $tc */
                     $gridSpan = $tc->getAttribute('gridSpan');
                     if ($gridSpan !== '' && (int) $gridSpan > 1) {
                         $cell->setColspan((int) $gridSpan);
@@ -351,12 +335,11 @@ class PptxParser extends AbstractParser implements ParserInterface
         }
     }
 
-    private function extractTextFromBody(\DOMNode $node, \DOMXPath $xpath): string
+    private function extractTextFromBody(\DOMElement $node, \DOMXPath $xpath): string
     {
         $parts = [];
-        $tNodes = $xpath->query('.//a:t', $node);
 
-        foreach ($tNodes as $t) {
+        foreach ($this->queryElements($xpath, './/a:t', $node) as $t) {
             $parts[] = $t->textContent;
         }
 
@@ -378,10 +361,7 @@ class PptxParser extends AbstractParser implements ParserInterface
         $relsPath = $slideDir . '/_rels/' . $slideFile . '.rels';
         $rels = $this->loadRelationships($zip, $relsPath);
 
-        $blipNodes = $xpath->query('//a:blip');
-
-        foreach ($blipNodes as $blip) {
-            /** @var \DOMElement $blip */
+        foreach ($this->queryElements($xpath, '//a:blip') as $blip) {
             $rEmbed = $blip->getAttributeNS(self::NS_REL, 'embed');
 
             if ($rEmbed === '' || ! isset($rels[$rEmbed])) {
@@ -501,5 +481,32 @@ class PptxParser extends AbstractParser implements ParserInterface
             'tiff', 'tif' => 'image/tiff',
             default       => 'application/octet-stream',
         };
+    }
+
+    /**
+     * @return list<\DOMElement>
+     */
+    private function queryElements(\DOMXPath $xpath, string $expression, ?\DOMNode $contextNode = null): array
+    {
+        $list = $xpath->query($expression, $contextNode);
+        if ($list === false) {
+            return [];
+        }
+
+        $elements = [];
+        foreach ($list as $node) {
+            if ($node instanceof \DOMElement) {
+                $elements[] = $node;
+            }
+        }
+
+        return $elements;
+    }
+
+    private function queryElement(\DOMXPath $xpath, string $expression, ?\DOMNode $contextNode = null): ?\DOMElement
+    {
+        $elements = $this->queryElements($xpath, $expression, $contextNode);
+
+        return $elements[0] ?? null;
     }
 }

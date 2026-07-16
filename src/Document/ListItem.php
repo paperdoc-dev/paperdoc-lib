@@ -19,7 +19,7 @@ use Paperdoc\Document\Style\TextStyle;
  * parent ListBlock. The blocks stored *inside* an item must, however,
  * be block elements.
  */
-class ListItem implements \JsonSerializable
+final class ListItem implements \JsonSerializable
 {
     /** @var TextRun[] */
     private array $runs = [];

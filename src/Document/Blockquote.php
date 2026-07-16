@@ -13,7 +13,7 @@ use Paperdoc\Document\Style\TextStyle;
  * Quoted block, containing one or more nested block elements. Nested
  * Blockquotes are allowed (a quote inside a quote).
  */
-class Blockquote implements BlockElementInterface, \JsonSerializable
+final class Blockquote implements BlockElementInterface, \JsonSerializable
 {
     /** @var DocumentElementInterface[] */
     private array $elements = [];

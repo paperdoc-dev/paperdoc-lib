@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Support\Pdf;
 
 use PHPUnit\Framework\TestCase;
+use Paperdoc\Document\Style\PdfProtection;
+use Paperdoc\Tests\Support\InflatesPdfStreams;
 use Paperdoc\Support\Pdf\PdfEngine;
 
 class PdfEngineTest extends TestCase
 {
+    use InflatesPdfStreams;
     public function test_default_dimensions(): void
     {
         $engine = new PdfEngine();
@@ -79,7 +82,7 @@ class PdfEngineTest extends TestCase
         $engine->setTitle('Test');
         $engine->writeText('Hello World', 'Helvetica', 12);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertStringStartsWith('%PDF-1.4', $output);
         $this->assertStringContainsString('%%EOF', $output);
@@ -92,7 +95,7 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->writeText('My Content', 'Helvetica', 12);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertStringContainsString('My Content', $output);
     }
@@ -103,7 +106,7 @@ class PdfEngineTest extends TestCase
         $engine->writeText('Normal', 'Helvetica', 12);
         $engine->writeText('Bold', 'Helvetica-Bold', 14);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertStringContainsString('/BaseFont /Helvetica', $output);
         $this->assertStringContainsString('/BaseFont /Helvetica-Bold', $output);
@@ -181,7 +184,7 @@ class PdfEngineTest extends TestCase
         $engine->newPage();
         $engine->writeText('Page 3', 'Helvetica', 12);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $pageCount = substr_count($output, '/Type /Page ');
         $this->assertSame(3, $pageCount);
@@ -192,7 +195,7 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->drawRect(10, 10, 100, 50, '#FFFFFF', '#000000', 1.0);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertStringContainsString('re', $output);
     }
@@ -202,7 +205,7 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->drawLine(0, 0, 100, 100, 1.0);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertStringContainsString(' m ', $output);
         $this->assertStringContainsString(' l S', $output);
@@ -213,7 +216,7 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->setCreator('MyApp');
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
         $this->assertStringContainsString('MyApp', $output);
     }
 
@@ -222,7 +225,7 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->writeText('xref test', 'Helvetica', 12);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertStringContainsString('xref', $output);
         $this->assertStringContainsString('trailer', $output);
@@ -248,7 +251,7 @@ class PdfEngineTest extends TestCase
             $engine = new PdfEngine();
             $y = $engine->getCursorY() - 50.0;
             $engine->drawImage($tmp, 40, $y, 50, 50);
-            $output = $engine->output();
+            $output = $this->inflatePdf($engine->output());
             $this->assertStringContainsString('/Subtype /Image', $output);
             $this->assertStringContainsString('DCTDecode', $output);
         } finally {
@@ -325,7 +328,7 @@ class PdfEngineTest extends TestCase
             align:       'justify',
         );
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         // A fall-back should not have emitted any non-zero Tw operator.
         $this->assertDoesNotMatchRegularExpression('/[1-9]\d*\.\d+ Tw/', $output);
@@ -345,7 +348,7 @@ class PdfEngineTest extends TestCase
             align:       'justify',
         );
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         $this->assertMatchesRegularExpression('/\d+\.\d+ Tw/', $output);
         // Reset operator must always be present so subsequent text
@@ -362,7 +365,7 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->writeText("« Café — où ? » … 'œuvre'", 'Times-Roman', 12.0);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
         // Each unique cp1252 byte should appear in the literal string;
         // we just spot-check that the encoded content is non-empty and
         // doesn't carry raw UTF-8 sequences (which would mean encoding
@@ -376,11 +379,31 @@ class PdfEngineTest extends TestCase
         $engine = new PdfEngine();
         $engine->writeText("Pi: π — square root: √2", 'Times-Roman', 12.0);
 
-        $output = $engine->output();
+        $output = $this->inflatePdf($engine->output());
 
         // π and √ aren't in cp1252 → must be substituted with '?',
         // never silently dropped (which would leave wrong widths
         // downstream).
         $this->assertStringContainsString('?', $output);
+    }
+
+    public function test_output_with_protection_contains_encrypt_dictionary(): void
+    {
+        $engine = new PdfEngine();
+        $engine->setProtection(
+            PdfProtection::make('user', 'owner')
+                ->disallowPrint()
+                ->disallowCopy()
+        );
+        $engine->writeText('Secret text', 'Helvetica', 12);
+
+        $output = $engine->output();
+
+        $this->assertStringContainsString('/Encrypt', $output);
+        $this->assertStringContainsString('/Filter /Standard', $output);
+        $this->assertStringContainsString('/V 1', $output);
+        $this->assertStringContainsString('/R 2', $output);
+        $this->assertMatchesRegularExpression('/\/P -\d+/', $output);
+        $this->assertStringNotContainsString('Secret text', $output);
     }
 }

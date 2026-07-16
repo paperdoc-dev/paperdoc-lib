@@ -7,7 +7,7 @@ namespace Paperdoc\Document;
 use Paperdoc\Contracts\BlockElementInterface;
 use Paperdoc\Document\Style\TableStyle;
 
-class Table implements BlockElementInterface, \JsonSerializable
+final class Table implements BlockElementInterface, \JsonSerializable
 {
     /** @var TableRow[] */
     private array $rows = [];

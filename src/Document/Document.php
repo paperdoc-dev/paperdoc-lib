@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Paperdoc\Document;
 
 use Paperdoc\Contracts\DocumentInterface;
-use Paperdoc\Document\Style\{RunningElement, TextStyle};
+use Paperdoc\Document\Style\{PdfProtection, RunningElement, TextStyle, Watermark};
+use Paperdoc\Enum\Format;
+use Paperdoc\Factory\DocumentHydrator;
 use Paperdoc\Support\ThumbnailGenerator;
 
-class Document implements DocumentInterface, \JsonSerializable
+final class Document implements DocumentInterface, \JsonSerializable
 {
     /** @var Section[] */
     private array $sections = [];
@@ -24,10 +26,17 @@ class Document implements DocumentInterface, \JsonSerializable
 
     private ?RunningElement $footer = null;
 
+    private ?Watermark $watermark = null;
+
+    private ?PdfProtection $protection = null;
+
+    private string $format;
+
     public function __construct(
-        private string $format,
+        Format|string $format,
         private string $title = '',
     ) {
+        $this->format = $format instanceof Format ? $format->value : $format;
         $this->defaultTextStyle = new TextStyle();
     }
 
@@ -35,9 +44,57 @@ class Document implements DocumentInterface, \JsonSerializable
      | Static Factories
      |------------------------------------------------------------- */
 
-    public static function make(string $format, string $title = ''): static
+    public static function make(Format|string $format, string $title = ''): static
     {
         return new static($format, $title);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public static function fromArray(array $data): static
+    {
+        $rawFormat = $data['format'] ?? Format::PDF->value;
+        $format = $rawFormat instanceof Format
+            ? $rawFormat
+            : (is_string($rawFormat) ? $rawFormat : Format::PDF->value);
+        $title = $data['title'] ?? '';
+        $document = new static(
+            $format,
+            is_string($title) ? $title : '',
+        );
+
+        foreach (DocumentHydrator::asMap($data['metadata'] ?? null) as $key => $value) {
+            $document->setMetadata($key, $value);
+        }
+
+        if (is_array($data['properties'] ?? null)) {
+            $document->setProperties(Metadata::fromArray(DocumentHydrator::asMap($data['properties'])));
+        }
+
+        if (is_array($data['defaultTextStyle'] ?? null)) {
+            $document->setDefaultTextStyle(DocumentHydrator::textStyleFromArrayOrNull($data['defaultTextStyle']) ?? new TextStyle());
+        }
+
+        $document->setHeader(DocumentHydrator::runningElementFromArrayOrNull($data['header'] ?? null));
+        $document->setFooter(DocumentHydrator::runningElementFromArrayOrNull($data['footer'] ?? null));
+        $document->setProtection(is_array($data['protection'] ?? null) ? PdfProtection::fromArray(DocumentHydrator::asMap($data['protection'])) : null);
+
+        foreach (DocumentHydrator::asList($data['sections'] ?? null) as $sectionData) {
+            if (is_array($sectionData)) {
+                $document->addSection(Section::fromArray(DocumentHydrator::asMap($sectionData)));
+            }
+        }
+
+        return $document;
+    }
+
+    public static function fromJson(string $json): static
+    {
+        /** @var array<string, mixed> $data */
+        $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+
+        return static::fromArray($data);
     }
 
     /* -------------------------------------------------------------
@@ -228,6 +285,24 @@ class Document implements DocumentInterface, \JsonSerializable
         return $this;
     }
 
+    public function getWatermark(): ?Watermark { return $this->watermark; }
+
+    public function setWatermark(?Watermark $watermark): static
+    {
+        $this->watermark = $watermark;
+
+        return $this;
+    }
+
+    public function getProtection(): ?PdfProtection { return $this->protection; }
+
+    public function setProtection(?PdfProtection $protection): static
+    {
+        $this->protection = $protection;
+
+        return $this;
+    }
+
     /* -------------------------------------------------------------
      | JsonSerializable
      |------------------------------------------------------------- */
@@ -252,6 +327,12 @@ class Document implements DocumentInterface, \JsonSerializable
         if ($this->footer !== null) {
             $result['footer'] = $this->footer;
         }
+
+        if ($this->protection !== null) {
+            $result['protection'] = $this->protection;
+        }
+
+        $result['defaultTextStyle'] = $this->defaultTextStyle;
 
         return $result;
     }

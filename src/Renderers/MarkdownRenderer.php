@@ -29,12 +29,19 @@ class MarkdownRenderer extends AbstractRenderer
         return 'md';
     }
 
+    private ?\Paperdoc\Support\TocResolver $tocResolver = null;
+    /** @var list<string> */
+    private array $sectionFootnotes = [];
+
     public function render(DocumentInterface $document): string
     {
+        $this->tocResolver = new \Paperdoc\Support\TocResolver($document);
         $parts = [];
 
-        if ($document->getMetadata() !== []) {
-            $parts[] = $this->renderFrontMatter($document->getMetadata());
+        $frontMatter = $this->buildFrontMatterData($document);
+
+        if ($frontMatter !== []) {
+            $parts[] = $this->renderFrontMatter($frontMatter);
         }
 
         foreach ($document->getSections() as $section) {
@@ -46,13 +53,60 @@ class MarkdownRenderer extends AbstractRenderer
 
     /* ------------------------------------------------------------- */
 
+    /**
+     * Merges the typed document properties (v1.0.0) and the loose
+     * metadata bag into a single frontmatter map. Typed keys win on
+     * collision; empty typed fields are omitted entirely.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildFrontMatterData(DocumentInterface $document): array
+    {
+        $data = [];
+
+        $properties = $document instanceof \Paperdoc\Document\Document
+            ? $document->getProperties()
+            : null;
+
+        if ($properties !== null) {
+            if ($document->getTitle() !== '') {
+                $data['title'] = $document->getTitle();
+            }
+
+            foreach ([
+                'author'      => $properties->getAuthor(),
+                'subject'     => $properties->getSubject(),
+                'description' => $properties->getDescription(),
+                'keywords'    => $properties->getKeywords(),
+                'language'    => $properties->getLanguage(),
+            ] as $key => $value) {
+                if ($value !== '') {
+                    $data[$key] = $value;
+                }
+            }
+
+            if ($properties->getCreatedAt() !== null) {
+                $data['created'] = $properties->getCreatedAt()->format('Y-m-d\TH:i:sP');
+            }
+            if ($properties->getModifiedAt() !== null) {
+                $data['modified'] = $properties->getModifiedAt()->format('Y-m-d\TH:i:sP');
+            }
+        }
+
+        foreach ($document->getMetadata() as $key => $value) {
+            $data[$key] ??= $value;
+        }
+
+        return $data;
+    }
+
     /** @param array<string, mixed> $metadata */
     private function renderFrontMatter(array $metadata): string
     {
         $yaml = "---\n";
 
         foreach ($metadata as $key => $value) {
-            $yaml .= sprintf("%s: %s\n", $key, is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE));
+            $yaml .= sprintf("%s: %s\n", $key, $this->yamlScalar($value));
         }
 
         $yaml .= "---\n";
@@ -60,13 +114,39 @@ class MarkdownRenderer extends AbstractRenderer
         return $yaml;
     }
 
+    /**
+     * Serialises a frontmatter value as a YAML scalar. Plain strings
+     * without YAML-sensitive characters are emitted as-is; anything
+     * else (colons, quotes, leading/trailing spaces, non-strings) is
+     * JSON-encoded — JSON scalars are valid YAML.
+     */
+    private function yamlScalar(mixed $value): string
+    {
+        if (! is_string($value)) {
+            return (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        $isPlainSafe = $value !== ''
+            && ! preg_match('/[:#\[\]{}&*!|>\'"%@`\r\n\t]/', $value)
+            && $value === trim($value);
+
+        if ($isPlainSafe) {
+            return $value;
+        }
+
+        return (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
     private function renderSection(Section $section): string
     {
+        $this->sectionFootnotes = [];
         $md = '';
 
         foreach ($section->getElements() as $element) {
             $md .= $this->renderBlock($element);
         }
+
+        $md .= $this->renderFootnotesBlock();
 
         return $md;
     }
@@ -87,6 +167,7 @@ class MarkdownRenderer extends AbstractRenderer
             // properties of HorizontalRule are lost in MD (the format
             // has no notion of those) — we keep the semantic break.
             $element instanceof HorizontalRule => "---\n\n",
+            $element instanceof \Paperdoc\Document\TableOfContents => $this->renderTableOfContents($element),
             $element instanceof PageBreak      => "---\n\n",
             default                            => '',
         };
@@ -141,9 +222,6 @@ class MarkdownRenderer extends AbstractRenderer
         $inner = '';
 
         foreach ($quote->getElements() as $child) {
-            if (! $child instanceof DocumentElementInterface) {
-                continue;
-            }
             $inner .= $this->renderBlock($child);
         }
 
@@ -209,6 +287,9 @@ class MarkdownRenderer extends AbstractRenderer
             $style = $run->getStyle();
 
             if ($style === null) {
+                if ($run->getFootnote() !== null) {
+                    $text .= $this->registerFootnoteMarker($run->getFootnote()->getText());
+                }
                 $md .= $text;
                 continue;
             }
@@ -223,10 +304,71 @@ class MarkdownRenderer extends AbstractRenderer
                 $text = '*' . $text . '*';
             }
 
+            if ($style->isStrikethrough()) {
+                $text = '~~' . $text . '~~';
+            }
+
+            if ($run->getFootnote() !== null) {
+                $text .= $this->registerFootnoteMarker($run->getFootnote()->getText());
+            }
+
             $md .= $text;
         }
 
         return $md;
+    }
+
+    /**
+     * @phpstan-impure
+     */
+    private function registerFootnoteMarker(string $text): string
+    {
+        $this->sectionFootnotes[] = $text;
+
+        return '[^' . count($this->sectionFootnotes) . ']';
+    }
+
+    private function renderFootnotesBlock(): string
+    {
+        $footnotes = $this->sectionFootnotes;
+        if ($footnotes === []) {
+            return '';
+        }
+
+        $md = '';
+
+        foreach ($footnotes as $i => $text) {
+            $md .= sprintf("[^%d]: %s\n", $i + 1, $text);
+        }
+
+        return $md . "\n";
+    }
+
+    private function renderTableOfContents(\Paperdoc\Document\TableOfContents $toc): string
+    {
+        $entries = $this->tocResolver?->entries($toc->getMaxLevel()) ?? [];
+
+        if ($entries === []) {
+            return '';
+        }
+
+        $md = $toc->getTitle() !== '' ? '## ' . $toc->getTitle() . "\n\n" : '';
+
+        foreach ($entries as $entry) {
+            $anchor = $entry['generated'] ? $this->githubSlug($entry['text']) : $entry['anchor'];
+            $md .= str_repeat('  ', $entry['level'] - 1)
+                . '- ' . $this->formatMarkdownLink($entry['text'], '#' . $anchor) . "\n";
+        }
+
+        return $md . "\n";
+    }
+
+    private function githubSlug(string $text): string
+    {
+        $slug = mb_strtolower(trim($text));
+        $slug = preg_replace('/[^\p{L}\p{N}\s-]/u', '', $slug) ?? '';
+
+        return preg_replace('/\s+/', '-', $slug) ?? '';
     }
 
     /**
@@ -336,9 +478,7 @@ class MarkdownRenderer extends AbstractRenderer
         if ($element instanceof Blockquote) {
             $parts = [];
             foreach ($element->getElements() as $child) {
-                if ($child instanceof DocumentElementInterface) {
-                    $parts[] = $this->cellElementToInline($child);
-                }
+                $parts[] = $this->cellElementToInline($child);
             }
             return implode(' ', array_filter($parts, fn (string $s) => $s !== ''));
         }

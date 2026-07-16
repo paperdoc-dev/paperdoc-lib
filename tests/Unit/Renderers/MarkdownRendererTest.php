@@ -4,21 +4,19 @@ declare(strict_types=1);
 
 namespace Paperdoc\Tests\Unit\Renderers;
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\{Document, Footnote, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Document\Link\{TextLink};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Renderers\MarkdownRenderer;
 
+#[Group('Markdown')]
 class MarkdownRendererTest extends TestCase
 {
     private string $tmpDir;
-
-    /**
-     * @group Markdown
-     */
 
     protected function setUp(): void
     {
@@ -253,5 +251,20 @@ class MarkdownRendererTest extends TestCase
         $this->assertStringContainsString("Above\n", $md);
         $this->assertStringContainsString("---\n", $md);
         $this->assertStringContainsString("Below\n", $md);
+    }
+
+    public function test_renders_section_footnotes(): void
+    {
+        $doc = Document::make('markdown');
+        $section = Section::make('notes');
+        $paragraph = Paragraph::make();
+        $paragraph->addRun(TextRun::make('Hello', null, null, Footnote::make('Footnote text')));
+        $section->addElement($paragraph);
+        $doc->addSection($section);
+
+        $md = (new MarkdownRenderer())->render($doc);
+
+        $this->assertStringContainsString('Hello[^1]', $md);
+        $this->assertStringContainsString('[^1]: Footnote text', $md);
     }
 }

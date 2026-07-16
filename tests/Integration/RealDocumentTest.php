@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Integration;
 
 use PHPUnit\Framework\TestCase;
+use Paperdoc\Tests\Support\InflatesPdfStreams;
 use Paperdoc\Document\{Paragraph, Section, Table, Image, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Enum\{Alignment, BorderStyle};
@@ -15,6 +16,7 @@ use Paperdoc\Support\DocumentManager;
  */
 class RealDocumentTest extends TestCase
 {
+    use InflatesPdfStreams;
     private string $outputDir;
 
     protected function setUp(): void
@@ -244,7 +246,7 @@ class RealDocumentTest extends TestCase
         DocumentManager::convert($csvPath, $pdfPath, 'pdf');
 
         $this->assertFileExists($pdfPath);
-        $content = file_get_contents($pdfPath);
+        $content = $this->inflatePdf((string) file_get_contents($pdfPath));
         $this->assertStringStartsWith('%PDF-1.4', $content);
         $this->assertStringContainsString('Revenue', $content);
         $this->assertStringContainsString('120000', $content);
@@ -278,7 +280,7 @@ class RealDocumentTest extends TestCase
         DocumentManager::convert($htmlPath, $pdfPath, 'pdf');
 
         $this->assertFileExists($pdfPath);
-        $content = file_get_contents($pdfPath);
+        $content = $this->inflatePdf((string) file_get_contents($pdfPath));
         $this->assertStringStartsWith('%PDF-1.4', $content);
         $this->assertStringContainsString('Titre Principal', $content);
         $this->assertStringContainsString('Valeur 1', $content);

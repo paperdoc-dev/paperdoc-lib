@@ -22,12 +22,9 @@ use Paperdoc\Support\Ole2\Ole2Reader;
  */
 class PptParser extends AbstractParser implements ParserInterface
 {
-    private const RECORD_SLIDE_BEGIN          = 0x03EE;
-    private const RECORD_SLIDE_PERSIST_ATOM   = 0x03F3;
     private const RECORD_TEXT_CHARS_ATOM      = 0x0FA0;
     private const RECORD_TEXT_BYTES_ATOM      = 0x0FA8;
     private const RECORD_CSTRING              = 0x0FBA;
-    private const RECORD_SLIDE_LIST_WITH_TEXT = 0x0FF0;
 
     public function supports(string $extension): bool
     {
@@ -180,9 +177,7 @@ class PptParser extends AbstractParser implements ParserInterface
             $prevLen = $textLen;
         }
 
-        if (! empty($current)) {
-            $slides[] = $current;
-        }
+        $slides[] = $current;
 
         return $slides;
     }
@@ -190,7 +185,7 @@ class PptParser extends AbstractParser implements ParserInterface
     private function cleanText(string $text): string
     {
         $text = str_replace(["\r\n", "\r"], "\n", $text);
-        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $text);
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $text) ?? $text;
 
         return trim($text);
     }
@@ -277,7 +272,12 @@ class PptParser extends AbstractParser implements ParserInterface
             return 0;
         }
 
-        return unpack('v', substr($data, $offset, 2))[1];
+        $parts = unpack('v', substr($data, $offset, 2));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
+        }
+
+        return $parts[1];
     }
 
     private function readUint32(string $data, int $offset): int
@@ -286,6 +286,11 @@ class PptParser extends AbstractParser implements ParserInterface
             return 0;
         }
 
-        return unpack('V', substr($data, $offset, 4))[1];
+        $parts = unpack('V', substr($data, $offset, 4));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
+        }
+
+        return $parts[1];
     }
 }
