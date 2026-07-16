@@ -186,6 +186,7 @@ MD;
         $this->assertSame('mon site', $runs[1]->getText());
         $this->assertTrue($runs[1]->getStyle()->isUnderline());
         $this->assertSame('#2563EB', $runs[1]->getStyle()->getColor());
+        $this->assertSame('https://example.com', $runs[1]->getLink()?->getUrl());
     }
 
     public function test_parse_image(): void
