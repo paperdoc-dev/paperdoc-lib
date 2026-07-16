@@ -6,6 +6,7 @@ namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
 use Paperdoc\Document\{Document, Image, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Support\Cast;
@@ -493,31 +494,38 @@ class MarkdownParser extends AbstractParser implements ParserInterface
                 $strike = $this->offsetCapture($match, 7);
                 $code = $this->offsetCapture($match, 8);
                 $linkText = $this->offsetCapture($match, 9);
+                $linkHref = $this->offsetCapture($match, 10);
+
+                if ($linkHref) {
+                    $link = TextLink::make($linkHref, '', $linkText);
+                } else {
+                    $link = null;
+                }
 
                 if ($boldItalic !== '') {
                     $style = TextStyle::make()->setBold()->setItalic();
-                    $paragraph->addRun(new TextRun($boldItalic, $style));
+                    $paragraph->addRun(new TextRun($boldItalic, $style, $link));
                 } elseif ($bold !== '') {
                     $style = TextStyle::make()->setBold();
-                    $paragraph->addRun(new TextRun($bold, $style));
+                    $paragraph->addRun(new TextRun($bold, $style, $link));
                 } elseif ($boldAlt !== '') {
                     $style = TextStyle::make()->setBold();
-                    $paragraph->addRun(new TextRun($boldAlt, $style));
+                    $paragraph->addRun(new TextRun($boldAlt, $style, $link));
                 } elseif ($italic !== '') {
                     $style = TextStyle::make()->setItalic();
-                    $paragraph->addRun(new TextRun($italic, $style));
+                    $paragraph->addRun(new TextRun($italic, $style, $link));
                 } elseif ($italicAlt !== '') {
                     $style = TextStyle::make()->setItalic();
-                    $paragraph->addRun(new TextRun($italicAlt, $style));
+                    $paragraph->addRun(new TextRun($italicAlt, $style, $link));
                 } elseif ($strike !== '') {
                     $style = TextStyle::make()->setItalic();
-                    $paragraph->addRun(new TextRun($strike, $style));
+                    $paragraph->addRun(new TextRun($strike, $style, $link));
                 } elseif ($code !== '') {
                     $style = TextStyle::make()->setFontFamily('Courier')->setColor('#BE185D');
-                    $paragraph->addRun(new TextRun($code, $style));
+                    $paragraph->addRun(new TextRun($code, $style, $link));
                 } elseif ($linkText !== '') {
                     $style = TextStyle::make()->setUnderline()->setColor('#2563EB');
-                    $paragraph->addRun(new TextRun($linkText, $style));
+                    $paragraph->addRun(new TextRun($linkText, $style, $link));
                 }
 
                 $lastPos = $matchStart + $matchLen;
