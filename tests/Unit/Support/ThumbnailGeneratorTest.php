@@ -467,14 +467,16 @@ class ThumbnailGeneratorTest extends TestCase
 
     private function writePdfWithEmbeddedJpeg(string $path): void
     {
-        $jpegData = $this->createJpegData(80, 60);
+        // Native PDF fallback (no Imagick/Ghostscript) only extracts images
+        // whose pixel area is >= ThumbnailGenerator::PDF_MIN_IMAGE_AREA (40000).
+        $jpegData = $this->createJpegData(320, 200);
         $jpegLen = strlen($jpegData);
 
         $objects = [];
         $objects[] = "1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj";
         $objects[] = "2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj";
         $objects[] = "3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources <</XObject <</Img0 4 0 R>>>>>>\nendobj";
-        $objects[] = "4 0 obj\n<</Type /XObject /Subtype /Image /Width 80 /Height 60 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {$jpegLen}>>\nstream\n{$jpegData}\nendstream\nendobj";
+        $objects[] = "4 0 obj\n<</Type /XObject /Subtype /Image /Width 320 /Height 200 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {$jpegLen}>>\nstream\n{$jpegData}\nendstream\nendobj";
 
         $body = "%PDF-1.4\n";
         $offsets = [];
