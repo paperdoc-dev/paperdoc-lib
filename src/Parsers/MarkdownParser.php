@@ -496,7 +496,11 @@ class MarkdownParser extends AbstractParser implements ParserInterface
                 $linkText = $this->offsetCapture($match, 9);
                 $linkHref = $this->offsetCapture($match, 10);
 
-                $link = TextLink::make($linkHref, '', $linkText);
+                if ($linkHref) {
+                    $link = TextLink::make($linkHref, '', $linkText);
+                } else {
+                    $link = null;
+                }
 
                 if ($boldItalic !== '') {
                     $style = TextStyle::make()->setBold()->setItalic();
