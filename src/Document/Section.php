@@ -8,8 +8,9 @@ use Paperdoc\Contracts\DocumentElementInterface;
 use Paperdoc\Document\Style\{PageSetup, ParagraphStyle, RunningElement, TextStyle};
 use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Enum\{PageSize, VerticalAlignment};
+use Paperdoc\Factory\DocumentHydrator;
 
-class Section implements \JsonSerializable
+final class Section implements \JsonSerializable
 {
     /** @var DocumentElementInterface[] */
     private array $elements = [];
@@ -57,6 +58,42 @@ class Section implements \JsonSerializable
     public static function make(string $name = ''): static
     {
         return new static($name);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public static function fromArray(array $data): static
+    {
+        $section = new static(DocumentHydrator::asString($data['name'] ?? null));
+
+        foreach (DocumentHydrator::asMap($data['metadata'] ?? null) as $key => $value) {
+            $section->setMetadata($key, $value);
+        }
+
+        $section->setPageSetup(DocumentHydrator::pageSetupFromArrayOrNull($data['pageSetup'] ?? null));
+        $section->setHeader(DocumentHydrator::runningElementFromArrayOrNull($data['header'] ?? null));
+        $section->setFooter(DocumentHydrator::runningElementFromArrayOrNull($data['footer'] ?? null));
+
+        if (DocumentHydrator::asBool($data['headerHidden'] ?? null)) {
+            $section->hideHeader();
+        }
+
+        if (DocumentHydrator::asBool($data['footerHidden'] ?? null)) {
+            $section->hideFooter();
+        }
+
+        if (isset($data['verticalAlignment'])) {
+            $section->setVerticalAlignment(VerticalAlignment::from(DocumentHydrator::asString($data['verticalAlignment'])));
+        }
+
+        foreach (DocumentHydrator::asList($data['elements'] ?? null) as $elementData) {
+            if (is_array($elementData)) {
+                $section->addElement(DocumentHydrator::elementFromArray(DocumentHydrator::asMap($elementData)));
+            }
+        }
+
+        return $section;
     }
 
     /* -------------------------------------------------------------
@@ -223,6 +260,14 @@ class Section implements \JsonSerializable
         return $quote;
     }
 
+    public function addTableOfContents(int $maxLevel = 3, string $title = 'Table of Contents'): TableOfContents
+    {
+        $toc = TableOfContents::make($maxLevel, $title);
+        $this->addElement($toc);
+
+        return $toc;
+    }
+
     /* -------------------------------------------------------------
      | Page setup (size, padding, background)
      |------------------------------------------------------------- */
@@ -313,6 +358,20 @@ class Section implements \JsonSerializable
     public function setPageBackgroundColor(?string $color): static
     {
         $this->ensurePageSetup()->setBackgroundColor($color);
+
+        return $this;
+    }
+
+    public function setColumnCount(int $count): static
+    {
+        $this->ensurePageSetup()->setColumnCount($count);
+
+        return $this;
+    }
+
+    public function setColumnGap(float $gap): static
+    {
+        $this->ensurePageSetup()->setColumnGap($gap);
 
         return $this;
     }

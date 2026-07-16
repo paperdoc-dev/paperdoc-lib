@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Ocr\PostProcessing;
 
+use Paperdoc\Support\Cast;
+
 /**
  * Layer 1 — Context-aware OCR character substitution.
  *
@@ -16,14 +18,14 @@ class OcrConfusionCorrector implements PostProcessorInterface
      * Substitutions applied inside letter-only tokens (word context).
      * Key = wrong sequence, Value = replacement.
      *
-     * @var array<string, string>
+     * @var array<int|string, string>
      */
     private array $wordSubstitutions;
 
     /**
      * Substitutions applied inside digit-heavy tokens (number context).
      *
-     * @var array<string, string>
+     * @var array<int|string, string>
      */
     private array $digitSubstitutions;
 
@@ -34,14 +36,19 @@ class OcrConfusionCorrector implements PostProcessorInterface
      */
     private array $globalPatterns;
 
+    /**
+     * @param array<int|string, string> $wordSubstitutions
+     * @param array<int|string, string> $digitSubstitutions
+     * @param array<string, string>     $globalPatterns
+     */
     public function __construct(
         array $wordSubstitutions = [],
         array $digitSubstitutions = [],
         array $globalPatterns = [],
     ) {
-        $this->wordSubstitutions = $wordSubstitutions ?: self::defaultWordSubstitutions();
-        $this->digitSubstitutions = $digitSubstitutions ?: self::defaultDigitSubstitutions();
-        $this->globalPatterns = $globalPatterns ?: self::defaultGlobalPatterns();
+        $this->wordSubstitutions = $wordSubstitutions !== [] ? $wordSubstitutions : self::defaultWordSubstitutions();
+        $this->digitSubstitutions = $digitSubstitutions !== [] ? $digitSubstitutions : self::defaultDigitSubstitutions();
+        $this->globalPatterns = $globalPatterns !== [] ? $globalPatterns : self::defaultGlobalPatterns();
     }
 
     public function getName(): string
@@ -49,17 +56,23 @@ class OcrConfusionCorrector implements PostProcessorInterface
         return 'ocr_confusion';
     }
 
+    /**
+     * @param array<string, mixed> $context
+     */
     public function process(string $text, array &$context): string
     {
         // Global regex patterns (ligatures, spacing, etc.)
         foreach ($this->globalPatterns as $pattern => $replacement) {
-            $text = preg_replace($pattern, $replacement, $text) ?? $text;
+            $text = Cast::asString(preg_replace($pattern, $replacement, $text), $text);
         }
 
         // Token-level context-aware substitutions
-        $text = preg_replace_callback(
-            '/\S+/u',
-            fn (array $m) => $this->correctToken($m[0]),
+        $text = Cast::asString(
+            preg_replace_callback(
+                '/\S+/u',
+                fn (array $m): string => $this->correctToken(Cast::asString($m[0])),
+                $text,
+            ),
             $text,
         );
 
@@ -68,8 +81,8 @@ class OcrConfusionCorrector implements PostProcessorInterface
 
     private function correctToken(string $token): string
     {
-        $letters = preg_replace('/[^\\p{L}]/u', '', $token);
-        $digits = preg_replace('/[^0-9]/', '', $token);
+        $letters = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $token));
+        $digits = Cast::asString(preg_replace('/[^0-9]/', '', $token));
 
         $letterCount = mb_strlen($letters);
         $digitCount = strlen($digits);
@@ -85,7 +98,7 @@ class OcrConfusionCorrector implements PostProcessorInterface
         } elseif ($letterCount > $digitCount && $digitCount > 0) {
             foreach ($this->wordSubstitutions as $from => $to) {
                 $from = (string) $from;
-                if (preg_match('/\d/', $from)) {
+                if (preg_match('/\d/', $from) === 1) {
                     $token = str_replace($from, $to, $token);
                 }
             }
@@ -94,7 +107,7 @@ class OcrConfusionCorrector implements PostProcessorInterface
         if ($letterCount >= 3) {
             foreach ($this->wordSubstitutions as $from => $to) {
                 $from = (string) $from;
-                if (! preg_match('/\d/', $from)) {
+                if (preg_match('/\d/', $from) !== 1) {
                     $token = str_replace($from, $to, $token);
                 }
             }
@@ -107,7 +120,7 @@ class OcrConfusionCorrector implements PostProcessorInterface
     //  Default confusion tables
     // ──────────────────────────────────────────────────────────────
 
-    /** @return array<string, string> */
+    /** @return array<int|string, string> */
     public static function defaultWordSubstitutions(): array
     {
         return [
@@ -123,7 +136,7 @@ class OcrConfusionCorrector implements PostProcessorInterface
         ];
     }
 
-    /** @return array<string, string> */
+    /** @return array<int|string, string> */
     public static function defaultDigitSubstitutions(): array
     {
         return [

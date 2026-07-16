@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Support\Pdf;
 
+use Paperdoc\Document\Style\PdfProtection;
+
 /**
  * Moteur PDF natif sans dépendance tierce.
  *
@@ -20,9 +22,6 @@ class PdfEngine
 
     /** @var int[] Object numbers for each page content */
     private array $pageObjects = [];
-
-    /** @var int[] Object numbers for each page resource dict */
-    private array $pageResourceObjects = [];
 
     /**
      * Per-page geometry captured at flush time so each page's MediaBox
@@ -62,8 +61,70 @@ class PdfEngine
 
     private int $imageCounter = 0;
 
-    private string $title   = '';
-    private string $creator = 'Paperdoc';
+    private string $title    = '';
+    private string $creator  = 'Paperdoc';
+    private string $author   = '';
+    private string $subject  = '';
+    private string $keywords = '';
+    private ?\DateTimeInterface $creationDate = null;
+    private ?\DateTimeInterface $modificationDate = null;
+
+    /**
+     * Link annotations recorded for already-flushed pages, indexed by
+     * page index (0-based, aligned with $pageObjects). Each record is
+     * either `['rect' => [x1,y1,x2,y2], 'uri' => string]` (external
+     * URI action) or `['rect' => [...], 'anchor' => string]` (internal
+     * GoTo destination, resolved by name at output() time so forward
+     * references Just Work).
+     *
+     * @var array<int, list<array{rect: array{float,float,float,float}, uri?: string, anchor?: string}>>
+     */
+    private array $pageAnnotations = [];
+
+    /** @var list<array{rect: array{float,float,float,float}, uri?: string, anchor?: string}> */
+    private array $currentPageAnnotations = [];
+
+    /**
+     * Active link target while text is being emitted. When non-null,
+     * every line drawn by emitTextLine() also records a clickable
+     * rectangle on the current page — which is what makes multi-line
+     * (wrapped) and page-spanning links work without the renderer
+     * having to know anything about line geometry.
+     *
+     * @var array{uri?: string, anchor?: string}|null
+     */
+    private ?array $activeLink = null;
+
+    /**
+     * Named internal destinations: anchor name => 0-based page index
+     * and the Y coordinate (PDF bottom-left) the viewport should
+     * scroll to.
+     *
+     * @var array<string, array{page: int, y: float}>
+     */
+    private array $anchors = [];
+
+    /**
+     * Flat list of document outline (bookmarks panel) entries in
+     * reading order. The tree is reconstructed from the levels at
+     * output() time.
+     *
+     * @var list<array{level: int, title: string, page: int, y: float}>
+     */
+    private array $outlineEntries = [];
+
+    private bool $decoUnderline = false;
+    private bool $decoStrikethrough = false;
+    private ?string $decoHighlight = null;
+
+    /** @var array<string, array{obj: int, ref: string}> */
+    private array $extGStates = [];
+    private int $gsCounter = 0;
+
+    private bool $compressStreams = true;
+    private ?PdfProtection $protection = null;
+    private ?PdfStandardSecurity $security = null;
+    private ?string $fileId = null;
 
     /**
      * Callback fired right after {@see newPage()} has flushed the
@@ -80,6 +141,21 @@ class PdfEngine
      * Set to null to disable.
      */
     private ?\Closure $onNewPage = null;
+
+    /**
+     * Fired at the start of {@see flushPage()} while the page content
+     * stream is still open — used to paint footnotes into the reserved
+     * bottom band before the page is sealed.
+     */
+    private ?\Closure $beforeFlushPage = null;
+
+    /** Extra bottom inset reserved for footnotes (points). */
+    private float $reservedBottom = 0.0;
+
+    private int $columnCount = 1;
+    private float $columnGap = 18.0;
+    private int $currentColumn = 0;
+    private float $columnTopY = 0.0;
 
     /**
      * Coarse per-font average width fallback (1000em units), used only
@@ -135,6 +211,164 @@ class PdfEngine
     public function setCreator(string $creator): void { $this->creator = $creator; }
 
     /**
+     * Content streams are Flate-compressed by default (v1.0.0). Turn
+     * off to produce human-readable streams (debugging, diffing).
+     */
+    public function setCompression(bool $enabled): void { $this->compressStreams = $enabled; }
+    public function setAuthor(string $author): void { $this->author = $author; }
+    public function setSubject(string $subject): void { $this->subject = $subject; }
+    public function setKeywords(string $keywords): void { $this->keywords = $keywords; }
+    public function setCreationDate(?\DateTimeInterface $date): void { $this->creationDate = $date; }
+    public function setModificationDate(?\DateTimeInterface $date): void { $this->modificationDate = $date; }
+    public function setProtection(?PdfProtection $protection): void { $this->protection = $protection?->isEnabled() ? $protection : null; }
+
+    /* -------------------------------------------------------------
+     | Links, anchors & outline (v1.0.0)
+     |------------------------------------------------------------- */
+
+    /**
+     * Opens a link scope: every text line emitted until {@see endLink()}
+     * records a clickable rectangle on its page. Pass `$uri` for an
+     * external URI action, or `$anchor` for an internal jump to a
+     * destination registered (before OR after this call) via
+     * {@see registerAnchor()}. When both are given, the URI wins.
+     */
+    public function beginLink(?string $uri, ?string $anchor = null): void
+    {
+        if ($uri !== null && $uri !== '') {
+            $this->activeLink = ['uri' => $uri];
+        } elseif ($anchor !== null && $anchor !== '') {
+            $this->activeLink = ['anchor' => $anchor];
+        } else {
+            $this->activeLink = null;
+        }
+    }
+
+    public function endLink(): void
+    {
+        $this->activeLink = null;
+    }
+
+    /**
+     * Text decorations applied to every line emitted until
+     * {@see clearTextDecorations()}: real drawn underline / strike
+     * lines and a highlight rectangle painted behind the text.
+     */
+    public function setTextDecorations(
+        bool $underline = false,
+        bool $strikethrough = false,
+        ?string $highlight = null,
+    ): void {
+        $this->decoUnderline     = $underline;
+        $this->decoStrikethrough = $strikethrough;
+        $this->decoHighlight     = $highlight;
+    }
+
+    public function clearTextDecorations(): void
+    {
+        $this->setTextDecorations();
+    }
+
+    /**
+     * Draws a rotated, semi-transparent text centred on the current
+     * page — used for document watermarks. Call once per page, right
+     * after the page background so it sits under the body content.
+     */
+    public function drawWatermarkText(
+        string $text,
+        string $fontName,
+        float $fontSize,
+        string $color,
+        float $opacity,
+        float $angleDegrees,
+    ): void {
+        if ($text === '') {
+            return;
+        }
+
+        $gsRef   = $this->ensureExtGState(max(0.0, min(1.0, $opacity)));
+        $fontRef = $this->ensureFont($fontName);
+        [$r, $g, $b] = $this->hexToRgb($color);
+
+        $rad = deg2rad($angleDegrees);
+        $cos = cos($rad);
+        $sin = sin($rad);
+        $width = $this->measureTextWidth($text, $fontName, $fontSize);
+
+        $this->currentPageContent .= "q\n{$gsRef} gs\n";
+        $this->currentPageContent .= sprintf(
+            "%.4f %.4f %.4f %.4f %.2f %.2f cm\n",
+            $cos,
+            $sin,
+            -$sin,
+            $cos,
+            $this->pageWidth / 2.0,
+            $this->pageHeight / 2.0,
+        );
+        $this->currentPageContent .= "BT\n";
+        $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
+        $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
+        $this->currentPageContent .= sprintf("%.2f %.2f Td\n", -$width / 2.0, -$fontSize / 3.0);
+        $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($text));
+        $this->currentPageContent .= "ET\nQ\n";
+    }
+
+    private function ensureExtGState(float $alpha): string
+    {
+        $key = 'gs_' . sprintf('%.2f', $alpha);
+
+        if (! isset($this->extGStates[$key])) {
+            $objNum = $this->allocateObject();
+            $ref = '/GS' . (++$this->gsCounter);
+            $this->objects[$objNum] = new PdfObject($objNum, sprintf(
+                '<< /Type /ExtGState /ca %.2f /CA %.2f >>',
+                $alpha,
+                $alpha,
+            ));
+            $this->extGStates[$key] = ['obj' => $objNum, 'ref' => $ref];
+        }
+
+        return $this->extGStates[$key]['ref'];
+    }
+
+    /**
+     * Registers a named internal destination at the current cursor
+     * position. `$y` (PDF bottom-left coordinate) overrides the
+     * default "current baseline plus one line" target — pass the top
+     * of the element you want the viewport to scroll to.
+     */
+    public function registerAnchor(string $name, ?float $y = null): void
+    {
+        if ($name === '') {
+            return;
+        }
+
+        $this->anchors[$name] = [
+            'page' => count($this->pageObjects),
+            'y'    => $y ?? min($this->pageHeight, $this->cursorY + 14.0),
+        ];
+    }
+
+    /**
+     * Appends an entry to the document outline (the "bookmarks" panel
+     * of PDF viewers). Entries must be added in reading order; the
+     * hierarchy is rebuilt from `$level` (1 = top) at output() time.
+     */
+    public function addOutlineEntry(int $level, string $title, ?float $y = null): void
+    {
+        if (trim($title) === '') {
+            return;
+        }
+
+        $this->outlineEntries[] = [
+            'level' => max(1, $level),
+            'title' => $title,
+            'page'  => count($this->pageObjects),
+            'y'     => $y ?? min($this->pageHeight, $this->cursorY + 14.0),
+        ];
+    }
+
+    /**
      * Registers a hook fired on every new page started by the engine,
      * EXCEPT the first one created by the constructor (because at that
      * point no caller has had the chance to register a hook yet).
@@ -154,6 +388,54 @@ class PdfEngine
         $this->onNewPage = $callback;
     }
 
+    public function setBeforeFlushPage(?\Closure $callback): void
+    {
+        $this->beforeFlushPage = $callback;
+    }
+
+    public function setReservedBottom(float $height): void
+    {
+        $this->reservedBottom = max(0.0, $height);
+    }
+
+    public function getReservedBottom(): float
+    {
+        return $this->reservedBottom;
+    }
+
+    /**
+     * Configure multi-column body flow. Call after {@see setPageGeometry()}.
+     */
+    public function setColumns(int $count, float $gap = 18.0): void
+    {
+        $this->columnCount = max(1, $count);
+        $this->columnGap = max(0.0, $gap);
+        $this->currentColumn = 0;
+        $this->columnTopY = $this->pageHeight - $this->marginTop;
+        $this->cursorX = $this->getColumnOriginX();
+    }
+
+    public function getColumnCount(): int
+    {
+        return $this->columnCount;
+    }
+
+    public function getColumnWidth(): float
+    {
+        if ($this->columnCount <= 1) {
+            return $this->getContentWidth();
+        }
+
+        $gaps = ($this->columnCount - 1) * $this->columnGap;
+
+        return max(0.0, ($this->getContentWidth() - $gaps) / $this->columnCount);
+    }
+
+    public function getColumnOriginX(): float
+    {
+        return $this->marginLeft + ($this->currentColumn * ($this->getColumnWidth() + $this->columnGap));
+    }
+
     /* -------------------------------------------------------------
      | Page Management
      |------------------------------------------------------------- */
@@ -165,8 +447,11 @@ class PdfEngine
         }
 
         $this->currentPageContent = '';
-        $this->cursorX = $this->marginLeft;
-        $this->cursorY = $this->pageHeight - $this->marginTop;
+        $this->currentColumn = 0;
+        $this->columnTopY = $this->pageHeight - $this->marginTop;
+        $this->cursorX = $this->getColumnOriginX();
+        $this->cursorY = $this->columnTopY;
+        $this->reservedBottom = 0.0;
 
         // Fire the per-page hook AFTER cursor reset so getCurrentPageNumber()
         // already returns the new page index and any drawing the hook does
@@ -200,6 +485,9 @@ class PdfEngine
 
         $this->cursorX = $this->marginLeft;
         $this->cursorY = $this->pageHeight - $this->marginTop;
+        $this->currentColumn = 0;
+        $this->columnTopY = $this->cursorY;
+        $this->reservedBottom = 0.0;
     }
 
     public function getPageWidth(): float  { return $this->pageWidth; }
@@ -251,7 +539,24 @@ class PdfEngine
 
     public function needsNewPage(float $requiredHeight): bool
     {
-        return $this->cursorY - $requiredHeight < $this->marginBottom;
+        return $this->cursorY - $requiredHeight < ($this->marginBottom + $this->reservedBottom);
+    }
+
+    /**
+     * Advance to the next column, or start a new page when the last
+     * column of the current page is full.
+     */
+    public function advanceColumnOrPage(): void
+    {
+        if ($this->columnCount > 1 && $this->currentColumn < $this->columnCount - 1) {
+            $this->currentColumn++;
+            $this->cursorX = $this->getColumnOriginX();
+            $this->cursorY = $this->columnTopY;
+
+            return;
+        }
+
+        $this->newPage();
     }
 
     /* -------------------------------------------------------------
@@ -403,7 +708,7 @@ class PdfEngine
 
         $info = @getimagesize($path);
 
-        if ($info === false || ! isset($info[0], $info[1])) {
+        if ($info === false) {
             return [0, 0];
         }
 
@@ -460,11 +765,15 @@ class PdfEngine
         float $firstLineIndent = 0.0,
     ): float {
         if ($maxWidth <= 0) {
-            $maxWidth = $this->getContentWidth();
+            $maxWidth = $this->getColumnWidth();
         }
 
+        $bodyIndent = 0.0;
         if ($x > 0) {
-            $this->cursorX = $x;
+            $bodyIndent = max(0.0, $x - $this->getColumnOriginX());
+            $this->cursorX = $this->getColumnOriginX() + $bodyIndent;
+        } else {
+            $this->cursorX = $this->getColumnOriginX();
         }
 
         // L'origine X de la ligne est figée AVANT la boucle : on veut
@@ -493,7 +802,9 @@ class PdfEngine
 
         foreach ($lines as $i => $line) {
             if ($this->needsNewPage($lineHeight)) {
-                $this->newPage();
+                $this->advanceColumnOrPage();
+                $startX = $this->getColumnOriginX() + $bodyIndent;
+                $this->cursorX = $startX;
             }
 
             $isLastLine = ($i + 1 >= $totalLines);
@@ -716,7 +1027,6 @@ class PdfEngine
         }
 
         $widths   = $fontTable['widths'];
-        $default  = $fontTable['default'];
         $winAnsi  = mb_convert_encoding($text, 'Windows-1252', 'UTF-8');
         // mb_convert_encoding can fall back to PHP's substitute character
         // (often '?', code 0x3F) for any UTF-8 codepoint not representable
@@ -727,7 +1037,7 @@ class PdfEngine
 
         for ($i = 0; $i < $len; $i++) {
             $code = ord($winAnsi[$i]);
-            $units += $widths[$code] ?? $default;
+            $units += $widths[$code];
         }
 
         $base = $units * $fontSize / 1000.0;
@@ -959,6 +1269,19 @@ class PdfEngine
 
         $totalTc = $extraTc + $letterSpacing;
 
+        $visualWidth = ($extraTw > 0.0 || $extraTc > 0.0) ? $maxWidth : $lineWidth;
+        $metrics = $this->getFontMetrics($fontName);
+
+        if ($this->decoHighlight !== null && trim($line) !== '') {
+            $this->drawRect(
+                $drawX,
+                $baselineY + $metrics['descender'] * $fontSize / 1000.0,
+                $visualWidth,
+                ($metrics['ascender'] - $metrics['descender']) * $fontSize / 1000.0,
+                $this->decoHighlight,
+            );
+        }
+
         $this->currentPageContent .= "BT\n";
         $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
         $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
@@ -978,6 +1301,31 @@ class PdfEngine
             $this->currentPageContent .= "0 Tc\n";
         }
         $this->currentPageContent .= "ET\n";
+
+        if (($this->decoUnderline || $this->decoStrikethrough) && trim($line) !== '') {
+            $thickness = max(0.4, $fontSize * 0.055);
+
+            if ($this->decoUnderline) {
+                $y = $baselineY - $fontSize * 0.11;
+                $this->drawColoredLine($drawX, $y, $drawX + $visualWidth, $y, $thickness, $r, $g, $b);
+            }
+            if ($this->decoStrikethrough) {
+                $y = $baselineY + ($metrics['capHeight'] * $fontSize / 1000.0) / 2.0;
+                $this->drawColoredLine($drawX, $y, $drawX + $visualWidth, $y, $thickness, $r, $g, $b);
+            }
+        }
+
+        // Link scope open? Record a clickable rectangle covering this
+        // line on the CURRENT page (annotations follow automatic page
+        // breaks for free because they're recorded per in-flight page).
+        if ($this->activeLink !== null && trim($line) !== '') {
+            $this->currentPageAnnotations[] = $this->activeLink + ['rect' => [
+                $drawX,
+                $baselineY + $metrics['descender'] * $fontSize / 1000.0,
+                $drawX + $visualWidth,
+                $baselineY + $metrics['ascender'] * $fontSize / 1000.0,
+            ]];
+        }
     }
 
     /**
@@ -1136,13 +1484,20 @@ class PdfEngine
     public function output(): string
     {
         $this->flushPage();
+        $this->bootstrapSecurity();
 
         $pageCount = count($this->pageObjects);
+
+        // Page object numbers are allocated up-front so internal link
+        // destinations and outline entries can reference pages that
+        // come AFTER the element that points at them.
         $pageObjNumbers = [];
+        foreach ($this->pageObjects as $i => $contentObj) {
+            $pageObjNumbers[] = $this->allocateObject();
+        }
 
         foreach ($this->pageObjects as $i => $contentObj) {
-            $pageObj = $this->allocateObject();
-            $pageObjNumbers[] = $pageObj;
+            $pageObj = $pageObjNumbers[$i];
 
             $resourceDict = $this->buildResourceDict($i);
 
@@ -1151,13 +1506,16 @@ class PdfEngine
                 'height' => $this->pageHeight,
             ];
 
+            $annots = $this->buildPageAnnotations($i, $pageObjNumbers);
+
             $this->objects[$pageObj] = new PdfObject($pageObj, sprintf(
-                "<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %.2f %.2f] /Contents %d 0 R /Resources %s >>",
+                "<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %.2f %.2f] /Contents %d 0 R /Resources %s%s >>",
                 $this->pagesObj,
                 $geometry['width'],
                 $geometry['height'],
                 $contentObj,
-                $resourceDict
+                $resourceDict,
+                $annots !== '' ? " /Annots {$annots}" : ''
             ));
         }
 
@@ -1167,20 +1525,307 @@ class PdfEngine
             "<< /Type /Pages /Kids [{$kids}] /Count {$pageCount} >>"
         );
 
+        $outlinesObj = $this->buildOutlines($pageObjNumbers);
+
         $this->objects[$this->catalogObj] = new PdfObject(
             $this->catalogObj,
-            "<< /Type /Catalog /Pages {$this->pagesObj} 0 R >>"
+            $outlinesObj !== null
+                ? "<< /Type /Catalog /Pages {$this->pagesObj} 0 R /Outlines {$outlinesObj} 0 R /PageMode /UseOutlines >>"
+                : "<< /Type /Catalog /Pages {$this->pagesObj} 0 R >>"
         );
 
-        $infoObj = $this->allocateObject();
-        $this->objects[$infoObj] = new PdfObject($infoObj, sprintf(
-            "<< /Title (%s) /Creator (%s) /Producer (Paperdoc PHP Library) /CreationDate (D:%s) >>",
-            $this->escapePdfString($this->title),
-            $this->escapePdfString($this->creator),
-            date('YmdHis')
+        return $this->buildPdf($this->buildInfoObject(), $this->buildEncryptObject());
+    }
+
+    /**
+     * Builds the /Annots array for a page: one Link annotation object
+     * per rectangle recorded while a link scope was open. Internal
+     * anchors are resolved by name here — an annotation pointing at an
+     * anchor that was never registered is silently dropped (the text
+     * itself was still drawn, it just isn't clickable).
+     *
+     * @param int[] $pageObjNumbers
+     * @return string PDF array literal (e.g. "[12 0 R 13 0 R]") or ''
+     */
+    private function buildPageAnnotations(int $pageIndex, array $pageObjNumbers): string
+    {
+        $records = $this->pageAnnotations[$pageIndex] ?? [];
+
+        if ($records === []) {
+            return '';
+        }
+
+        $refs = [];
+
+        foreach ($records as $record) {
+            $objNum = $this->allocateObject();
+            [$x1, $y1, $x2, $y2] = $record['rect'];
+            $rect = sprintf('[%.2f %.2f %.2f %.2f]', $x1, $y1, $x2, $y2);
+
+            if (isset($record['uri'])) {
+                $target = sprintf(
+                    '/A << /S /URI /URI %s >>',
+                    $this->formatLiteralString($record['uri'], $objNum)
+                );
+            } else {
+                $anchor = $this->anchors[$record['anchor'] ?? ''] ?? null;
+                if ($anchor === null || ! isset($pageObjNumbers[$anchor['page']])) {
+                    continue;
+                }
+                $target = sprintf(
+                    '/Dest [%d 0 R /XYZ null %.2f null]',
+                    $pageObjNumbers[$anchor['page']],
+                    $anchor['y']
+                );
+            }
+
+            $this->objects[$objNum] = new PdfObject($objNum, sprintf(
+                "<< /Type /Annot /Subtype /Link /Rect %s /Border [0 0 0] %s >>",
+                $rect,
+                $target
+            ));
+            $refs[] = "{$objNum} 0 R";
+        }
+
+        return $refs === [] ? '' : '[' . implode(' ', $refs) . ']';
+    }
+
+    /**
+     * Builds the document outline tree (the "bookmarks" panel) from
+     * the flat, reading-ordered entry list. Returns the root Outlines
+     * object number, or null when no entry was registered.
+     *
+     * Levels deeper than `parent level + 1` are clamped (an H4 right
+     * after an H2 becomes a direct child of the H2) so the tree stays
+     * well-formed whatever the heading sequence.
+     *
+     * @param int[] $pageObjNumbers
+     */
+    private function buildOutlines(array $pageObjNumbers): ?int
+    {
+        if ($this->outlineEntries === []) {
+            return null;
+        }
+
+        $rootObj = $this->allocateObject();
+        $items = $this->materializeOutlineItems();
+        $topLevel = [];
+
+        foreach ($items as $idx => $item) {
+            if ($item['parent'] === null) {
+                $topLevel[] = $idx;
+            }
+
+            $pageObj = $pageObjNumbers[$item['page']] ?? $pageObjNumbers[0];
+
+            $dict = sprintf(
+                '<< /Title %s /Parent %d 0 R /Dest [%d 0 R /XYZ null %.2f null]',
+                $this->formatTextString($item['title'], $item['obj']),
+                $item['parent'] !== null ? $items[$item['parent']]['obj'] : $rootObj,
+                $pageObj,
+                $item['y']
+            );
+
+            if ($item['prev'] !== null) {
+                $dict .= sprintf(' /Prev %d 0 R', $items[$item['prev']]['obj']);
+            }
+            if ($item['next'] !== null) {
+                $dict .= sprintf(' /Next %d 0 R', $items[$item['next']]['obj']);
+            }
+            if ($item['children'] !== []) {
+                $firstChildIdx = $item['children'][0];
+                $lastChildIdx = $item['children'][count($item['children']) - 1];
+                $first = $items[$firstChildIdx]['obj'];
+                $last  = $items[$lastChildIdx]['obj'];
+                // Negative count = children are collapsed by default.
+                $dict .= sprintf(' /First %d 0 R /Last %d 0 R /Count %d', $first, $last, count($item['children']));
+            }
+
+            $dict .= ' >>';
+
+            $this->objects[$item['obj']] = new PdfObject($item['obj'], $dict);
+        }
+
+        $firstTop = $items[$topLevel[0]]['obj'];
+        $lastTop  = $items[$topLevel[count($topLevel) - 1]]['obj'];
+
+        $this->objects[$rootObj] = new PdfObject($rootObj, sprintf(
+            '<< /Type /Outlines /First %d 0 R /Last %d 0 R /Count %d >>',
+            $firstTop,
+            $lastTop,
+            count($topLevel)
         ));
 
-        return $this->buildPdf($infoObj);
+        return $rootObj;
+    }
+
+    /**
+     * @return list<array{obj: int, title: string, page: int, y: float, parent: int|null, children: list<int>, prev: int|null, next: int|null}>
+     */
+    private function materializeOutlineItems(): array
+    {
+        /** @var list<int> $objs */
+        $objs = [];
+        /** @var list<string> $titles */
+        $titles = [];
+        /** @var list<int> $pages */
+        $pages = [];
+        /** @var list<float> $ys */
+        $ys = [];
+        /** @var list<int|null> $parents */
+        $parents = [];
+        /** @var list<list<int>> $children */
+        $children = [];
+        /** @var list<int|null> $prevs */
+        $prevs = [];
+        /** @var list<int|null> $nexts */
+        $nexts = [];
+        /** @var array<int, int> $stack */
+        $stack = [];
+
+        foreach ($this->outlineEntries as $entry) {
+            $idx = count($objs);
+            $depth = min($entry['level'], count($stack) + 1);
+            $parentIdx = $depth > 1 ? ($stack[$depth - 1] ?? null) : null;
+
+            $objs[] = $this->allocateObject();
+            $titles[] = $entry['title'];
+            $pages[] = $entry['page'];
+            $ys[] = $entry['y'];
+            $parents[] = $parentIdx;
+            $children[] = [];
+            $prevs[] = null;
+            $nexts[] = null;
+
+            if ($parentIdx !== null) {
+                $siblings = $children[$parentIdx];
+                if ($siblings !== []) {
+                    $prevIdx = $siblings[array_key_last($siblings)];
+                    $prevs[$idx] = $prevIdx;
+                    $nexts[$prevIdx] = $idx;
+                }
+                $children[$parentIdx][] = $idx;
+            } else {
+                for ($j = $idx - 1; $j >= 0; $j--) {
+                    if ($parents[$j] === null) {
+                        $prevs[$idx] = $j;
+                        $nexts[$j] = $idx;
+                        break;
+                    }
+                }
+            }
+
+            $stack = array_slice($stack, 0, $depth - 1, true);
+            $stack[$depth] = $idx;
+        }
+
+        $items = [];
+        foreach ($objs as $idx => $obj) {
+            $items[] = [
+                'obj'      => $obj,
+                'title'    => $titles[$idx],
+                'page'     => $pages[$idx],
+                'y'        => $ys[$idx],
+                'parent'   => $parents[$idx],
+                'children' => $children[$idx],
+                'prev'     => $prevs[$idx],
+                'next'     => $nexts[$idx],
+            ];
+        }
+
+        return $items;
+    }
+
+    /**
+     * Builds the /Info dictionary from the typed metadata setters.
+     * Empty fields are omitted so a minimal document keeps a minimal
+     * Info dict.
+     */
+    private function buildInfoObject(): int
+    {
+        $entries = [];
+        $infoObj = $this->allocateObject();
+
+        if ($this->title !== '') {
+            $entries[] = sprintf('/Title %s', $this->formatTextString($this->title, $infoObj));
+        }
+        if ($this->author !== '') {
+            $entries[] = sprintf('/Author %s', $this->formatTextString($this->author, $infoObj));
+        }
+        if ($this->subject !== '') {
+            $entries[] = sprintf('/Subject %s', $this->formatTextString($this->subject, $infoObj));
+        }
+        if ($this->keywords !== '') {
+            $entries[] = sprintf('/Keywords %s', $this->formatTextString($this->keywords, $infoObj));
+        }
+
+        $entries[] = sprintf('/Creator %s', $this->formatTextString($this->creator, $infoObj));
+        $entries[] = sprintf('/Producer %s', $this->formatTextString('Paperdoc PHP Library', $infoObj));
+
+        $creation = $this->creationDate?->format('YmdHis') ?? date('YmdHis');
+        $entries[] = sprintf('/CreationDate %s', $this->formatLiteralString("D:{$creation}", $infoObj));
+
+        if ($this->modificationDate !== null) {
+            $entries[] = sprintf('/ModDate %s', $this->formatLiteralString('D:' . $this->modificationDate->format('YmdHis'), $infoObj));
+        }
+
+        $this->objects[$infoObj] = new PdfObject($infoObj, '<< ' . implode(' ', $entries) . ' >>');
+
+        return $infoObj;
+    }
+
+    /**
+     * Escapes a byte string for a PDF literal string WITHOUT charset
+     * conversion — used for URIs, which must keep their original bytes
+     * (they are typically ASCII / percent-encoded already).
+     */
+    private function escapePdfLiteral(string $text): string
+    {
+        return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $text);
+    }
+
+    private function bootstrapSecurity(): void
+    {
+        if ($this->protection === null || $this->security !== null) {
+            return;
+        }
+
+        $seed = $this->title . '|' . $this->creator . '|' . microtime(true) . '|' . random_int(0, PHP_INT_MAX);
+        $this->fileId = md5($seed, true);
+        $this->security = new PdfStandardSecurity($this->protection, $this->fileId);
+    }
+
+    private function buildEncryptObject(): ?int
+    {
+        if ($this->security === null) {
+            return null;
+        }
+
+        $encryptObj = $this->allocateObject();
+        $this->objects[$encryptObj] = $this->security->buildEncryptDictionary($encryptObj);
+
+        return $encryptObj;
+    }
+
+    private function encryptBytesIfNeeded(string $bytes, int $objectNumber): string
+    {
+        return $this->security?->encryptString($bytes, $objectNumber) ?? $bytes;
+    }
+
+    private function formatTextString(string $text, int $objectNumber): string
+    {
+        return $this->formatLiteralString($this->escapePdfString($text), $objectNumber, true);
+    }
+
+    private function formatLiteralString(string $text, int $objectNumber, bool $alreadyEscaped = false): string
+    {
+        if ($this->security === null) {
+            return '(' . ($alreadyEscaped ? $text : $this->escapePdfLiteral($text)) . ')';
+        }
+
+        $bytes = $alreadyEscaped ? $text : $this->escapePdfLiteral($text);
+
+        return '<' . bin2hex($this->security->encryptString($bytes, $objectNumber)) . '>';
     }
 
     public function save(string $filename): void
@@ -1203,15 +1848,31 @@ class PdfEngine
             return;
         }
 
-        $streamObj = $this->allocateObject();
-        $length = strlen($this->currentPageContent);
+        if ($this->beforeFlushPage !== null) {
+            ($this->beforeFlushPage)();
+        }
 
-        $this->objects[$streamObj] = new PdfObject(
-            $streamObj,
-            "<< /Length {$length} >>\nstream\n{$this->currentPageContent}endstream"
-        );
+        $streamObj = $this->allocateObject();
+
+        if ($this->compressStreams) {
+            $data = gzcompress($this->currentPageContent, 6);
+            if ($data === false) {
+                throw new \RuntimeException('Failed to compress PDF page stream.');
+            }
+            $data = $this->encryptBytesIfNeeded($data, $streamObj);
+            $length = strlen($data);
+            $body = "<< /Length {$length} /Filter /FlateDecode >>\nstream\n{$data}\nendstream";
+        } else {
+            $data = $this->encryptBytesIfNeeded($this->currentPageContent, $streamObj);
+            $length = strlen($data);
+            $body = "<< /Length {$length} >>\nstream\n{$data}endstream";
+        }
+
+        $this->objects[$streamObj] = new PdfObject($streamObj, $body);
 
         $this->pageObjects[] = $streamObj;
+        $this->pageAnnotations[] = $this->currentPageAnnotations;
+        $this->currentPageAnnotations = [];
         $this->pageGeometries[] = [
             'width'        => $this->pageWidth,
             'height'       => $this->pageHeight,
@@ -1240,12 +1901,21 @@ class PdfEngine
             $imageEntries[] = "{$ref} {$objNum} 0 R";
         }
 
+        $dict = "/Font {$fontDict}";
+
         if (! empty($imageEntries)) {
-            $xObjDict = '<< ' . implode(' ', $imageEntries) . ' >>';
-            return "<< /Font {$fontDict} /XObject {$xObjDict} >>";
+            $dict .= ' /XObject << ' . implode(' ', $imageEntries) . ' >>';
         }
 
-        return "<< /Font {$fontDict} >>";
+        if ($this->extGStates !== []) {
+            $gsEntries = array_map(
+                static fn (array $gs): string => "{$gs['ref']} {$gs['obj']} 0 R",
+                array_values($this->extGStates),
+            );
+            $dict .= ' /ExtGState << ' . implode(' ', $gsEntries) . ' >>';
+        }
+
+        return "<< {$dict} >>";
     }
 
     private function ensureFont(string $fontName): string
@@ -1297,7 +1967,7 @@ class PdfEngine
 
         $rawW   = (int) $info[0];
         $rawH   = (int) $info[1];
-        $iType  = (int) ($info[2] ?? 0);
+        $iType  = (int) $info[2];
 
         $outW  = $rawW;
         $outH  = $rawH;
@@ -1348,6 +2018,7 @@ class PdfEngine
 
         $this->images[$hash]  = $objNum;
         $this->imageRefs[$hash] = $ref;
+        $jpeg = $this->encryptBytesIfNeeded($jpeg, $objNum);
         $len = strlen($jpeg);
 
         $this->objects[$objNum] = new PdfObject(
@@ -1366,7 +2037,7 @@ class PdfEngine
      | Internal: PDF Assembly
      |------------------------------------------------------------- */
 
-    private function buildPdf(int $infoObj): string
+    private function buildPdf(int $infoObj, ?int $encryptObj): string
     {
         $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
         $offsets = [];
@@ -1393,12 +2064,16 @@ class PdfEngine
         }
 
         $pdf .= "trailer\n";
-        $pdf .= sprintf(
-            "<< /Size %d /Root %d 0 R /Info %d 0 R >>\n",
+        $trailer = sprintf(
+            "<< /Size %d /Root %d 0 R /Info %d 0 R",
             $objectCount,
             $this->catalogObj,
             $infoObj
         );
+        if ($encryptObj !== null && $this->fileId !== null) {
+            $trailer .= sprintf(' /Encrypt %d 0 R /ID [<%s> <%s>]', $encryptObj, bin2hex($this->fileId), bin2hex($this->fileId));
+        }
+        $pdf .= $trailer . " >>\n";
         $pdf .= "startxref\n{$xrefOffset}\n%%EOF";
 
         return $pdf;

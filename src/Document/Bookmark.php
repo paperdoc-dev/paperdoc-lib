@@ -17,7 +17,7 @@ use Paperdoc\Exceptions\InvalidDocumentException;
  * cases. Finer-grained inline bookmarks may be introduced in a future
  * version if needed.
  */
-class Bookmark implements BlockElementInterface, \JsonSerializable
+final class Bookmark implements BlockElementInterface, \JsonSerializable
 {
     public function __construct(private string $id)
     {

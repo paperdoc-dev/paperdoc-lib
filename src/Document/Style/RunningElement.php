@@ -17,7 +17,7 @@ use Paperdoc\Enum\Alignment;
  *  - {date}   : date du jour (Y-m-d)
  *  - {datetime} : date+heure (Y-m-d H:i)
  */
-class RunningElement implements \JsonSerializable
+final class RunningElement implements \JsonSerializable
 {
     public const TYPE_HEADER = 'header';
     public const TYPE_FOOTER = 'footer';

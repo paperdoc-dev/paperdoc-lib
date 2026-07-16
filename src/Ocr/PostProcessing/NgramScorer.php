@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Ocr\PostProcessing;
 
+use Paperdoc\Support\Cast;
+
 /**
  * Layer 3 — N-gram language model for contextual coherence.
  *
@@ -40,7 +42,7 @@ class NgramScorer implements PostProcessorInterface
     /** Absolute minimum score a candidate must reach (prevents noise) */
     private float $minAbsoluteScore;
 
-    /** Words that must never be replaced (e.g. from spell dictionary) */
+    /** @var array<string, mixed> Words that must never be replaced (e.g. from spell dictionary) */
     private array $protectedWords = [];
 
     public function __construct(
@@ -133,12 +135,12 @@ class NgramScorer implements PostProcessorInterface
             throw new \RuntimeException("N-gram model not found: {$path}");
         }
 
-        $data = json_decode(file_get_contents($path), true);
+        $data = Cast::asMap(json_decode(Cast::asString(file_get_contents($path)), true));
         $instance = new self;
-        $instance->unigrams = $data['unigrams'] ?? [];
-        $instance->bigrams = $data['bigrams'] ?? [];
-        $instance->totalUnigrams = $data['totalUnigrams'] ?? 0;
-        $instance->totalBigrams = $data['totalBigrams'] ?? 0;
+        $instance->unigrams = self::intMap($data['unigrams'] ?? null);
+        $instance->bigrams = self::intMap($data['bigrams'] ?? null);
+        $instance->totalUnigrams = Cast::asInt($data['totalUnigrams'] ?? 0);
+        $instance->totalBigrams = Cast::asInt($data['totalBigrams'] ?? 0);
 
         return $instance;
     }
@@ -184,6 +186,9 @@ class NgramScorer implements PostProcessorInterface
     //  Processing
     // ──────────────────────────────────────────────────────────────
 
+    /**
+     * @param array<string, mixed> $context
+     */
     public function process(string $text, array &$context): string
     {
         if ($this->totalUnigrams === 0) {
@@ -200,16 +205,19 @@ class NgramScorer implements PostProcessorInterface
         return implode("\n", $result);
     }
 
+    /**
+     * @param array<string, mixed> $context
+     */
     private function processLine(string $line, array &$context): string
     {
-        $tokens = preg_split('/(\s+)/u', $line, -1, PREG_SPLIT_DELIM_CAPTURE);
+        $tokens = preg_split('/(\s+)/u', $line, -1, PREG_SPLIT_DELIM_CAPTURE) ?: [];
         $wordTokens = [];
         $positions = [];
 
         // Identify word tokens
         foreach ($tokens as $i => $tok) {
-            if (preg_match('/\\p{L}/u', $tok)) {
-                $wordTokens[] = preg_replace('/[^\\p{L}]/u', '', $tok);
+            if (preg_match('/\\p{L}/u', $tok) === 1) {
+                $wordTokens[] = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $tok));
                 $positions[] = $i;
             }
         }
@@ -243,7 +251,9 @@ class NgramScorer implements PostProcessorInterface
             if ($best !== null && $best !== mb_strtolower($word)) {
                 $original = $tokens[$positions[$j]];
                 $tokens[$positions[$j]] = self::matchCase($original, $best);
-                $context['ngram_corrections'][] = ['from' => $word, 'to' => $best];
+                $corrections = Cast::asList($context['ngram_corrections'] ?? null);
+                $corrections[] = ['from' => $word, 'to' => $best];
+                $context['ngram_corrections'] = $corrections;
             }
         }
 
@@ -272,20 +282,21 @@ class NgramScorer implements PostProcessorInterface
         $bestScore = $threshold;
 
         foreach ($this->unigrams as $candidate => $freq) {
-            if (abs(mb_strlen((string) $candidate) - mb_strlen($lower)) > $this->maxEditDistance) {
+            $candidateStr = (string) $candidate;
+            if (abs(mb_strlen($candidateStr) - mb_strlen($lower)) > $this->maxEditDistance) {
                 continue;
             }
 
-            $dist = levenshtein($lower, (string) $candidate);
+            $dist = levenshtein($lower, $candidateStr);
             if ($dist < 1 || $dist > $this->maxEditDistance) {
                 continue;
             }
 
-            $candidateScore = $this->contextScore((string) $candidate, $prev, $next);
+            $candidateScore = $this->contextScore($candidateStr, $prev, $next);
 
             if ($candidateScore > $bestScore) {
                 $bestScore = $candidateScore;
-                $bestCandidate = (string) $candidate;
+                $bestCandidate = $candidateStr;
             }
         }
 
@@ -312,10 +323,12 @@ class NgramScorer implements PostProcessorInterface
 
     /**
      * Detect probable proper names: capitalized word near other capitalized words.
+     *
+     * @param list<string> $tokens
      */
     private static function looksLikeProperName(string $word, array $tokens, int $index): bool
     {
-        if (! preg_match('/^\p{Lu}/u', $word)) {
+        if (preg_match('/^\p{Lu}/u', $word) !== 1) {
             return false;
         }
 
@@ -326,36 +339,49 @@ class NgramScorer implements PostProcessorInterface
         $prev = $index > 0 ? $tokens[$index - 1] : null;
         $next = $index < count($tokens) - 1 ? $tokens[$index + 1] : null;
 
-        if ($prev !== null && preg_match('/^\p{Lu}/u', $prev)) {
+        if ($prev !== null && preg_match('/^\p{Lu}/u', $prev) === 1) {
             return true;
         }
-        if ($next !== null && preg_match('/^\p{Lu}/u', $next)) {
+        if ($next !== null && preg_match('/^\p{Lu}/u', $next) === 1) {
             return true;
         }
 
         return false;
     }
 
-    /** @return string[] */
+    /** @return list<string> */
     private function tokenize(string $text): array
     {
-        $words = preg_split('/[^\\p{L}\']+/u', mb_strtolower($text));
+        $words = preg_split('/[^\\p{L}\']+/u', mb_strtolower($text)) ?: [];
 
         return array_values(array_filter($words, fn (string $w) => mb_strlen($w) >= 2));
     }
 
     private static function matchCase(string $original, string $suggestion): string
     {
-        $letters = preg_replace('/[^\\p{L}]/u', '', $original);
+        $letters = Cast::asString(preg_replace('/[^\\p{L}]/u', '', $original));
 
         if (mb_strtoupper($letters) === $letters) {
             return mb_strtoupper($suggestion);
         }
 
-        if (preg_match('/^\\p{Lu}/u', $letters)) {
+        if (preg_match('/^\\p{Lu}/u', $letters) === 1) {
             return mb_strtoupper(mb_substr($suggestion, 0, 1)) . mb_substr($suggestion, 1);
         }
 
         return $suggestion;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function intMap(mixed $value): array
+    {
+        $map = [];
+        foreach (Cast::asMap($value) as $key => $item) {
+            $map[$key] = Cast::asInt($item);
+        }
+
+        return $map;
     }
 }

@@ -24,7 +24,7 @@ use Paperdoc\Exceptions\InvalidDocumentException;
  *     ->addText('Fourth step');
  * ```
  */
-class ListBlock implements BlockElementInterface, \JsonSerializable
+final class ListBlock implements BlockElementInterface, \JsonSerializable
 {
     public const STYLE_BULLET  = 'bullet';
     public const STYLE_ORDERED = 'ordered';

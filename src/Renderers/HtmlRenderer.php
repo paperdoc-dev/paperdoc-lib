@@ -29,8 +29,72 @@ class HtmlRenderer extends AbstractRenderer
 {
     public function getFormat(): string { return 'html'; }
 
+    private ?\Paperdoc\Support\TocResolver $tocResolver = null;
+    private bool $autoHeadingIds = false;
+    private ?\Paperdoc\Document\Style\Watermark $watermark = null;
+    /** @var list<string> */
+    private array $sectionFootnotes = [];
+
+    /**
+     * Maps the document's typed {@see \Paperdoc\Document\Metadata} to
+     * standard <head> meta tags (author, description, keywords,
+     * generator, dcterms dates). Returns '' when there is nothing to
+     * emit so the head stays minimal.
+     */
+    private function buildHeadMetaTags(?\Paperdoc\Document\Metadata $properties): string
+    {
+        $tags = [];
+
+        if ($properties !== null) {
+            $pairs = [
+                'author'      => $properties->getAuthor(),
+                'description' => $properties->getDescription() !== ''
+                    ? $properties->getDescription()
+                    : $properties->getSubject(),
+                'keywords'    => $properties->getKeywords(),
+            ];
+
+            foreach ($pairs as $name => $content) {
+                if ($content !== '') {
+                    $tags[] = sprintf('<meta name="%s" content="%s">', $name, htmlspecialchars($content));
+                }
+            }
+
+            if ($properties->getCreatedAt() !== null) {
+                $tags[] = sprintf(
+                    '<meta name="dcterms.created" content="%s">',
+                    $properties->getCreatedAt()->format('Y-m-d\TH:i:sP'),
+                );
+            }
+            if ($properties->getModifiedAt() !== null) {
+                $tags[] = sprintf(
+                    '<meta name="dcterms.modified" content="%s">',
+                    $properties->getModifiedAt()->format('Y-m-d\TH:i:sP'),
+                );
+            }
+        }
+
+        if ($tags === []) {
+            return '';
+        }
+
+        return "\n    " . implode("\n    ", $tags);
+    }
+
     public function render(DocumentInterface $document): string
     {
+        $this->tocResolver = new \Paperdoc\Support\TocResolver($document);
+        $this->autoHeadingIds = false;
+
+        foreach ($document->getSections() as $section) {
+            foreach ($section->getElements() as $element) {
+                if ($element instanceof \Paperdoc\Document\TableOfContents) {
+                    $this->autoHeadingIds = true;
+                    break 2;
+                }
+            }
+        }
+
         $defaultStyle = $document->getDefaultTextStyle();
         $bodyStyle = sprintf(
             'font-family:%s,sans-serif;font-size:%spt;color:%s;',
@@ -41,6 +105,7 @@ class HtmlRenderer extends AbstractRenderer
 
         $documentHeader = $document instanceof Document ? $document->getHeader() : null;
         $documentFooter = $document instanceof Document ? $document->getFooter() : null;
+        $this->watermark = $document instanceof Document ? $document->getWatermark() : null;
 
         $sections   = $document->getSections();
         $totalPages = max(1, count($sections));
@@ -63,14 +128,20 @@ class HtmlRenderer extends AbstractRenderer
 
         $title = htmlspecialchars($document->getTitle());
         $charset = 'UTF-8';
-        $lang = 'fr';
+
+        // <html lang> and the <head> meta tags come from the document's
+        // typed properties (v1.0.0). Fallback: English, no extra meta.
+        $properties = $document instanceof Document ? $document->getProperties() : null;
+        $language   = $properties !== null ? $properties->getLanguage() : '';
+        $langAttr   = htmlspecialchars($language !== '' ? $language : 'en');
+        $metaTags   = $this->buildHeadMetaTags($properties);
 
         return <<<HTML
         <!DOCTYPE html>
-        <html lang="{$lang}">
+        <html lang="{$langAttr}">
         <head>
             <meta charset="{$charset}">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">{$metaTags}
             <title>{$title}</title>
             <style>
                 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -190,6 +261,7 @@ class HtmlRenderer extends AbstractRenderer
         int $totalPages = 1,
         string $title = '',
     ): string {
+        $this->sectionFootnotes = [];
         $id    = htmlspecialchars($section->getName());
         $setup = $section->getPageSetup();
 
@@ -216,6 +288,21 @@ class HtmlRenderer extends AbstractRenderer
 
         $html = "<section id=\"{$id}\" class=\"{$cssClass}\"{$styleAttr}>\n";
 
+        if ($this->watermark !== null) {
+            $html .= sprintf(
+                "<div class=\"paperdoc-watermark\" style=\"position:absolute;top:50%%;left:50%%;"
+                . "transform:translate(-50%%,-50%%) rotate(%.1fdeg);font-size:%.1fpt;font-weight:bold;"
+                . "font-family:%s,sans-serif;color:%s;opacity:%.2f;pointer-events:none;"
+                . "white-space:nowrap;user-select:none;z-index:0;\">%s</div>\n",
+                $this->watermark->getAngle(),
+                $this->watermark->getFontSize(),
+                htmlspecialchars($this->watermark->getFontFamily()),
+                htmlspecialchars($this->watermark->getColor()),
+                $this->watermark->getOpacity(),
+                htmlspecialchars($this->watermark->getText()),
+            );
+        }
+
         if ($header !== null) {
             $html .= $this->renderRunningElement($header, RunningElement::TYPE_HEADER, $pageNumber, $totalPages, $title);
         }
@@ -231,6 +318,8 @@ class HtmlRenderer extends AbstractRenderer
         foreach ($section->getElements() as $element) {
             $html .= $this->renderBlock($element);
         }
+
+        $html .= $this->renderFootnotesBlock();
 
         if ($wrapBody) {
             $html .= "</div>\n";
@@ -307,6 +396,11 @@ class HtmlRenderer extends AbstractRenderer
             $parts[] = sprintf('background-color:%s', htmlspecialchars($setup->getBackgroundColor()));
         }
 
+        if ($setup->getColumnCount() > 1) {
+            $parts[] = sprintf('column-count:%d', $setup->getColumnCount());
+            $parts[] = sprintf('column-gap:%.2fpt', $setup->getColumnGap());
+        }
+
         $bgImage = $setup->getBackgroundImage();
         if ($bgImage !== null) {
             $url = $this->resolveImageUrl($bgImage);
@@ -368,7 +462,7 @@ class HtmlRenderer extends AbstractRenderer
             $data = @file_get_contents($src);
             if ($data !== false) {
                 $info = @getimagesizefromstring($data);
-                $mime = is_array($info) && isset($info['mime']) ? $info['mime'] : 'application/octet-stream';
+                $mime = is_array($info) ? $info['mime'] : 'application/octet-stream';
 
                 return 'data:' . $mime . ';base64,' . base64_encode($data);
             }
@@ -390,9 +484,38 @@ class HtmlRenderer extends AbstractRenderer
             $element instanceof Image          => $this->renderImage($element),
             $element instanceof TextZone       => $this->renderTextZone($element),
             $element instanceof HorizontalRule => $this->renderHorizontalRule($element),
+            $element instanceof \Paperdoc\Document\TableOfContents => $this->renderTableOfContents($element),
             $element instanceof PageBreak      => "<div class=\"page-break\"></div>\n",
             default                            => '',
         };
+    }
+
+    private function renderTableOfContents(\Paperdoc\Document\TableOfContents $toc): string
+    {
+        $entries = $this->tocResolver?->entries($toc->getMaxLevel()) ?? [];
+
+        if ($entries === []) {
+            return '';
+        }
+
+        $html = "<nav class=\"paperdoc-toc\">\n";
+
+        if ($toc->getTitle() !== '') {
+            $html .= sprintf("<p class=\"paperdoc-toc-title\">%s</p>\n", htmlspecialchars($toc->getTitle()));
+        }
+
+        $html .= "<ul>\n";
+        foreach ($entries as $entry) {
+            $html .= sprintf(
+                "<li class=\"toc-level-%d\" style=\"margin-left:%dpx\"><a href=\"#%s\">%s</a></li>\n",
+                $entry['level'],
+                ($entry['level'] - 1) * 16,
+                htmlspecialchars($entry['anchor']),
+                htmlspecialchars($entry['text']),
+            );
+        }
+
+        return $html . "</ul>\n</nav>\n";
     }
 
     /**
@@ -652,7 +775,9 @@ class HtmlRenderer extends AbstractRenderer
     private function renderHeading(Heading $heading): string
     {
         $level = max(1, min(6, $heading->getLevel()));
-        $id = $heading->getId();
+        $id = $heading->getId() !== ''
+            ? $heading->getId()
+            : ($this->autoHeadingIds ? ($this->tocResolver?->anchorFor($heading) ?? '') : '');
         $idAttr = $id !== '' ? sprintf(' id="%s"', htmlspecialchars($id)) : '';
 
         $content = '';
@@ -702,14 +827,7 @@ class HtmlRenderer extends AbstractRenderer
     {
         $inner = '';
         foreach ($quote->getElements() as $child) {
-            if ($child instanceof BlockElementInterface) {
-                $inner .= $this->renderBlock($child);
-                continue;
-            }
-
-            if ($child instanceof DocumentElementInterface) {
-                $inner .= $this->renderBlock($child);
-            }
+            $inner .= $this->renderBlock($child);
         }
 
         return "<blockquote>\n{$inner}</blockquote>\n";
@@ -787,9 +905,14 @@ class HtmlRenderer extends AbstractRenderer
         $text = htmlspecialchars($run->getText());
         $style = $run->getStyle();
         $link = $run->getLink();
+        $footnoteMarker = '';
+
+        if ($run->getFootnote() !== null) {
+            $footnoteMarker = $this->registerFootnoteMarker($run->getFootnote()->getText());
+        }
 
         if ($style === null && $link === null) {
-            return $text;
+            return $text . $footnoteMarker;
         }
 
         $parts = [];
@@ -806,8 +929,16 @@ class HtmlRenderer extends AbstractRenderer
                 $parts[] = 'font-style:italic';
             }
 
-            if ($style->isUnderline()) {
-                $parts[] = 'text-decoration:underline';
+            $decorations = array_filter([
+                $style->isUnderline() ? 'underline' : null,
+                $style->isStrikethrough() ? 'line-through' : null,
+            ]);
+            if ($decorations !== []) {
+                $parts[] = 'text-decoration:' . implode(' ', $decorations);
+            }
+
+            if ($style->getHighlight() !== null) {
+                $parts[] = sprintf('background-color:%s', htmlspecialchars($style->getHighlight()));
             }
 
             // letter-spacing (v0.8.0). Same units as the rest of the
@@ -835,10 +966,37 @@ class HtmlRenderer extends AbstractRenderer
                 $attrs .= ' target="_blank" rel="noopener noreferrer"';
             }
 
-            return "<a {$attrs}>{$text}</a>";
+            return "<a {$attrs}>{$text}</a>" . $footnoteMarker;
         }
 
-        return "<span style=\"{$css}\">{$text}</span>";
+        return "<span style=\"{$css}\">{$text}</span>" . $footnoteMarker;
+    }
+
+    /**
+     * @phpstan-impure
+     */
+    private function registerFootnoteMarker(string $text): string
+    {
+        $this->sectionFootnotes[] = $text;
+        $number = count($this->sectionFootnotes);
+
+        return sprintf('<sup class="paperdoc-footnote-ref">[%d]</sup>', $number);
+    }
+
+    private function renderFootnotesBlock(): string
+    {
+        $footnotes = $this->sectionFootnotes;
+        if ($footnotes === []) {
+            return '';
+        }
+
+        $html = "<section class=\"paperdoc-footnotes\">\n<hr>\n<ol>\n";
+
+        foreach ($footnotes as $text) {
+            $html .= sprintf("<li>%s</li>\n", htmlspecialchars($text));
+        }
+
+        return $html . "</ol>\n</section>\n";
     }
 
     private function renderTable(Table $table): string

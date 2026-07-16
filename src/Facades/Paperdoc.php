@@ -9,12 +9,14 @@ use Paperdoc\Contracts\DocumentInterface;
 use Paperdoc\Support\DocumentManager;
 
 /**
- * @method static DocumentInterface create(string $format, string $title = '')
+ * @method static DocumentInterface create(\Paperdoc\Enum\Format|string $format, string $title = '')
  * @method static DocumentInterface open(string $filename, array $options = [])
+ * @method static DocumentInterface openString(string $content, \Paperdoc\Enum\Format|string $format, array $options = [])
  * @method static DocumentInterface[] openBatch(array $filenames, array $options = [])
- * @method static void save(DocumentInterface $document, string $filename, ?string $format = null)
- * @method static string renderAs(DocumentInterface $document, string $format)
- * @method static void convert(string $sourceFile, string $targetFile, string $targetFormat)
+ * @method static void save(DocumentInterface $document, string $filename, \Paperdoc\Enum\Format|string|null $format = null)
+ * @method static string renderAs(DocumentInterface $document, \Paperdoc\Enum\Format|string $format)
+ * @method static void convert(string $sourceFile, string $targetFile, \Paperdoc\Enum\Format|string $targetFormat)
+ * @method static string convertString(string $content, \Paperdoc\Enum\Format|string $from, \Paperdoc\Enum\Format|string $to, array $options = [])
  * @method static array|null thumbnail(DocumentInterface $document, int $maxWidth = 300, int $maxHeight = 300, int $quality = 85)
  * @method static string|null thumbnailDataUri(DocumentInterface $document, int $maxWidth = 300, int $maxHeight = 300, int $quality = 85)
  * @method static string|null thumbnailBase64(DocumentInterface $document, int $maxWidth = 300, int $maxHeight = 300, int $quality = 85)

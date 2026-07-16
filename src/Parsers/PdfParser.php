@@ -43,7 +43,13 @@ class PdfParser extends AbstractParser implements ParserInterface
     {
         $this->assertFileReadable($filename);
 
-        $this->rawContent = file_get_contents($filename);
+        $raw = file_get_contents($filename);
+
+        if ($raw === false) {
+            throw new \RuntimeException("Impossible de lire le fichier PDF : {$filename}");
+        }
+
+        $this->rawContent = $raw;
         $document = new Document('pdf');
         $document->setTitle(pathinfo($filename, PATHINFO_FILENAME));
 
@@ -183,7 +189,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             $header = substr($decoded, 0, $first);
             $body = substr($decoded, $first);
-            $pairs = preg_split('/\s+/', trim($header));
+            $pairs = preg_split('/\s+/', trim($header)) ?: [];
 
             for ($i = 0; $i < $n && ($i * 2 + 1) < count($pairs); $i++) {
                 $embeddedObjNum = (int) $pairs[$i * 2];
@@ -269,15 +275,15 @@ class PdfParser extends AbstractParser implements ParserInterface
                         $dstLen = strlen($entries[3][$i]);
 
                         for ($code = $loInt; $code <= $hiInt; $code++) {
-                            $srcHex = strtoupper(str_pad(dechex($code), $srcLen, '0', STR_PAD_LEFT));
-                            $dstHex = str_pad(dechex($dstInt + ($code - $loInt)), $dstLen, '0', STR_PAD_LEFT);
+                            $srcHex = strtoupper(str_pad(dechex((int) $code), $srcLen, '0', STR_PAD_LEFT));
+                            $dstHex = str_pad(dechex((int) ($dstInt + ($code - $loInt))), $dstLen, '0', STR_PAD_LEFT);
                             $map[$srcHex] = $this->hexToUtf8($dstHex);
                         }
                     } elseif ($entries[4][$i] !== '') {
                         preg_match_all('/<([0-9A-Fa-f]+)>/', $entries[4][$i], $arr);
 
                         for ($j = 0, $code = $loInt; $code <= $hiInt && $j < count($arr[1]); $code++, $j++) {
-                            $srcHex = strtoupper(str_pad(dechex($code), $srcLen, '0', STR_PAD_LEFT));
+                            $srcHex = strtoupper(str_pad(dechex((int) $code), $srcLen, '0', STR_PAD_LEFT));
                             $map[$srcHex] = $this->hexToUtf8($arr[1][$j]);
                         }
                     }
@@ -291,7 +297,7 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function hexToUtf8(string $hex): string
     {
         if (strlen($hex) <= 4) {
-            $cp = hexdec($hex);
+            $cp = (int) hexdec($hex);
 
             return $cp > 0 ? mb_chr($cp, 'UTF-8') : '';
         }
@@ -350,7 +356,7 @@ class PdfParser extends AbstractParser implements ParserInterface
             return $bytes !== false ? $this->decodePdfString($bytes) : '';
         }
 
-        $charLen = strlen(array_key_first($cmap));
+        $charLen = strlen((string) array_key_first($cmap));
 
         if ($charLen < 2) {
             $charLen = 2;
@@ -365,7 +371,7 @@ class PdfParser extends AbstractParser implements ParserInterface
             if (isset($cmap[$code])) {
                 $result .= $cmap[$code];
             } else {
-                $cp = hexdec($code);
+                $cp = (int) hexdec($code);
 
                 if ($cp >= 0x20) {
                     $result .= mb_chr($cp, 'UTF-8');
@@ -576,7 +582,7 @@ class PdfParser extends AbstractParser implements ParserInterface
     {
         $lines = [];
         $ctmStack = [self::CTM_IDENTITY];
-        $streamOps = preg_split('/\r?\n/', $stream);
+        $streamOps = preg_split('/\r?\n/', $stream) ?: [];
         $inBT = false;
         $btContent = '';
 
@@ -590,8 +596,10 @@ class PdfParser extends AbstractParser implements ParserInterface
             if (! $inBT) {
                 $this->processGraphicsOps($opLine, $ctmStack);
 
+                $ctm = $ctmStack[count($ctmStack) - 1];
+
                 if (preg_match('/\bBT\b(.*?)\bET\b/s', $opLine, $singleLine)) {
-                    $this->parseTextBlockWithCtm($singleLine[1], end($ctmStack), $lines, $fontMap);
+                    $this->parseTextBlockWithCtm($singleLine[1], $ctm, $lines, $fontMap);
                 } elseif (preg_match('/\bBT\b(.*)$/s', $opLine, $btMatch)) {
                     $inBT = true;
                     $btContent = $btMatch[1] . "\n";
@@ -600,7 +608,8 @@ class PdfParser extends AbstractParser implements ParserInterface
                 if (preg_match('/^(.*?)\bET\b/', $opLine, $etMatch)) {
                     $btContent .= $etMatch[1] . "\n";
                     $inBT = false;
-                    $this->parseTextBlockWithCtm($btContent, end($ctmStack), $lines, $fontMap);
+                    $ctm = $ctmStack[count($ctmStack) - 1];
+                    $this->parseTextBlockWithCtm($btContent, $ctm, $lines, $fontMap);
                 } else {
                     $btContent .= $opLine . "\n";
                 }
@@ -618,7 +627,7 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function processGraphicsOps(string $opLine, array &$ctmStack): void
     {
         if (str_contains($opLine, 'q') && preg_match('/(?:^|\s)q(?:\s|$)/', $opLine)) {
-            $ctmStack[] = end($ctmStack);
+            $ctmStack[] = $ctmStack[count($ctmStack) - 1];
         }
 
         if (str_contains($opLine, 'Q') && preg_match('/(?:^|\s)Q(?:\s|$)/', $opLine)) {
@@ -633,7 +642,7 @@ class PdfParser extends AbstractParser implements ParserInterface
                 'c' => (float) $m[3], 'd' => (float) $m[4],
                 'e' => (float) $m[5], 'f' => (float) $m[6],
             ];
-            $key = array_key_last($ctmStack);
+            $key = count($ctmStack) - 1;
             $ctmStack[$key] = $this->multiplyCtm($newMatrix, $ctmStack[$key]);
         }
     }
@@ -682,7 +691,7 @@ class PdfParser extends AbstractParser implements ParserInterface
         $localY = 0.0;
         $currentFont = '';
 
-        $blockLines = preg_split('/\r?\n/', $block);
+        $blockLines = preg_split('/\r?\n/', $block) ?: [];
 
         foreach ($blockLines as $bLine) {
             $bLine = trim($bLine);
@@ -1206,7 +1215,7 @@ class PdfParser extends AbstractParser implements ParserInterface
         echo "\x89PNG\r\n\x1a\n";
 
         $ihdr = pack('Nnn', $width, $height, 0)
-              . chr($bpc) . chr($colorType) . chr(0) . chr(0) . chr(0);
+              . chr($bpc & 0xFF) . chr($colorType & 0xFF) . chr(0) . chr(0) . chr(0);
         $ihdr = pack('N', 13) . 'IHDR' . $ihdr;
         $ihdr .= pack('N', crc32('IHDR' . substr($ihdr, 8)));
         echo $ihdr;
@@ -1276,7 +1285,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
     private function decodePdfString(string $str): string
     {
-        $str = preg_replace_callback('/\\\\(\d{3})/', fn ($m) => chr((int) octdec($m[1])), $str);
+        $str = preg_replace_callback('/\\\\(\d{3})/', fn ($m) => chr(((int) octdec($m[1])) & 0xFF), $str) ?? $str;
 
         $str = str_replace(
             ['\\n', '\\r', '\\t', '\\(', '\\)', '\\\\'],
@@ -1334,12 +1343,16 @@ class PdfParser extends AbstractParser implements ParserInterface
         preg_match_all('/\(([^)]*)\)|<([0-9A-Fa-f]+)>|(-?\d+)/', $content, $parts, PREG_SET_ORDER);
 
         foreach ($parts as $part) {
-            if (isset($part[1]) && $part[1] !== '') {
-                $text .= $this->decodePdfString($part[1]);
-            } elseif (isset($part[2]) && $part[2] !== '') {
-                $text .= $this->decodeHexViaCMap($part[2], $cmap);
-            } elseif (isset($part[3])) {
-                $kern = (int) $part[3];
+            $literal = $part[1] ?? '';
+            $hex = $part[2] ?? '';
+            $kernToken = $part[3] ?? null;
+
+            if ($literal !== '') {
+                $text .= $this->decodePdfString($literal);
+            } elseif ($hex !== '') {
+                $text .= $this->decodeHexViaCMap($hex, $cmap);
+            } elseif ($kernToken !== null) {
+                $kern = (int) $kernToken;
                 if ($kern < -100) {
                     $text .= ' ';
                 }
@@ -1363,7 +1376,7 @@ class PdfParser extends AbstractParser implements ParserInterface
             return $text;
         }
 
-        $chars = preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY);
+        $chars = preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [];
         $spaceCount = 0;
         $nonSpaceCount = 0;
 
@@ -1389,8 +1402,8 @@ class PdfParser extends AbstractParser implements ParserInterface
             return $text;
         }
 
-        $result = preg_replace('/(\S) (?=\S)/u', '$1', $text);
-        $result = preg_replace('/\s{2,}/u', ' ', $result);
+        $result = preg_replace('/(\S) (?=\S)/u', '$1', $text) ?? $text;
+        $result = preg_replace('/\s{2,}/u', ' ', $result) ?? $result;
 
         return trim($result);
     }

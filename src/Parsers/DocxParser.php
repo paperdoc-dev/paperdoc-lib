@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
-use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\{Document, Image, ListBlock, ListItem, Paragraph, Section, Table, TableCell, TableRow, TextRun};
 use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
+use Paperdoc\Support\Cast;
 
 /**
  * Parser DOCX natif utilisant ZipArchive + DOMDocument.
@@ -39,6 +40,15 @@ class DocxParser extends AbstractParser implements ParserInterface
     /** @var array<string, string> styleId → baseOn/name mapping for heading detection */
     private array $styleMap = [];
 
+    /** @var array<int, array{style: string, start: int}> */
+    private array $numbering = [];
+
+    /** @var array<int, string> */
+    private array $abstractNumFormats = [];
+
+    /** @var array<int, array{list: ListBlock, numId: int, last_item: ?ListItem}> */
+    private array $listStack = [];
+
     public function supports(string $extension): bool
     {
         return in_array(strtolower($extension), ['docx'], true);
@@ -58,6 +68,7 @@ class DocxParser extends AbstractParser implements ParserInterface
 
         $this->loadRelationships($zip);
         $this->loadStyles($zip);
+        $this->loadNumbering($zip);
         $this->extractMetadata($zip, $document);
 
 
@@ -79,21 +90,25 @@ class DocxParser extends AbstractParser implements ParserInterface
         $xpath->registerNamespace('a', self::NS_DRAWING);
         $xpath->registerNamespace('pic', self::NS_PIC);
 
-        $body = $xpath->query('//w:body')->item(0);
+        $body = $this->queryElement($xpath, '//w:body');
 
-        if (! $body) {
+        if ($body === null) {
             $zip->close();
 
             return $document;
         }
 
         $section = new Section('main');
+        $this->listStack = [];
         $this->parseBody($body, $section, $xpath, $zip);
         $document->addSection($section);
 
         $zip->close();
         $this->relationships = [];
         $this->styleMap = [];
+        $this->numbering = [];
+        $this->abstractNumFormats = [];
+        $this->listStack = [];
 
         return $document;
     }
@@ -178,23 +193,67 @@ class DocxParser extends AbstractParser implements ParserInterface
         $xpath = new \DOMXPath($dom);
         $xpath->registerNamespace('w', self::NS_MAIN);
 
-        $styles = $xpath->query('//w:style[@w:type="paragraph"]');
-
-        foreach ($styles as $style) {
-            /** @var \DOMElement $style */
+        foreach ($this->queryElements($xpath, '//w:style[@w:type="paragraph"]') as $style) {
             $styleId = $style->getAttributeNS(self::NS_MAIN, 'styleId');
 
             if (! $styleId) {
                 continue;
             }
 
-            $nameNode = $xpath->query('w:name', $style)->item(0);
-            $name = $nameNode instanceof \DOMElement ? $nameNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+            $nameNode = $this->queryElement($xpath, 'w:name', $style);
+            $name = $nameNode !== null ? $nameNode->getAttributeNS(self::NS_MAIN, 'val') : '';
 
-            $basedOnNode = $xpath->query('w:basedOn', $style)->item(0);
-            $basedOn = $basedOnNode instanceof \DOMElement ? $basedOnNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+            $basedOnNode = $this->queryElement($xpath, 'w:basedOn', $style);
+            $basedOn = $basedOnNode !== null ? $basedOnNode->getAttributeNS(self::NS_MAIN, 'val') : '';
 
             $this->styleMap[strtolower($styleId)] = strtolower($name ?: $basedOn);
+        }
+    }
+
+    private function loadNumbering(\ZipArchive $zip): void
+    {
+        $this->numbering = [];
+        $this->abstractNumFormats = [];
+
+        $xml = $zip->getFromName('word/numbering.xml');
+
+        if ($xml === false) {
+            return;
+        }
+
+        $dom = new \DOMDocument();
+        $dom->loadXML($xml);
+
+        $xpath = new \DOMXPath($dom);
+        $xpath->registerNamespace('w', self::NS_MAIN);
+
+        foreach ($this->queryElements($xpath, '//w:abstractNum') as $abstract) {
+            $abstractId = Cast::asInt($this->getAttributeValue($abstract, 'abstractNumId'));
+            $fmtNode = $this->queryElement($xpath, 'w:lvl[@w:ilvl="0"]/w:numFmt', $abstract);
+            $fmtVal = $fmtNode !== null ? $this->getAttributeValue($fmtNode, 'val') : '';
+
+            $this->abstractNumFormats[$abstractId] = $this->numFmtToStyle($fmtVal);
+        }
+
+        foreach ($this->queryElements($xpath, '//w:num') as $num) {
+            $numId = Cast::asInt($this->getAttributeValue($num, 'numId'));
+            $abstractNode = $this->queryElement($xpath, 'w:abstractNumId', $num);
+            if ($abstractNode === null) {
+                continue;
+            }
+
+            $abstractId = Cast::asInt($this->getAttributeValue($abstractNode, 'val'));
+            $style = $this->abstractNumFormats[$abstractId] ?? ListBlock::STYLE_BULLET;
+
+            $startNode = $this->queryElement($xpath, 'w:lvlOverride/w:startOverride', $num);
+            $start = $startNode !== null
+                ? max(1, Cast::asInt($this->getAttributeValue($startNode, 'val')))
+                : 1;
+
+            $this->numbering[$numId] = [
+                'style' => $style,
+                'start' => $start,
+            ];
         }
     }
 
@@ -212,9 +271,20 @@ class DocxParser extends AbstractParser implements ParserInterface
             $localName = $node->localName;
 
             if ($localName === 'p') {
+                $numInfo = $this->extractNumberingInfo($node, $xpath);
+
+                if ($numInfo !== null) {
+                    $this->handleListParagraph($node, $section, $xpath, $zip, $numInfo);
+                    continue;
+                }
+
+                $this->resetListState();
                 $this->parseParagraph($node, $section, $xpath, $zip);
             } elseif ($localName === 'tbl') {
+                $this->resetListState();
                 $this->parseTable($node, $section, $xpath, $zip);
+            } else {
+                $this->resetListState();
             }
         }
     }
@@ -251,11 +321,128 @@ class DocxParser extends AbstractParser implements ParserInterface
         }
     }
 
+    /**
+     * @return array{numId: int, ilvl: int, style: string, start: int}|null
+     */
+    private function extractNumberingInfo(\DOMNode $node, \DOMXPath $xpath): ?array
+    {
+        $numPr = $this->queryElement($xpath, 'w:pPr/w:numPr', $node);
+
+        if ($numPr === null) {
+            return null;
+        }
+
+        $numIdNode = $this->queryElement($xpath, 'w:numId', $numPr);
+        if ($numIdNode === null) {
+            return null;
+        }
+
+        $numId = Cast::asInt($this->getAttributeValue($numIdNode, 'val'));
+        $ilvlNode = $this->queryElement($xpath, 'w:ilvl', $numPr);
+        $ilvl = $ilvlNode !== null ? Cast::asInt($this->getAttributeValue($ilvlNode, 'val')) : 0;
+
+        return [
+            'numId' => $numId,
+            'ilvl' => max(0, $ilvl),
+            'style' => $this->numbering[$numId]['style'] ?? ListBlock::STYLE_BULLET,
+            'start' => $this->numbering[$numId]['start'] ?? 1,
+        ];
+    }
+
+    /**
+     * @param array{numId: int, ilvl: int, style: string, start: int} $numInfo
+     */
+    private function handleListParagraph(\DOMNode $node, Section $section, \DOMXPath $xpath, \ZipArchive $zip, array $numInfo): void
+    {
+        $list = $this->ensureListForNumbering($section, $numInfo);
+
+        if ($list === null) {
+            return;
+        }
+
+        $paragraph = new Paragraph();
+        $this->parseRuns($node, $paragraph, $xpath, $zip, $section);
+
+        $runs = $paragraph->getRuns();
+
+        if ($runs === []) {
+            return;
+        }
+
+        $item = new ListItem();
+
+        foreach ($runs as $run) {
+            $item->addRun(new TextRun($run->getText(), $run->getStyle(), $run->getLink()));
+        }
+
+        $list->addItem($item);
+        $this->listStack[$numInfo['ilvl']]['last_item'] = $item;
+    }
+
+    /**
+     * @param array{numId: int, ilvl: int, style: string, start: int} $numInfo
+     */
+    private function ensureListForNumbering(Section $section, array $numInfo): ?ListBlock
+    {
+        $level = $numInfo['ilvl'];
+        $numId = $numInfo['numId'];
+
+        if ($level === 0 && isset($this->listStack[0]) && $this->listStack[0]['numId'] !== $numId) {
+            $this->listStack = [];
+        }
+
+        $this->pruneListStack($level);
+
+        if (isset($this->listStack[$level]) && $this->listStack[$level]['numId'] === $numId) {
+            return $this->listStack[$level]['list'];
+        }
+
+        if ($level > 0 && (! isset($this->listStack[$level - 1]) || $this->listStack[$level - 1]['last_item'] === null)) {
+            return null;
+        }
+
+        $list = ListBlock::make($numInfo['style'], $numInfo['start']);
+
+        if ($level === 0) {
+            $section->addElement($list);
+        } else {
+            $parentItem = $this->listStack[$level - 1]['last_item'];
+
+            if ($parentItem === null) {
+                return null;
+            }
+
+            $parentItem->addList($list);
+        }
+
+        $this->listStack[$level] = [
+            'list' => $list,
+            'numId' => $numId,
+            'last_item' => null,
+        ];
+
+        return $list;
+    }
+
+    private function pruneListStack(int $maxLevel): void
+    {
+        foreach (array_keys($this->listStack) as $level) {
+            if ($level > $maxLevel) {
+                unset($this->listStack[$level]);
+            }
+        }
+    }
+
+    private function resetListState(): void
+    {
+        $this->listStack = [];
+    }
+
     private function detectHeadingLevel(\DOMNode $node, \DOMXPath $xpath): ?int
     {
-        $pStyleNode = $xpath->query('w:pPr/w:pStyle', $node)->item(0);
+        $pStyleNode = $this->queryElement($xpath, 'w:pPr/w:pStyle', $node);
 
-        if (! $pStyleNode instanceof \DOMElement) {
+        if ($pStyleNode === null) {
             return null;
         }
 
@@ -275,9 +462,9 @@ class DocxParser extends AbstractParser implements ParserInterface
             }
         }
 
-        $outlineLvl = $xpath->query('w:pPr/w:outlineLvl', $node)->item(0);
-        if ($outlineLvl instanceof \DOMElement) {
-            $lvl = (int) $outlineLvl->getAttributeNS(self::NS_MAIN, 'val');
+        $outlineLvl = $this->queryElement($xpath, 'w:pPr/w:outlineLvl', $node);
+        if ($outlineLvl !== null) {
+            $lvl = Cast::asInt($outlineLvl->getAttributeNS(self::NS_MAIN, 'val'));
 
             return min($lvl + 1, 4);
         }
@@ -287,17 +474,17 @@ class DocxParser extends AbstractParser implements ParserInterface
 
     private function extractParagraphStyle(\DOMNode $node, \DOMXPath $xpath): ?ParagraphStyle
     {
-        $pPr = $xpath->query('w:pPr', $node)->item(0);
+        $pPr = $this->queryElement($xpath, 'w:pPr', $node);
 
-        if (! $pPr) {
+        if ($pPr === null) {
             return null;
         }
 
         $style = ParagraphStyle::make();
         $hasProps = false;
 
-        $jcNode = $xpath->query('w:jc', $pPr)->item(0);
-        if ($jcNode instanceof \DOMElement) {
+        $jcNode = $this->queryElement($xpath, 'w:jc', $pPr);
+        if ($jcNode !== null) {
             $val = $jcNode->getAttributeNS(self::NS_MAIN, 'val');
             $alignment = match ($val) {
                 'center' => Alignment::CENTER,
@@ -309,22 +496,22 @@ class DocxParser extends AbstractParser implements ParserInterface
             $hasProps = true;
         }
 
-        $spacingNode = $xpath->query('w:spacing', $pPr)->item(0);
-        if ($spacingNode instanceof \DOMElement) {
+        $spacingNode = $this->queryElement($xpath, 'w:spacing', $pPr);
+        if ($spacingNode !== null) {
             $before = $spacingNode->getAttributeNS(self::NS_MAIN, 'before');
             $after = $spacingNode->getAttributeNS(self::NS_MAIN, 'after');
             $line = $spacingNode->getAttributeNS(self::NS_MAIN, 'line');
 
             if ($before !== '') {
-                $style->setSpaceBefore($this->twipsToPt((int) $before));
+                $style->setSpaceBefore($this->twipsToPt(Cast::asInt($before)));
                 $hasProps = true;
             }
             if ($after !== '') {
-                $style->setSpaceAfter($this->twipsToPt((int) $after));
+                $style->setSpaceAfter($this->twipsToPt(Cast::asInt($after)));
                 $hasProps = true;
             }
-            if ($line !== '' && (int) $line > 0) {
-                $style->setLineSpacing((int) $line / 240.0);
+            if ($line !== '' && Cast::asInt($line) > 0) {
+                $style->setLineSpacing(Cast::asInt($line) / 240.0);
                 $hasProps = true;
             }
         }
@@ -339,7 +526,7 @@ class DocxParser extends AbstractParser implements ParserInterface
     private function parseRuns(\DOMNode $node, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section, ?TextLink $link = null): void
     {
         foreach ($node->childNodes as $child) {
-            if ($child->nodeType !== XML_ELEMENT_NODE) {
+            if ($child->nodeType !== XML_ELEMENT_NODE || ! $child instanceof \DOMElement) {
                 continue;
             }
 
@@ -355,8 +542,8 @@ class DocxParser extends AbstractParser implements ParserInterface
 
     private function parseRun(\DOMNode $run, Paragraph $paragraph, \DOMXPath $xpath, \ZipArchive $zip, Section $section, ?TextLink $link = null): void
     {
-        $drawing = $xpath->query('w:drawing', $run)->item(0);
-        if ($drawing) {
+        $drawing = $this->queryElement($xpath, 'w:drawing', $run);
+        if ($drawing !== null) {
             $this->parseDrawing($drawing, $section, $xpath, $zip);
 
             return;
@@ -364,8 +551,7 @@ class DocxParser extends AbstractParser implements ParserInterface
 
         $hasLineBreak = false;
 
-        foreach ($xpath->query('w:br', $run) as $br) {
-            /** @var \DOMElement $br */
+        foreach ($this->queryElements($xpath, 'w:br', $run) as $br) {
             $type = $br->getAttributeNS(self::NS_MAIN, 'type');
 
             if ($type === 'page' || $type === 'column') {
@@ -375,14 +561,13 @@ class DocxParser extends AbstractParser implements ParserInterface
             }
         }
 
-        if ($xpath->query('w:lastRenderedPageBreak', $run)->length > 0) {
+        if ($this->queryElement($xpath, 'w:lastRenderedPageBreak', $run) !== null) {
             $section->addPageBreak();
         }
 
-        $textNodes = $xpath->query('w:t', $run);
         $text = '';
 
-        foreach ($textNodes as $t) {
+        foreach ($this->queryElements($xpath, 'w:t', $run) as $t) {
             $text .= $t->textContent;
         }
 
@@ -421,44 +606,44 @@ class DocxParser extends AbstractParser implements ParserInterface
 
     private function extractRunStyle(\DOMNode $run, \DOMXPath $xpath): ?TextStyle
     {
-        $rPr = $xpath->query('w:rPr', $run)->item(0);
+        $rPr = $this->queryElement($xpath, 'w:rPr', $run);
 
-        if (! $rPr) {
+        if ($rPr === null) {
             return null;
         }
 
         $style = TextStyle::make();
         $hasProps = false;
 
-        if ($xpath->query('w:b', $rPr)->length > 0) {
-            $bNode = $xpath->query('w:b', $rPr)->item(0);
-            $val = $bNode instanceof \DOMElement ? $bNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+        $bNode = $this->queryElement($xpath, 'w:b', $rPr);
+        if ($bNode !== null) {
+            $val = $bNode->getAttributeNS(self::NS_MAIN, 'val');
             if ($val !== '0' && $val !== 'false') {
                 $style->setBold();
                 $hasProps = true;
             }
         }
 
-        if ($xpath->query('w:i', $rPr)->length > 0) {
-            $iNode = $xpath->query('w:i', $rPr)->item(0);
-            $val = $iNode instanceof \DOMElement ? $iNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+        $iNode = $this->queryElement($xpath, 'w:i', $rPr);
+        if ($iNode !== null) {
+            $val = $iNode->getAttributeNS(self::NS_MAIN, 'val');
             if ($val !== '0' && $val !== 'false') {
                 $style->setItalic();
                 $hasProps = true;
             }
         }
 
-        if ($xpath->query('w:u', $rPr)->length > 0) {
-            $uNode = $xpath->query('w:u', $rPr)->item(0);
-            $val = $uNode instanceof \DOMElement ? $uNode->getAttributeNS(self::NS_MAIN, 'val') : '';
+        $uNode = $this->queryElement($xpath, 'w:u', $rPr);
+        if ($uNode !== null) {
+            $val = $uNode->getAttributeNS(self::NS_MAIN, 'val');
             if ($val !== 'none') {
                 $style->setUnderline();
                 $hasProps = true;
             }
         }
 
-        $colorNode = $xpath->query('w:color', $rPr)->item(0);
-        if ($colorNode instanceof \DOMElement) {
+        $colorNode = $this->queryElement($xpath, 'w:color', $rPr);
+        if ($colorNode !== null) {
             $val = $colorNode->getAttributeNS(self::NS_MAIN, 'val');
             if ($val && $val !== 'auto') {
                 $style->setColor('#' . ltrim($val, '#'));
@@ -466,17 +651,17 @@ class DocxParser extends AbstractParser implements ParserInterface
             }
         }
 
-        $szNode = $xpath->query('w:sz', $rPr)->item(0);
-        if ($szNode instanceof \DOMElement) {
+        $szNode = $this->queryElement($xpath, 'w:sz', $rPr);
+        if ($szNode !== null) {
             $val = $szNode->getAttributeNS(self::NS_MAIN, 'val');
             if ($val !== '') {
-                $style->setFontSize((float) $val / 2.0);
+                $style->setFontSize(Cast::asFloat($val) / 2.0);
                 $hasProps = true;
             }
         }
 
-        $fontNode = $xpath->query('w:rFonts', $rPr)->item(0);
-        if ($fontNode instanceof \DOMElement) {
+        $fontNode = $this->queryElement($xpath, 'w:rFonts', $rPr);
+        if ($fontNode !== null) {
             $ascii = $fontNode->getAttributeNS(self::NS_MAIN, 'ascii');
             $hAnsi = $fontNode->getAttributeNS(self::NS_MAIN, 'hAnsi');
             $font = $ascii ?: $hAnsi;
@@ -504,41 +689,35 @@ class DocxParser extends AbstractParser implements ParserInterface
 
         $isFirstRow = true;
 
-        $trNodes = $xpath->query('w:tr', $tblNode);
-
-        foreach ($trNodes as $tr) {
+        foreach ($this->queryElements($xpath, 'w:tr', $tblNode) as $tr) {
             $row = new TableRow();
 
-            $tblHeader = $xpath->query('w:trPr/w:tblHeader', $tr);
-            if ($tblHeader->length > 0 || $isFirstRow) {
+            if ($this->queryElement($xpath, 'w:trPr/w:tblHeader', $tr) !== null || $isFirstRow) {
                 $row->setHeader();
             }
 
-            $tcNodes = $xpath->query('w:tc', $tr);
-
-            foreach ($tcNodes as $tc) {
+            foreach ($this->queryElements($xpath, 'w:tc', $tr) as $tc) {
                 $cell = new TableCell();
 
-                $gridSpan = $xpath->query('w:tcPr/w:gridSpan', $tc)->item(0);
-                if ($gridSpan instanceof \DOMElement) {
-                    $span = (int) $gridSpan->getAttributeNS(self::NS_MAIN, 'val');
+                $gridSpan = $this->queryElement($xpath, 'w:tcPr/w:gridSpan', $tc);
+                if ($gridSpan !== null) {
+                    $span = Cast::asInt($gridSpan->getAttributeNS(self::NS_MAIN, 'val'));
                     if ($span > 1) {
                         $cell->setColspan($span);
                     }
                 }
 
-                $vMerge = $xpath->query('w:tcPr/w:vMerge', $tc)->item(0);
-                if ($vMerge instanceof \DOMElement) {
+                $vMerge = $this->queryElement($xpath, 'w:tcPr/w:vMerge', $tc);
+                if ($vMerge !== null) {
                     $val = $vMerge->getAttributeNS(self::NS_MAIN, 'val');
                     if ($val === 'restart') {
                         $cell->setRowspan(2);
                     }
                 }
 
-                $pNodes = $xpath->query('w:p', $tc);
                 $cellTexts = [];
 
-                foreach ($pNodes as $p) {
+                foreach ($this->queryElements($xpath, 'w:p', $tc) as $p) {
                     $text = $this->extractPlainText($p, $xpath);
                     if ($text !== '') {
                         $cellTexts[] = $text;
@@ -561,17 +740,17 @@ class DocxParser extends AbstractParser implements ParserInterface
 
     private function extractTableStyle(\DOMNode $tblNode, \DOMXPath $xpath): ?TableStyle
     {
-        $tblPr = $xpath->query('w:tblPr', $tblNode)->item(0);
+        $tblPr = $this->queryElement($xpath, 'w:tblPr', $tblNode);
 
-        if (! $tblPr) {
+        if ($tblPr === null) {
             return null;
         }
 
         $style = TableStyle::make();
         $hasProps = false;
 
-        $jcNode = $xpath->query('w:jc', $tblPr)->item(0);
-        if ($jcNode instanceof \DOMElement) {
+        $jcNode = $this->queryElement($xpath, 'w:jc', $tblPr);
+        if ($jcNode !== null) {
             $val = $jcNode->getAttributeNS(self::NS_MAIN, 'val');
             $alignment = match ($val) {
                 'center' => Alignment::CENTER,
@@ -582,16 +761,16 @@ class DocxParser extends AbstractParser implements ParserInterface
             $hasProps = true;
         }
 
-        $bordersNode = $xpath->query('w:tblBorders', $tblPr)->item(0);
-        if ($bordersNode) {
-            $top = $xpath->query('w:top', $bordersNode)->item(0);
+        $bordersNode = $this->queryElement($xpath, 'w:tblBorders', $tblPr);
+        if ($bordersNode !== null) {
+            $top = $this->queryElement($xpath, 'w:top', $bordersNode);
 
-            if ($top instanceof \DOMElement) {
+            if ($top !== null) {
                 $sz = $top->getAttributeNS(self::NS_MAIN, 'sz');
                 $color = $top->getAttributeNS(self::NS_MAIN, 'color');
 
                 if ($sz !== '') {
-                    $style->setBorderWidth((int) $sz / 8.0);
+                    $style->setBorderWidth(Cast::asInt($sz) / 8.0);
                     $hasProps = true;
                 }
 
@@ -602,13 +781,13 @@ class DocxParser extends AbstractParser implements ParserInterface
             }
         }
 
-        $cellMargin = $xpath->query('w:tblCellMar/w:top', $tblPr)->item(0)
-            ?? $xpath->query('w:tblCellMar/w:left', $tblPr)->item(0);
-        if ($cellMargin instanceof \DOMElement) {
+        $cellMargin = $this->queryElement($xpath, 'w:tblCellMar/w:top', $tblPr)
+            ?? $this->queryElement($xpath, 'w:tblCellMar/w:left', $tblPr);
+        if ($cellMargin !== null) {
             $w = $cellMargin->getAttributeNS(self::NS_MAIN, 'w');
 
             if ($w !== '') {
-                $style->setCellPadding($this->twipsToPt((int) $w));
+                $style->setCellPadding($this->twipsToPt(Cast::asInt($w)));
                 $hasProps = true;
             }
         }
@@ -622,18 +801,13 @@ class DocxParser extends AbstractParser implements ParserInterface
 
     private function parseDrawing(\DOMNode $drawing, Section $section, \DOMXPath $xpath, \ZipArchive $zip): void
     {
-        $blipNodes = $xpath->query('.//a:blip', $drawing);
+        $blipNodes = $this->queryElements($xpath, './/a:blip', $drawing);
 
-        if ($blipNodes->length === 0) {
+        if ($blipNodes === []) {
             return;
         }
 
-        $blip = $blipNodes->item(0);
-
-        if (! $blip instanceof \DOMElement) {
-            return;
-        }
-
+        $blip = $blipNodes[0];
         $rId = $blip->getAttributeNS(self::NS_R, 'embed');
 
         if (! $rId || ! isset($this->relationships[$rId])) {
@@ -646,17 +820,17 @@ class DocxParser extends AbstractParser implements ParserInterface
         $width = 0;
         $height = 0;
 
-        $extentNode = $xpath->query('.//wp:extent', $drawing)->item(0);
-        if ($extentNode instanceof \DOMElement) {
-            $cx = (int) $extentNode->getAttribute('cx');
-            $cy = (int) $extentNode->getAttribute('cy');
+        $extentNode = $this->queryElement($xpath, './/wp:extent', $drawing);
+        if ($extentNode !== null) {
+            $cx = Cast::asInt($extentNode->getAttribute('cx'));
+            $cy = Cast::asInt($extentNode->getAttribute('cy'));
             $width = (int) round($cx / 9525);
             $height = (int) round($cy / 9525);
         }
 
         $altText = '';
-        $docPr = $xpath->query('.//wp:docPr', $drawing)->item(0);
-        if ($docPr instanceof \DOMElement) {
+        $docPr = $this->queryElement($xpath, './/wp:docPr', $drawing);
+        if ($docPr !== null) {
             $altText = $docPr->getAttribute('descr') ?: $docPr->getAttribute('name') ?: '';
         }
 
@@ -695,12 +869,31 @@ class DocxParser extends AbstractParser implements ParserInterface
      | Helpers
      |============================================================= */
 
+    private function numFmtToStyle(string $fmt): string
+    {
+        return $fmt === 'bullet' ? ListBlock::STYLE_BULLET : ListBlock::STYLE_ORDERED;
+    }
+
+    private function getAttributeValue(\DOMElement $element, string $name): string
+    {
+        $value = $element->getAttributeNS(self::NS_MAIN, $name);
+        if ($value !== '') {
+            return $value;
+        }
+
+        $value = $element->getAttribute($name);
+        if ($value !== '') {
+            return $value;
+        }
+
+        return $element->getAttribute('w:' . $name);
+    }
+
     private function extractPlainText(\DOMNode $node, \DOMXPath $xpath): string
     {
-        $textNodes = $xpath->query('.//w:t', $node);
         $text = '';
 
-        foreach ($textNodes as $t) {
+        foreach ($this->queryElements($xpath, './/w:t', $node) as $t) {
             $text .= $t->textContent;
         }
 
@@ -710,5 +903,32 @@ class DocxParser extends AbstractParser implements ParserInterface
     private function twipsToPt(int $twips): float
     {
         return $twips / 20.0;
+    }
+
+    /**
+     * @return list<\DOMElement>
+     */
+    private function queryElements(\DOMXPath $xpath, string $expression, ?\DOMNode $contextNode = null): array
+    {
+        $list = $xpath->query($expression, $contextNode);
+        if ($list === false) {
+            return [];
+        }
+
+        $elements = [];
+        foreach ($list as $node) {
+            if ($node instanceof \DOMElement) {
+                $elements[] = $node;
+            }
+        }
+
+        return $elements;
+    }
+
+    private function queryElement(\DOMXPath $xpath, string $expression, ?\DOMNode $contextNode = null): ?\DOMElement
+    {
+        $elements = $this->queryElements($xpath, $expression, $contextNode);
+
+        return $elements[0] ?? null;
     }
 }

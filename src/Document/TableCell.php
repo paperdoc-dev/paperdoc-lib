@@ -6,7 +6,7 @@ namespace Paperdoc\Document;
 
 use Paperdoc\Contracts\DocumentElementInterface;
 
-class TableCell implements \JsonSerializable
+final class TableCell implements \JsonSerializable
 {
     /** @var DocumentElementInterface[] */
     private array $elements = [];

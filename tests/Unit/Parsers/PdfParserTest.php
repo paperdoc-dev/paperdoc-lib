@@ -164,6 +164,63 @@ class PdfParserTest extends TestCase
         $this->assertStringContainsString('Zerarka', $texts);
     }
 
+    public function test_parse_pdf_with_digits_only_cmap_codes(): void
+    {
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Font << /F1 5 0 R >> /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 44 >>
+        stream
+        BT
+        /F1 12 Tf
+        72 770 Td
+        <30003100> Tj
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type0 /BaseFont /AAAAAA+Subset /ToUnicode 6 0 R >>
+        endobj
+        6 0 obj
+        << /Length 200 >>
+        stream
+        /CIDInit /ProcSet findresource begin
+        12 dict begin
+        begincmap
+        1 begincodespacerange
+        <0000> <FFFF>
+        endcodespacerange
+        2 beginbfchar
+        <3000> <0048>
+        <3100> <0049>
+        endbfchar
+        endcmap
+        end
+        end
+        endstream
+        endobj
+        trailer
+        << /Root 1 0 R >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/digits-only-cmap.pdf';
+        file_put_contents($path, $pdf);
+
+        $parsed = $this->parser->parse($path);
+
+        $this->assertStringContainsString('HI', $this->collectText($parsed));
+    }
+
     public function test_pdf_roundtrip_text_preserved(): void
     {
         $doc = DocumentManager::create('pdf', 'Roundtrip');

@@ -94,6 +94,8 @@ class DocParser extends AbstractParser implements ParserInterface
     /**
      * Extrait le texte directement depuis WordDocument quand il n'y a pas de CLX.
      * Scan depuis après le FIB pour trouver un bloc UTF-16LE ou CP1252.
+     *
+     * @param array{ccpText: int, fcClx: int, lcbClx: int, tableName: string, fibEndOffset: int} $fib
      */
     private function extractInlineText(string $wordDoc, array $fib): string
     {
@@ -242,6 +244,9 @@ class DocParser extends AbstractParser implements ParserInterface
         ];
     }
 
+    /**
+     * @param array{ccpText: int, fcClx: int, lcbClx: int, tableName: string, fibEndOffset: int} $fib
+     */
     private function getTableStream(Ole2Reader $ole, array $fib): ?string
     {
         $name = $fib['tableName'];
@@ -259,6 +264,9 @@ class DocParser extends AbstractParser implements ParserInterface
         return null;
     }
 
+    /**
+     * @param array{ccpText: int, fcClx: int, lcbClx: int, tableName: string, fibEndOffset: int} $fib
+     */
     private function extractTextFromPieceTable(string $wordDoc, string $tableStream, array $fib): string
     {
         $fcClx  = $fib['fcClx'];
@@ -495,7 +503,7 @@ class DocParser extends AbstractParser implements ParserInterface
     {
         $text = str_replace(["\r\n", "\r"], "\n", $text);
 
-        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $text);
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $text) ?? '';
 
         $paragraphs = explode("\n", $text);
 
@@ -520,7 +528,12 @@ class DocParser extends AbstractParser implements ParserInterface
             return 0;
         }
 
-        return unpack('v', substr($data, $offset, 2))[1];
+        $parts = unpack('v', substr($data, $offset, 2));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
+        }
+
+        return $parts[1];
     }
 
     private function readUint32(string $data, int $offset): int
@@ -529,7 +542,12 @@ class DocParser extends AbstractParser implements ParserInterface
             return 0;
         }
 
-        return unpack('V', substr($data, $offset, 4))[1];
+        $parts = unpack('V', substr($data, $offset, 4));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
+        }
+
+        return $parts[1];
     }
 
     private function readInt32(string $data, int $offset): int
@@ -538,12 +556,17 @@ class DocParser extends AbstractParser implements ParserInterface
             return 0;
         }
 
-        $val = unpack('V', substr($data, $offset, 4))[1];
-
-        if ($val >= 0x80000000) {
-            return (int) ($val - 0x100000000);
+        $parts = unpack('V', substr($data, $offset, 4));
+        if ($parts === false || ! isset($parts[1]) || ! is_int($parts[1])) {
+            return 0;
         }
 
-        return (int) $val;
+        $val = $parts[1];
+
+        if ($val >= 0x80000000) {
+            return $val - 0x100000000;
+        }
+
+        return $val;
     }
 }

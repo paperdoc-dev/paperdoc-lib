@@ -1,0 +1,14 @@
+includes:
+    - phpstan-baseline.neon
+
+parameters:
+    level: max
+    paths:
+        - src
+    excludePaths:
+        analyse:
+            - src/Concerns/InteractsWithPaperdoc.php
+            - src/Console/*
+            - src/Facades/*
+            - src/PaperdocServiceProvider.php
+    tmpDir: build/phpstan

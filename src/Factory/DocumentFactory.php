@@ -6,6 +6,7 @@ namespace Paperdoc\Factory;
 
 use Paperdoc\Contracts\{DocumentInterface, RendererInterface};
 use Paperdoc\Document\Document;
+use Paperdoc\Enum\Format;
 use Paperdoc\Renderers\{CsvRenderer, DocRenderer, DocxRenderer, HtmlRenderer, MarkdownRenderer, PdfRenderer, PptRenderer, PptxRenderer, XlsRenderer, XlsxRenderer};
 
 class DocumentFactory
@@ -25,17 +26,22 @@ class DocumentFactory
         'ppt'      => PptRenderer::class,
     ];
 
-    public static function createDocument(string $format, string $title = ''): DocumentInterface
+    public static function createDocument(Format|string $format, string $title = ''): DocumentInterface
     {
-        return new Document(strtolower($format), $title);
+        return new Document(self::normalizeFormat($format), $title);
+    }
+
+    public static function normalizeFormat(Format|string $format): string
+    {
+        return $format instanceof Format ? $format->value : strtolower($format);
     }
 
     /**
      * @throws \InvalidArgumentException
      */
-    public static function getRenderer(string $format): RendererInterface
+    public static function getRenderer(Format|string $format): RendererInterface
     {
-        $format = strtolower($format);
+        $format = self::normalizeFormat($format);
 
         if (! isset(self::$renderers[$format])) {
             throw new \InvalidArgumentException("Format non supporté : {$format}");

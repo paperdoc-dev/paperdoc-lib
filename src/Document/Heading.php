@@ -17,7 +17,7 @@ use Paperdoc\Exceptions\InvalidDocumentException;
  *  - styled runs (bold mid-title, links, etc.)
  *  - an optional `id` used as a bookmark target by hyperlinks and TOCs
  */
-class Heading implements BlockElementInterface, \JsonSerializable
+final class Heading implements BlockElementInterface, \JsonSerializable
 {
     public const MIN_LEVEL = 1;
     public const MAX_LEVEL = 6;

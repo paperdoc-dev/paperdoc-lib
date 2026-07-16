@@ -19,16 +19,10 @@ class PptRenderer extends AbstractRenderer
 {
     // Container record types
     private const RT_DOCUMENT              = 0x03E8;
-    private const RT_SLIDE                 = 0x03EE;
-    private const RT_SLIDE_BASE            = 0x03EC;
-    private const RT_DRAWING               = 0x040C;
-    private const RT_DRAWING_GROUP         = 0x040B;
-    private const RT_LIST                  = 0x1772;
     private const RT_SLIDE_LIST_WITH_TEXT  = 0x0FF0;
 
     // Atom record types
     private const RT_DOCUMENT_ATOM         = 0x03E9;
-    private const RT_SLIDE_ATOM            = 0x03EF;
     private const RT_TEXT_HEADER_ATOM      = 0x0F9F;
     private const RT_TEXT_CHARS_ATOM       = 0x0FA0;
     private const RT_TEXT_BYTES_ATOM       = 0x0FA8;
@@ -90,6 +84,9 @@ class PptRenderer extends AbstractRenderer
      | PowerPoint Document Stream
      |============================================================= */
 
+    /**
+     * @param Section[] $sections
+     */
     private function buildPowerPointDocument(array $sections): string
     {
         $slideCount = count($sections);

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Document;
 
+use Paperdoc\Factory\DocumentHydrator;
+
 /**
  * Typed document properties — the standardised "author / subject /
  * keywords / created / modified / language" payload found in
@@ -13,7 +15,7 @@ namespace Paperdoc\Document;
  * Kept deliberately separate from `Document::getMetadata()` (a loose
  * key/value bag used for library-internal extras like `source_file`).
  */
-class Metadata implements \JsonSerializable
+final class Metadata implements \JsonSerializable
 {
     public function __construct(
         private string $author = '',
@@ -35,26 +37,18 @@ class Metadata implements \JsonSerializable
     }
 
     /**
-     * @param array{
-     *     author?: string,
-     *     subject?: string,
-     *     description?: string,
-     *     keywords?: string,
-     *     createdAt?: \DateTimeInterface|string|null,
-     *     modifiedAt?: \DateTimeInterface|string|null,
-     *     language?: string,
-     * } $data
+     * @param array<string, mixed> $data
      */
     public static function fromArray(array $data): static
     {
         return new static(
-            author:      (string) ($data['author']      ?? ''),
-            subject:     (string) ($data['subject']     ?? ''),
-            description: (string) ($data['description'] ?? ''),
-            keywords:    (string) ($data['keywords']    ?? ''),
-            createdAt:   self::toDateTime($data['createdAt']  ?? null),
+            author:      DocumentHydrator::asString($data['author'] ?? null),
+            subject:     DocumentHydrator::asString($data['subject'] ?? null),
+            description: DocumentHydrator::asString($data['description'] ?? null),
+            keywords:    DocumentHydrator::asString($data['keywords'] ?? null),
+            createdAt:   self::toDateTime($data['createdAt'] ?? null),
             modifiedAt:  self::toDateTime($data['modifiedAt'] ?? null),
-            language:    (string) ($data['language']    ?? ''),
+            language:    DocumentHydrator::asString($data['language'] ?? null),
         );
     }
 
@@ -125,7 +119,7 @@ class Metadata implements \JsonSerializable
      | Internal
      |------------------------------------------------------------- */
 
-    private static function toDateTime(\DateTimeInterface|string|null $value): ?\DateTimeImmutable
+    private static function toDateTime(mixed $value): ?\DateTimeImmutable
     {
         if ($value === null) {
             return null;
@@ -137,6 +131,10 @@ class Metadata implements \JsonSerializable
 
         if ($value instanceof \DateTimeInterface) {
             return \DateTimeImmutable::createFromInterface($value);
+        }
+
+        if (! is_string($value)) {
+            return null;
         }
 
         if (trim($value) === '') {

@@ -6,7 +6,7 @@ namespace Paperdoc\Ocr\PostProcessing;
 
 class PostProcessingPipeline
 {
-    /** @var PostProcessorInterface[] */
+    /** @var list<PostProcessorInterface> */
     private array $layers = [];
 
     public function addLayer(PostProcessorInterface $layer): self
@@ -19,8 +19,8 @@ class PostProcessingPipeline
     /**
      * Run all layers in order and return the final result.
      *
-     * @param  array $context Shared context — layers may read/write keys like
-     *                        'language', 'entities', 'structure', 'corrections'
+     * @param  array<string, mixed> $context Shared context — layers may read/write keys like
+     *                                       'language', 'entities', 'structure', 'corrections'
      */
     public function process(string $text, array $context = []): string
     {
@@ -31,12 +31,13 @@ class PostProcessingPipeline
         return $text;
     }
 
-    /** @return PostProcessorInterface[] */
+    /** @return list<PostProcessorInterface> */
     public function getLayers(): array
     {
         return $this->layers;
     }
 
+    /** @return array<string, mixed> */
     public function getContext(): array
     {
         return [];

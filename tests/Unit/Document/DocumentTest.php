@@ -6,9 +6,25 @@ namespace Paperdoc\Tests\Unit\Document;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\DocumentInterface;
+use Paperdoc\Document\Bookmark;
 use Paperdoc\Document\Document;
+use Paperdoc\Document\Heading;
+use Paperdoc\Document\Image;
+use Paperdoc\Document\ListBlock;
+use Paperdoc\Document\Paragraph;
 use Paperdoc\Document\Section;
+use Paperdoc\Document\Table;
+use Paperdoc\Document\TextZone;
+use Paperdoc\Document\Style\PageSetup;
+use Paperdoc\Document\Style\PdfProtection;
+use Paperdoc\Document\Style\RunningElement;
 use Paperdoc\Document\Style\TextStyle;
+use Paperdoc\Document\Style\ParagraphStyle;
+use Paperdoc\Document\Metadata;
+use Paperdoc\Enum\Alignment;
+use Paperdoc\Enum\PageSize;
+use Paperdoc\Enum\VerticalAlignment;
+use Paperdoc\Support\DocumentManager;
 
 class DocumentTest extends TestCase
 {
@@ -306,5 +322,114 @@ class DocumentTest extends TestCase
         $this->assertArrayHasKey('footer', $json);
         $this->assertSame('Top', $json['header']['template']);
         $this->assertSame('Page {page}', $json['footer']['template']);
+    }
+
+    public function test_from_json_round_trip_preserves_rich_document_structure(): void
+    {
+        $doc = new Document('pdf', 'Round trip');
+        $doc->setMetadata('source_file', '/tmp/input.docx');
+        $doc->setProperties(
+            Metadata::make()
+                ->setAuthor('Alice')
+                ->setLanguage('fr-FR')
+        );
+        $doc->setDefaultTextStyle(
+            TextStyle::make()->setFontFamily('Times')->setFontSize(13.5)->setItalic()
+        );
+        $doc->setHeader(
+            RunningElement::make('Top {title}')
+                ->setAlignment(Alignment::LEFT)
+        );
+        $doc->setFooter(RunningElement::make('Page {page}/{pages}'));
+
+        $section = Section::make('intro')
+            ->setPageSetup(
+                PageSetup::fromSize(PageSize::A5)
+                    ->setPadding(24.0, 30.0, 36.0, 42.0)
+                    ->setBackgroundColor('#FAFAFA')
+            )
+            ->setVerticalAlignment(VerticalAlignment::CENTER);
+
+        $paragraph = Paragraph::make(
+            ParagraphStyle::make()->setAlignment(Alignment::JUSTIFY)->setFirstLineIndent(18.0)
+        );
+        $paragraph->addRun(
+            \Paperdoc\Document\TextRun::make(
+                'Bonjour',
+                TextStyle::make()->setBold()->setColor('#112233'),
+                \Paperdoc\Document\Link\TextLink::make('https://example.com', 'intro', 'Example')
+            )
+        );
+        $section->addElement($paragraph);
+
+        $section->addElement(Heading::make('Chapitre 1', 2, 'chapter-1'));
+        $section->addElement(Bookmark::make('anchor-1'));
+        $section->addElement(Image::fromData('png-bytes', 'image/png', 64, 32, 'Logo'));
+
+        $list = ListBlock::ordered(3);
+        $item = $list->addText('Étape 1');
+        $nestedList = ListBlock::bullet();
+        $nestedList->addText('Sous-étape');
+        $item->addList($nestedList);
+        $section->addElement($list);
+
+        $table = Table::make();
+        $table->setColumnWidths([40.0, 60.0]);
+        $table->setHeaders(['Nom', 'Valeur']);
+        $table->addRowFromArray(['A', 'B']);
+        $section->addElement($table);
+
+        $zone = TextZone::make(20.0, 30.0, 150.0, 60.0)
+            ->setPadding(8.0)
+            ->setBackgroundColor('#FFFFFF')
+            ->setBorder('#000000', 1.0)
+            ->setOverflow(TextZone::OVERFLOW_ELLIPSIS);
+        $zone->addText('Dans une zone');
+        $section->addElement($zone);
+
+        $doc->addSection($section);
+
+        $json = json_encode($doc, JSON_THROW_ON_ERROR);
+        $roundTrip = Document::fromJson($json);
+        $roundJson = json_encode($roundTrip, JSON_THROW_ON_ERROR);
+
+        $this->assertJsonStringEqualsJsonString($json, $roundJson);
+        $this->assertSame('Round trip', $roundTrip->getTitle());
+        $this->assertSame('Times', $roundTrip->getDefaultTextStyle()->getFontFamily());
+        $this->assertCount(1, $roundTrip->getSections());
+        $this->assertSame('intro', $roundTrip->getSections()[0]->getName());
+    }
+
+    public function test_document_manager_json_helpers_round_trip_document(): void
+    {
+        $document = new Document('html', 'Manager JSON');
+        $document->openSection()->addParagraph('Hello JSON');
+
+        $json = DocumentManager::toJson($document);
+        $roundTrip = DocumentManager::openJson($json);
+        $firstElement = $roundTrip->getSections()[0]->getElements()[0];
+
+        $this->assertInstanceOf(Document::class, $roundTrip);
+        $this->assertInstanceOf(Paragraph::class, $firstElement);
+        $this->assertSame('html', $roundTrip->getFormat());
+        $this->assertSame('Hello JSON', $firstElement->getPlainText());
+    }
+
+    public function test_from_json_round_trip_preserves_pdf_protection(): void
+    {
+        $document = new Document('pdf', 'Protected');
+        $document->setProtection(
+            PdfProtection::make('user-pass', 'owner-pass')
+                ->disallowPrint()
+                ->disallowCopy()
+        );
+
+        $roundTrip = Document::fromJson(json_encode($document, JSON_THROW_ON_ERROR));
+
+        $this->assertNotNull($roundTrip->getProtection());
+        $this->assertSame('user-pass', $roundTrip->getProtection()->getUserPassword());
+        $this->assertSame('owner-pass', $roundTrip->getProtection()->getOwnerPassword());
+        $this->assertFalse($roundTrip->getProtection()->allowsPrint());
+        $this->assertFalse($roundTrip->getProtection()->allowsCopy());
     }
 }

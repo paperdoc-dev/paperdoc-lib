@@ -27,6 +27,7 @@ use Paperdoc\Document\{
 use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
+use Paperdoc\Support\Cast;
 
 /**
  * Native DOCX renderer producing a valid Office Open XML
@@ -56,7 +57,7 @@ class DocxRenderer extends AbstractRenderer
     private int $bookmarkSeq = 0;
     private int $relSeq = 1;
 
-    /** @var array<int, array{type: string, target: string, targetMode?: string}> */
+    /** @var array<string, array{type: string, target: string, targetMode?: string}> */
     private array $relationships = [];
 
     /** @var array<string, array{id: int, mimeType: string, data: string, extension: string}> */
@@ -64,6 +65,17 @@ class DocxRenderer extends AbstractRenderer
 
     /** @var array<int, array{type: string, start: int}> one "num" entry per list in the document */
     private array $lists = [];
+
+    private ?string $headerXml = null;
+    private ?string $footerXml = null;
+    private ?string $headerRelId = null;
+    private ?string $footerRelId = null;
+
+    /** @var list<string> */
+    private array $documentFootnotes = [];
+
+    private int $columnCount = 1;
+    private float $columnGapPt = 18.0;
 
     public function getFormat(): string { return 'docx'; }
 
@@ -97,6 +109,13 @@ class DocxRenderer extends AbstractRenderer
         $this->relationships = [];
         $this->images       = [];
         $this->lists        = [];
+        $this->headerXml    = null;
+        $this->footerXml    = null;
+        $this->headerRelId  = null;
+        $this->footerRelId  = null;
+        $this->documentFootnotes = [];
+        $this->columnCount = 1;
+        $this->columnGapPt = 18.0;
 
         $zip = new \ZipArchive();
 
@@ -105,8 +124,16 @@ class DocxRenderer extends AbstractRenderer
         }
 
         $bodyXml = $this->buildDocumentBody($document);
+        $this->prepareRunningElements($document);
 
         $zip->addFromString('word/document.xml', $this->wrapDocument($bodyXml));
+
+        if ($this->headerXml !== null) {
+            $zip->addFromString('word/header1.xml', $this->headerXml);
+        }
+        if ($this->footerXml !== null) {
+            $zip->addFromString('word/footer1.xml', $this->footerXml);
+        }
         $zip->addFromString('word/styles.xml', $this->buildStyles());
         $zip->addFromString('word/numbering.xml', $this->buildNumbering());
         $zip->addFromString('word/_rels/document.xml.rels', $this->buildDocumentRels());
@@ -154,7 +181,21 @@ class DocxRenderer extends AbstractRenderer
         $xml = '';
 
         foreach ($sections as $section) {
+            $setup = $section->getPageSetup();
+            if ($setup !== null && $setup->getColumnCount() > $this->columnCount) {
+                $this->columnCount = $setup->getColumnCount();
+                $this->columnGapPt = $setup->getColumnGap();
+            }
             $xml .= $this->renderSection($section);
+        }
+
+        if ($this->documentFootnotes !== []) {
+            $xml .= '<w:p><w:pPr><w:pBdr><w:top w:val="single" w:sz="6" w:space="1" w:color="999999"/></w:pBdr></w:pPr></w:p>';
+            foreach ($this->documentFootnotes as $i => $text) {
+                $xml .= '<w:p><w:r><w:rPr><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve">'
+                    . $this->escapeXml(sprintf('[%d] %s', $i + 1, $text))
+                    . '</w:t></w:r></w:p>';
+            }
         }
 
         return $xml;
@@ -183,9 +224,36 @@ class DocxRenderer extends AbstractRenderer
             $element instanceof Table          => $this->renderTable($element),
             $element instanceof Image          => $this->renderImageBlock($element),
             $element instanceof HorizontalRule => $this->renderHorizontalRule($element),
+            $element instanceof \Paperdoc\Document\TableOfContents => $this->renderTableOfContents($element),
             $element instanceof PageBreak      => '<w:p><w:r><w:br w:type="page"/></w:r></w:p>',
             default                            => '',
         };
+    }
+
+    /**
+     * Native Word TOC field — readers prompt to update it, which fills
+     * in real page numbers and links.
+     */
+    private function renderTableOfContents(\Paperdoc\Document\TableOfContents $toc): string
+    {
+        $xml = '';
+
+        if ($toc->getTitle() !== '') {
+            $xml .= '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t xml:space="preserve">'
+                . $this->escapeXml($toc->getTitle()) . '</w:t></w:r></w:p>';
+        }
+
+        $instr = sprintf(' TOC \o "1-%d" \h \z \u ', $toc->getMaxLevel());
+
+        $xml .= '<w:p>'
+            . '<w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r>'
+            . '<w:r><w:instrText xml:space="preserve">' . $this->escapeXml($instr) . '</w:instrText></w:r>'
+            . '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+            . '<w:r><w:t xml:space="preserve">Right-click and choose "Update Field" to build the table of contents.</w:t></w:r>'
+            . '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+            . '</w:p>';
+
+        return $xml;
     }
 
     /**
@@ -406,9 +474,7 @@ class DocxRenderer extends AbstractRenderer
                 continue;
             }
 
-            if ($element instanceof DocumentElementInterface) {
-                $xml .= $this->renderBlock($element, $quoteIndent);
-            }
+            $xml .= $this->renderBlock($element, $quoteIndent);
         }
 
         return $xml;
@@ -621,9 +687,17 @@ class DocxRenderer extends AbstractRenderer
     private function renderPlainRun(TextRun $run): string
     {
         $text = $run->getText();
+        $footnoteXml = '';
+
+        if ($run->getFootnote() !== null) {
+            $this->documentFootnotes[] = $run->getFootnote()->getText();
+            $number = count($this->documentFootnotes);
+            $footnoteXml = '<w:r><w:rPr><w:vertAlign w:val="superscript"/><w:sz w:val="16"/></w:rPr>'
+                . '<w:t>' . $this->escapeXml('[' . $number . ']') . '</w:t></w:r>';
+        }
 
         if ($text === '') {
-            return '';
+            return $footnoteXml;
         }
 
         $xml = '<w:r>';
@@ -651,13 +725,13 @@ class DocxRenderer extends AbstractRenderer
 
         $xml .= '</w:r>';
 
-        return $xml;
+        return $xml . $footnoteXml;
     }
 
     private function renderHyperlinkRun(TextRun $run, TextLink $link): string
     {
         $style = $this->hyperlinkStyle($run->getStyle());
-        $innerRun = new TextRun($run->getText(), $style);
+        $innerRun = new TextRun($run->getText(), $style, null, $run->getFootnote());
         $inner = $this->renderPlainRun($innerRun);
 
         if ($inner === '') {
@@ -729,6 +803,15 @@ class DocxRenderer extends AbstractRenderer
             $parts .= '<w:u w:val="single"/>';
         }
 
+        if ($style->isStrikethrough()) {
+            $parts .= '<w:strike/>';
+        }
+
+        if ($style->getHighlight() !== null) {
+            $parts .= '<w:shd w:val="clear" w:color="auto" w:fill="'
+                . $this->escapeXml(ltrim($style->getHighlight(), '#')) . '"/>';
+        }
+
         $color = ltrim($style->getColor(), '#');
         if ($color !== '' && strtolower($color) !== '000000') {
             $parts .= '<w:color w:val="' . $this->escapeXml($color) . '"/>';
@@ -795,11 +878,16 @@ class DocxRenderer extends AbstractRenderer
 
         if ($widths === [] || array_sum($widths) <= 0) {
             $share = (int) floor($contentTwips / $colCount);
+            /** @var array<int, int> $cols */
             $cols = array_fill(0, $colCount, $share);
         } else {
-            $widths = array_slice($widths + array_fill(0, $colCount, 0), 0, $colCount);
+            $widths = array_slice($widths + array_fill(0, $colCount, 0.0), 0, $colCount);
             $total = array_sum($widths);
-            $cols = array_map(fn ($w) => (int) floor(($w / $total) * $contentTwips), $widths);
+            /** @var array<int, int> $cols */
+            $cols = [];
+            foreach ($widths as $w) {
+                $cols[] = (int) floor(($w / $total) * $contentTwips);
+            }
         }
 
         // Distribute rounding remainder onto the last column so the row
@@ -904,10 +992,104 @@ class DocxRenderer extends AbstractRenderer
 
     private function buildSectPr(): string
     {
+        $refs = '';
+        if ($this->headerRelId !== null) {
+            $refs .= '<w:headerReference w:type="default" r:id="' . $this->headerRelId . '"/>';
+        }
+        if ($this->footerRelId !== null) {
+            $refs .= '<w:footerReference w:type="default" r:id="' . $this->footerRelId . '"/>';
+        }
+
+        $cols = '';
+        if ($this->columnCount > 1) {
+            // Word expects column spacing in twips (1 pt = 20 twips).
+            $space = (int) round($this->columnGapPt * 20);
+            $cols = '<w:cols w:num="' . $this->columnCount . '" w:space="' . $space . '"/>';
+        }
+
         return '<w:sectPr>'
+            . $refs
             . '<w:pgSz w:w="12240" w:h="15840"/>'
             . '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>'
+            . $cols
             . '</w:sectPr>';
+    }
+
+    /* =============================================================
+     | Running header / footer (document-level, v1.0.0)
+     |============================================================= */
+
+    private function prepareRunningElements(DocumentInterface $document): void
+    {
+        if (! $document instanceof \Paperdoc\Document\Document) {
+            return;
+        }
+
+        $header = $document->getHeader();
+        $footer = $document->getFooter();
+
+        if ($header !== null) {
+            $this->headerXml = $this->buildRunningPartXml($header, 'hdr', $document->getTitle());
+            $this->headerRelId = $this->registerRelationship(
+                'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header',
+                'header1.xml',
+            );
+        }
+
+        if ($footer !== null) {
+            $this->footerXml = $this->buildRunningPartXml($footer, 'ftr', $document->getTitle());
+            $this->footerRelId = $this->registerRelationship(
+                'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer',
+                'footer1.xml',
+            );
+        }
+    }
+
+    /**
+     * `{page}` / `{pages}` become native PAGE / NUMPAGES fields so
+     * Word keeps them correct; the other placeholders are resolved at
+     * generation time.
+     */
+    private function buildRunningPartXml(
+        \Paperdoc\Document\Style\RunningElement $element,
+        string $rootTag,
+        string $title,
+    ): string {
+        $resolved = strtr($element->getTemplate(), [
+            '{title}'    => $title,
+            '{date}'     => date('Y-m-d'),
+            '{datetime}' => date('Y-m-d H:i'),
+        ]);
+
+        $rPr = $this->renderRunProperties($element->getStyle());
+
+        $runs = '';
+        $tokens = preg_split('/(\{page\}|\{pages\})/', $resolved, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY) ?: [];
+
+        foreach ($tokens as $token) {
+            if ($token === '{page}' || $token === '{pages}') {
+                $instr = $token === '{page}' ? 'PAGE' : 'NUMPAGES';
+                $runs .= '<w:r>' . $rPr . '<w:fldChar w:fldCharType="begin"/></w:r>'
+                    . '<w:r>' . $rPr . '<w:instrText xml:space="preserve"> ' . $instr . ' </w:instrText></w:r>'
+                    . '<w:r>' . $rPr . '<w:fldChar w:fldCharType="separate"/></w:r>'
+                    . '<w:r>' . $rPr . '<w:t>1</w:t></w:r>'
+                    . '<w:r>' . $rPr . '<w:fldChar w:fldCharType="end"/></w:r>';
+            } else {
+                $runs .= '<w:r>' . $rPr . '<w:t xml:space="preserve">' . $this->escapeXml($token) . '</w:t></w:r>';
+            }
+        }
+
+        $jc = match ($element->getAlignment()->value) {
+            'center'  => 'center',
+            'right'   => 'right',
+            'justify' => 'both',
+            default   => 'left',
+        };
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
+            . '<w:' . $rootTag . ' xmlns:w="' . self::NS_W . '" xmlns:r="' . self::NS_R . '">'
+            . '<w:p><w:pPr><w:jc w:val="' . $jc . '"/></w:pPr>' . $runs . '</w:p>'
+            . '</w:' . $rootTag . '>';
     }
 
     private function buildStyles(): string
@@ -1108,6 +1290,13 @@ class DocxRenderer extends AbstractRenderer
         $xml .= '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>';
         $xml .= '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>';
         $xml .= '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>';
+
+        if ($this->headerXml !== null) {
+            $xml .= '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>';
+        }
+        if ($this->footerXml !== null) {
+            $xml .= '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>';
+        }
         $xml .= '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>';
         $xml .= '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>';
         $xml .= '</Types>';
@@ -1132,7 +1321,7 @@ class DocxRenderer extends AbstractRenderer
         $title       = $this->escapeXml($document->getTitle());
         $author      = $this->escapeXml($properties instanceof Metadata && $properties->getAuthor() !== ''
             ? $properties->getAuthor()
-            : ($document->getMetadata()['author'] ?? 'Paperdoc'));
+            : Cast::asString($document->getMetadata()['author'] ?? null, 'Paperdoc'));
         $subject     = $this->escapeXml($properties?->getSubject() ?? '');
         $description = $this->escapeXml($properties?->getDescription() ?? '');
         $keywords    = $this->escapeXml($properties?->getKeywords() ?? '');
@@ -1202,7 +1391,7 @@ class DocxRenderer extends AbstractRenderer
     {
         if (function_exists('mime_content_type')) {
             $mime = @mime_content_type($path);
-            if ($mime !== false && $mime !== null) {
+            if ($mime !== false) {
                 return $mime;
             }
         }

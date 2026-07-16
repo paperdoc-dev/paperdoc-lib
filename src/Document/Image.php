@@ -7,7 +7,7 @@ namespace Paperdoc\Document;
 use Paperdoc\Contracts\BlockElementInterface;
 use Paperdoc\Support\ThumbnailGenerator;
 
-class Image implements BlockElementInterface, \JsonSerializable
+final class Image implements BlockElementInterface, \JsonSerializable
 {
     private ?string $data = null;
 

@@ -1,0 +1,83 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$autoload = __DIR__ . '/../vendor/autoload.php';
+
+if (! file_exists($autoload)) {
+    fwrite(STDERR, "Autoloader not found. Run composer install first.\n");
+    exit(1);
+}
+
+require $autoload;
+
+use Paperdoc\Enum\Format;
+use Paperdoc\Support\DocumentManager;
+
+/**
+ * @param string[] $argv
+ */
+function paperdoc_main(array $argv): int
+{
+    array_shift($argv);
+    $command = $argv[0] ?? null;
+
+    if ($command === null || in_array($command, ['-h', '--help', 'help'], true)) {
+        paperdoc_print_help();
+
+        return 0;
+    }
+
+    if ($command !== 'convert') {
+        fwrite(STDERR, sprintf("Unknown command \"%s\".\n\n", $command));
+        paperdoc_print_help();
+
+        return 1;
+    }
+
+    $source = $argv[1] ?? null;
+    $target = $argv[2] ?? null;
+
+    if (! is_string($source) || ! is_string($target) || $source === '' || $target === '') {
+        fwrite(STDERR, "Usage: paperdoc convert <input> <output>\n");
+
+        return 1;
+    }
+
+    $extension = pathinfo($target, PATHINFO_EXTENSION);
+
+    if (! is_string($extension) || $extension === '') {
+        fwrite(STDERR, "Unable to infer output format from target filename.\n");
+
+        return 1;
+    }
+
+    try {
+        DocumentManager::convert($source, $target, Format::fromExtension($extension));
+        fwrite(STDOUT, sprintf("Converted %s -> %s\n", $source, $target));
+
+        return 0;
+    } catch (\Throwable $e) {
+        fwrite(STDERR, sprintf("Conversion failed: %s\n", $e->getMessage()));
+
+        return 1;
+    }
+}
+
+function paperdoc_print_help(): void
+{
+    fwrite(STDOUT, <<<TXT
+paperdoc - standalone document converter
+
+Usage:
+  paperdoc convert <input> <output>
+
+Examples:
+  paperdoc convert in.docx out.pdf
+  paperdoc convert notes.md notes.html
+
+TXT);
+}
+
+exit(paperdoc_main($argv));

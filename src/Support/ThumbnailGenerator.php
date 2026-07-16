@@ -246,9 +246,14 @@ final class ThumbnailGenerator
         [$newW, $newH] = self::fitDimensions($origW, $origH, $maxWidth, $maxHeight);
 
         $thumb = imagecreatetruecolor($newW, $newH);
+
+        if ($thumb === false) {
+            return null;
+        }
+
         imagealphablending($thumb, false);
         imagesavealpha($thumb, true);
-        imagefill($thumb, 0, 0, imagecolorallocatealpha($thumb, 0, 0, 0, 127));
+        imagefill($thumb, 0, 0, self::gdColorAlpha($thumb, 0, 0, 0, 127));
         imagecopyresampled($thumb, $source, 0, 0, 0, 0, $newW, $newH, $origW, $origH);
 
         return self::gdToPng($thumb, $newW, $newH, $quality);
@@ -316,13 +321,13 @@ final class ThumbnailGenerator
         $totalChars = array_sum(array_map('mb_strlen', $paragraphs));
 
         if ($totalChars >= self::PDF_MIN_TEXT_CHARS) {
-            return self::renderStyledPreview(
-                array_map(static fn(string $p) => ['text' => $p, 'style' => 'body'], $paragraphs),
-                $maxW,
-                $maxH,
-                $quality,
-                'PDF',
-            );
+            $styled = [];
+
+            foreach ($paragraphs as $p) {
+                $styled[] = ['text' => $p, 'style' => 'body'];
+            }
+
+            return self::renderStyledPreview($styled, $maxW, $maxH, $quality, 'PDF');
         }
 
         return self::extractPdfEmbeddedImage($content, $maxW, $maxH, $quality);
@@ -396,7 +401,7 @@ final class ThumbnailGenerator
         }
 
         return array_values(array_filter(
-            preg_split('/\n{2,}/', $text),
+            preg_split('/\n{2,}/', $text) ?: [],
             static fn(string $p): bool => trim($p) !== '',
         ));
     }
@@ -618,7 +623,7 @@ final class ThumbnailGenerator
 
         $zip->close();
 
-        if ($data === null || $data === '' || $data === false) {
+        if ($data === null || $data === '') {
             return null;
         }
 
@@ -759,11 +764,14 @@ final class ThumbnailGenerator
 
             $pPr = $pNode->getElementsByTagNameNS($ns, 'pPr');
 
-            if ($pPr->length > 0) {
-                $pStyle = $pPr->item(0)->getElementsByTagNameNS($ns, 'pStyle');
+            $pPrEl = $pPr->item(0);
 
-                if ($pStyle->length > 0) {
-                    $styleVal = strtolower($pStyle->item(0)->getAttribute('w:val'));
+            if ($pPrEl instanceof \DOMElement) {
+                $pStyle = $pPrEl->getElementsByTagNameNS($ns, 'pStyle');
+                $pStyleEl = $pStyle->item(0);
+
+                if ($pStyleEl instanceof \DOMElement) {
+                    $styleVal = strtolower($pStyleEl->getAttribute('w:val'));
 
                     if (str_contains($styleVal, 'heading') || str_contains($styleVal, 'titre')) {
                         if (str_contains($styleVal, '1')) {
@@ -773,18 +781,19 @@ final class ThumbnailGenerator
                         } else {
                             $style = 'h3';
                         }
-                    } elseif (str_contains($styleVal, 'title') || str_contains($styleVal, 'title')) {
+                    } elseif (str_contains($styleVal, 'title')) {
                         $style = 'h1';
                     } elseif (str_contains($styleVal, 'subtitle') || str_contains($styleVal, 'sous')) {
                         $style = 'h2';
                     }
                 }
 
-                $rPr = $pPr->item(0)->getElementsByTagNameNS($ns, 'rPr');
+                $rPr = $pPrEl->getElementsByTagNameNS($ns, 'rPr');
+                $rPrEl = $rPr->item(0);
 
-                if ($rPr->length > 0) {
-                    $pBold = $rPr->item(0)->getElementsByTagNameNS($ns, 'b')->length > 0;
-                    $pItalic = $rPr->item(0)->getElementsByTagNameNS($ns, 'i')->length > 0;
+                if ($rPrEl instanceof \DOMElement) {
+                    $pBold = $rPrEl->getElementsByTagNameNS($ns, 'b')->length > 0;
+                    $pItalic = $rPrEl->getElementsByTagNameNS($ns, 'i')->length > 0;
                 }
             }
 
@@ -814,12 +823,16 @@ final class ThumbnailGenerator
                 $fldChar = $run->getElementsByTagNameNS($ns, 'fldChar');
 
                 if ($fldChar->length > 0) {
-                    $fldType = $fldChar->item(0)->getAttribute('w:fldCharType');
+                    $fldCharEl = $fldChar->item(0);
 
-                    if ($fldType === 'begin') {
-                        $inFieldCode = true;
-                    } elseif ($fldType === 'end') {
-                        $inFieldCode = false;
+                    if ($fldCharEl instanceof \DOMElement) {
+                        $fldType = $fldCharEl->getAttribute('w:fldCharType');
+
+                        if ($fldType === 'begin') {
+                            $inFieldCode = true;
+                        } elseif ($fldType === 'end') {
+                            $inFieldCode = false;
+                        }
                     }
 
                     continue;
@@ -835,12 +848,14 @@ final class ThumbnailGenerator
 
                 $runRPr = $run->getElementsByTagNameNS($ns, 'rPr');
 
-                if ($runRPr->length > 0) {
-                    if ($runRPr->item(0)->getElementsByTagNameNS($ns, 'b')->length > 0) {
+                $runRPrEl = $runRPr->item(0);
+
+                if ($runRPrEl instanceof \DOMElement) {
+                    if ($runRPrEl->getElementsByTagNameNS($ns, 'b')->length > 0) {
                         $runBold = true;
                     }
 
-                    if ($runRPr->item(0)->getElementsByTagNameNS($ns, 'i')->length > 0) {
+                    if ($runRPrEl->getElementsByTagNameNS($ns, 'i')->length > 0) {
                         $runItalic = true;
                     }
                 }
@@ -942,7 +957,12 @@ final class ThumbnailGenerator
             foreach ($rowNode->getElementsByTagNameNS(self::OOXML_NS_SS, 'c') as $cNode) {
                 $type = $cNode->getAttribute('t');
                 $vNodes = $cNode->getElementsByTagNameNS(self::OOXML_NS_SS, 'v');
-                $value = $vNodes->length > 0 ? $vNodes->item(0)->textContent : '';
+                $value = '';
+                $vNode = $vNodes->item(0);
+
+                if ($vNode !== null) {
+                    $value = $vNode->textContent;
+                }
 
                 if ($type === 's' && isset($sharedStrings[(int) $value])) {
                     $value = $sharedStrings[(int) $value];
@@ -1128,8 +1148,8 @@ final class ThumbnailGenerator
         $maxY = $h - self::PREVIEW_PADDING;
 
         foreach ($paragraphs as $para) {
-            $text = $para['text'] ?? '';
-            $styleKey = $para['style'] ?? 'body';
+            $text = $para['text'];
+            $styleKey = $para['style'];
             $ps = $styles[$styleKey] ?? $styles['body'];
 
             if ($y + $ps['lineH'] > $maxY) {
@@ -1182,19 +1202,19 @@ final class ThumbnailGenerator
             return null;
         }
 
-        $content = preg_replace('/^\xEF\xBB\xBF/', '', $content);
-        $lines = preg_split('/\r\n|\r|\n/', $content, self::GRID_MAX_ROWS + 1);
+        $content = preg_replace('/^\xEF\xBB\xBF/', '', $content) ?? $content;
+        $lines = preg_split('/\r\n|\r|\n/', $content, self::GRID_MAX_ROWS + 1) ?: [];
         $rows = [];
         $maxCols = 0;
 
         foreach ($lines as $line) {
             $cells = str_getcsv($line, $delimiter);
 
-            if ($cells === [] || (count($cells) === 1 && trim($cells[0] ?? '') === '')) {
+            if (count($cells) === 1 && trim($cells[0] ?? '') === '') {
                 continue;
             }
 
-            $rows[] = array_map('trim', $cells);
+            $rows[] = array_map(static fn(?string $c): string => trim((string) $c), $cells);
             $maxCols = max($maxCols, count($cells));
         }
 
@@ -1273,16 +1293,18 @@ final class ThumbnailGenerator
      */
     private static function createPreviewCanvas(int $w, int $h, string $badge): ?\GdImage
     {
+        $w = max(1, $w);
+        $h = max(1, $h);
         $img = imagecreatetruecolor($w, $h);
 
         if ($img === false) {
             return null;
         }
 
-        $bg = imagecolorallocate($img, 255, 255, 255);
-        $border = imagecolorallocate($img, 210, 210, 210);
-        $headerBg = imagecolorallocate($img, 245, 245, 245);
-        $muted = imagecolorallocate($img, 140, 140, 140);
+        $bg = self::gdColor($img, 255, 255, 255);
+        $border = self::gdColor($img, 210, 210, 210);
+        $headerBg = self::gdColor($img, 245, 245, 245);
+        $muted = self::gdColor($img, 140, 140, 140);
 
         imagefill($img, 0, 0, $bg);
         imagerectangle($img, 0, 0, $w - 1, $h - 1, $border);
@@ -1304,10 +1326,43 @@ final class ThumbnailGenerator
     private static function previewColors(\GdImage $img): array
     {
         return [
-            'fg' => imagecolorallocate($img, 40, 40, 40),
-            'muted' => imagecolorallocate($img, 140, 140, 140),
-            'border' => imagecolorallocate($img, 210, 210, 210),
+            'fg' => self::gdColor($img, 40, 40, 40),
+            'muted' => self::gdColor($img, 140, 140, 140),
+            'border' => self::gdColor($img, 210, 210, 210),
         ];
+    }
+
+    /**
+     * @param  int<0, 255>  $r
+     * @param  int<0, 255>  $g
+     * @param  int<0, 255>  $b
+     */
+    private static function gdColor(\GdImage $img, int $r, int $g, int $b): int
+    {
+        $c = imagecolorallocate($img, $r, $g, $b);
+
+        if ($c === false) {
+            throw new \RuntimeException('GD color allocation failed.');
+        }
+
+        return $c;
+    }
+
+    /**
+     * @param  int<0, 255>  $r
+     * @param  int<0, 255>  $g
+     * @param  int<0, 255>  $b
+     * @param  int<0, 127>  $alpha
+     */
+    private static function gdColorAlpha(\GdImage $img, int $r, int $g, int $b, int $alpha): int
+    {
+        $c = imagecolorallocatealpha($img, $r, $g, $b, $alpha);
+
+        if ($c === false) {
+            throw new \RuntimeException('GD color allocation failed.');
+        }
+
+        return $c;
     }
 
     /**
@@ -1321,7 +1376,7 @@ final class ThumbnailGenerator
         imagepng($img, null, min(9, (int) round((100 - $quality) / 11)));
         $data = ob_get_clean();
 
-        if ($data === false || $data === '') {
+        if ($data === '') {
             return null;
         }
 
@@ -1339,7 +1394,7 @@ final class ThumbnailGenerator
         imagepng($img, null, min(9, (int) round((100 - $quality) / 11)));
         $data = ob_get_clean();
 
-        if ($data === false || $data === '') {
+        if ($data === '') {
             return null;
         }
 
@@ -1379,44 +1434,13 @@ final class ThumbnailGenerator
     }
 
     /**
-     * Extract text from XML nodes grouped by a container element.
-     *
-     * For DOCX: container = `w:p`, text = `w:t` → paragraphs.
-     *
-     * @return string[]
-     */
-    private static function extractXmlTextNodes(string $xml, string $ns, string $containerTag, string $textTag): array
-    {
-        $dom = new \DOMDocument();
-        @$dom->loadXML($xml);
-
-        $result = [];
-
-        foreach ($dom->getElementsByTagNameNS($ns, $containerTag) as $container) {
-            $text = '';
-
-            foreach ($container->getElementsByTagNameNS($ns, $textTag) as $tNode) {
-                $text .= $tNode->textContent;
-            }
-
-            $trimmed = trim($text);
-
-            if ($trimmed !== '') {
-                $result[] = $trimmed;
-            }
-        }
-
-        return $result;
-    }
-
-    /**
      * Convert an Excel cell reference (e.g. "B3") to a 0-based column index.
      */
     private static function columnIndex(string $ref): int
     {
-        $letters = preg_replace('/[^A-Z]/i', '', strtoupper($ref));
+        $letters = preg_replace('/[^A-Z]/i', '', strtoupper($ref)) ?? '';
 
-        if ($letters === '' || $letters === null) {
+        if ($letters === '') {
             return 0;
         }
 
@@ -1460,7 +1484,7 @@ final class ThumbnailGenerator
      |============================================================= */
 
     /**
-     * @return array{int, int}
+     * @return array{int<1, max>, int<1, max>}
      */
     private static function fitDimensions(int $origW, int $origH, int $maxW, int $maxH): array
     {
@@ -1551,6 +1575,7 @@ final class ThumbnailGenerator
         );
 
         foreach ($iterator as $item) {
+            /** @var \SplFileInfo $item */
             $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
         }
 

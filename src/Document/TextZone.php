@@ -22,7 +22,7 @@ use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
  * titres, listes…). Le rendu reste auto-géré : les renderers wrap le
  * texte dans la largeur de la zone.
  */
-class TextZone implements BlockElementInterface, \JsonSerializable
+final class TextZone implements BlockElementInterface, \JsonSerializable
 {
     public const OVERFLOW_CLIP     = 'clip';
     public const OVERFLOW_ELLIPSIS = 'ellipsis';

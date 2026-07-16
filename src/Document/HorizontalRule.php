@@ -32,7 +32,7 @@ use Paperdoc\Enum\Alignment;
  *  - `marginTop` / `marginBottom` : extra vertical breathing room
  *                  in points, applied above/below the rule.
  */
-class HorizontalRule implements BlockElementInterface, \JsonSerializable
+final class HorizontalRule implements BlockElementInterface, \JsonSerializable
 {
     private string|float $width      = '100%';
     private float        $thickness  = 0.5;

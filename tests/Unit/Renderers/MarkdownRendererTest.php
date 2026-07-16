@@ -4,21 +4,19 @@ declare(strict_types=1);
 
 namespace Paperdoc\Tests\Unit\Renderers;
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\RendererInterface;
-use Paperdoc\Document\{Document, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\{Document, Footnote, HorizontalRule, Image, PageBreak, Paragraph, Section, Table, TextRun};
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Document\Link\{TextLink};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Renderers\MarkdownRenderer;
 
+#[Group('Markdown')]
 class MarkdownRendererTest extends TestCase
 {
     private string $tmpDir;
-
-    /**
-     * @group Markdown
-     */
 
     protected function setUp(): void
     {
@@ -195,6 +193,29 @@ class MarkdownRendererTest extends TestCase
         $this->assertStringContainsString('---', $markdown);
     }
 
+    public function test_renders_bullet_and_numbered_lists(): void
+    {
+        $doc = Document::make('markdown');
+        $section = Section::make('lists');
+
+        $bulletList = $section->addBulletList();
+        $bulletList->addText('Point A');
+        $bulletList->addText('Point B');
+
+        $orderedList = $section->addOrderedList();
+        $orderedList->addText('Étape 1');
+        $orderedList->addText('Étape 2');
+
+        $doc->addSection($section);
+
+        $markdown = (new MarkdownRenderer())->render($doc);
+
+        $this->assertStringContainsString('- Point A', $markdown);
+        $this->assertStringContainsString('- Point B', $markdown);
+        $this->assertStringContainsString('1. Étape 1', $markdown);
+        $this->assertStringContainsString('2. Étape 2', $markdown);
+    }
+
 
     public function test_creates_directory_if_needed(): void
     {
@@ -230,5 +251,20 @@ class MarkdownRendererTest extends TestCase
         $this->assertStringContainsString("Above\n", $md);
         $this->assertStringContainsString("---\n", $md);
         $this->assertStringContainsString("Below\n", $md);
+    }
+
+    public function test_renders_section_footnotes(): void
+    {
+        $doc = Document::make('markdown');
+        $section = Section::make('notes');
+        $paragraph = Paragraph::make();
+        $paragraph->addRun(TextRun::make('Hello', null, null, Footnote::make('Footnote text')));
+        $section->addElement($paragraph);
+        $doc->addSection($section);
+
+        $md = (new MarkdownRenderer())->render($doc);
+
+        $this->assertStringContainsString('Hello[^1]', $md);
+        $this->assertStringContainsString('[^1]: Footnote text', $md);
     }
 }

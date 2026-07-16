@@ -233,4 +233,29 @@ class DocxRendererTest extends TestCase
         $this->assertStringContainsString('<w:bottom', $xml);
         $this->assertStringContainsString('w:color="999999"', $xml);
     }
+
+    public function test_renders_footnotes_and_columns(): void
+    {
+        $doc = Document::make('docx');
+        $section = Section::make('s')
+            ->setColumnCount(2)
+            ->setColumnGap(12.0);
+        $paragraph = Paragraph::make();
+        $paragraph->addRun(TextRun::make('Hello', null, null, \Paperdoc\Document\Footnote::make('Note body')));
+        $section->addElement($paragraph);
+        $doc->addSection($section);
+
+        (new DocxRenderer())->save($doc, $this->tmp);
+
+        $zip = new \ZipArchive();
+        $this->assertTrue($zip->open($this->tmp) === true);
+        $xml = $zip->getFromName('word/document.xml');
+        $zip->close();
+
+        $this->assertStringContainsString('w:vertAlign w:val="superscript"', $xml);
+        $this->assertStringContainsString('[1]', $xml);
+        $this->assertStringContainsString('[1] Note body', $xml);
+        $this->assertStringContainsString('<w:cols w:num="2"', $xml);
+        $this->assertStringContainsString('w:space="240"', $xml); // 12pt * 20 twips
+    }
 }

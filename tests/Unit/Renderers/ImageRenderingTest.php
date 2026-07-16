@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Paperdoc\Tests\Unit\Renderers;
 
 use PHPUnit\Framework\TestCase;
+use Paperdoc\Tests\Support\InflatesPdfStreams;
 use Paperdoc\Document\{Document, Image};
 use Paperdoc\Renderers\{DocxRenderer, HtmlRenderer, MarkdownRenderer, PdfRenderer};
 
@@ -20,6 +21,7 @@ use Paperdoc\Renderers\{DocxRenderer, HtmlRenderer, MarkdownRenderer, PdfRendere
  */
 class ImageRenderingTest extends TestCase
 {
+    use InflatesPdfStreams;
     private const FIXTURE_PNG = __DIR__ . '/../../Fixtures/Images/paperdoc-logo.png';
     private const FIXTURE_GIF = __DIR__ . '/../../Fixtures/Images/dot.gif';
 
@@ -161,7 +163,7 @@ class ImageRenderingTest extends TestCase
         $doc = Document::make('pdf');
         $doc->openSection()->addElement(Image::make(self::FIXTURE_PNG, 64, 32, 'Logo'));
 
-        $pdf = (new PdfRenderer())->render($doc);
+        $pdf = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertStringStartsWith('%PDF-1.4', $pdf);
         $this->assertStringContainsString('/Subtype /Image', $pdf);
@@ -179,7 +181,7 @@ class ImageRenderingTest extends TestCase
             Image::fromData($bytes, 'image/png', 64, 32, 'Embedded')
         );
 
-        $pdf = (new PdfRenderer())->render($doc);
+        $pdf = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertStringContainsString('/Subtype /Image', $pdf);
         $this->assertMatchesRegularExpression('/\/Im1\s+Do/', $pdf);
@@ -197,7 +199,7 @@ class ImageRenderingTest extends TestCase
         $doc = Document::make('pdf');
         $doc->openSection()->addElement(Image::make(self::FIXTURE_GIF, 8, 8, 'Dot'));
 
-        $pdf = (new PdfRenderer())->render($doc);
+        $pdf = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         // GIF must be re-encoded to JPEG (DCT) — we never emit raw GIF in PDF.
         $this->assertStringContainsString('/Subtype /Image', $pdf);
@@ -212,7 +214,7 @@ class ImageRenderingTest extends TestCase
         $section->addElement(Image::make('/does/not/exist.png', 10, 10, 'missing'));
         $section->addParagraph('After');
 
-        $pdf = (new PdfRenderer())->render($doc);
+        $pdf = $this->inflatePdf((new PdfRenderer())->render($doc));
 
         $this->assertStringStartsWith('%PDF-1.4', $pdf);
         $this->assertStringNotContainsString('/Subtype /Image', $pdf);

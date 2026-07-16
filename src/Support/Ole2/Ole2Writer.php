@@ -15,9 +15,8 @@ class Ole2Writer
 {
     private const MAGIC = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
 
-    private const SECTOR_SIZE       = 512;
+    private const SECTOR_SIZE        = 512;
     private const ENTRIES_PER_SECTOR = 128; // 512 / 4
-    private const DIR_ENTRY_SIZE     = 128;
     private const DIRS_PER_SECTOR    = 4;   // 512 / 128
 
     private const ENDOFCHAIN = 0xFFFFFFFE;
@@ -130,6 +129,9 @@ class Ole2Writer
      | Header (512 bytes)
      |============================================================= */
 
+    /**
+     * @param array{streamStarts: int[], dirStart: int, fatStart: int, numDirSectors: int, numFatSectors: int, fat: int[]} $layout
+     */
     private function buildHeader(array $layout): string
     {
         $h  = self::MAGIC;
@@ -162,6 +164,9 @@ class Ole2Writer
      | Directory
      |============================================================= */
 
+    /**
+     * @param array{streamStarts: int[], dirStart: int, fatStart: int, numDirSectors: int, numFatSectors: int, fat: int[]} $layout
+     */
     private function buildDirectoryData(array $layout): string
     {
         $data = '';

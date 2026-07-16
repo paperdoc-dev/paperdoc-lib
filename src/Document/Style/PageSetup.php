@@ -15,7 +15,7 @@ use Paperdoc\Enum\PageSize;
  * ce qui correspond aussi à l'unité par défaut utilisée par les renderers
  * HTML (`pt`).
  */
-class PageSetup implements \JsonSerializable
+final class PageSetup implements \JsonSerializable
 {
     public const ORIENTATION_PORTRAIT  = 'portrait';
     public const ORIENTATION_LANDSCAPE = 'landscape';
@@ -59,6 +59,12 @@ class PageSetup implements \JsonSerializable
     private string $orientation = self::ORIENTATION_PORTRAIT;
 
     private ?PageSize $size = null;
+
+    /** Number of text columns on the page content area (1 = single column). */
+    private int $columnCount = 1;
+
+    /** Gap between columns, in points. */
+    private float $columnGap = 18.0;
 
     public function __construct(float $width = 595.28, float $height = 841.89)
     {
@@ -270,6 +276,48 @@ class PageSetup implements \JsonSerializable
     }
 
     /* -------------------------------------------------------------
+     | Columns
+     |------------------------------------------------------------- */
+
+    public function setColumnCount(int $count): static
+    {
+        $this->columnCount = max(1, $count);
+
+        return $this;
+    }
+
+    public function getColumnCount(): int
+    {
+        return $this->columnCount;
+    }
+
+    public function setColumnGap(float $gap): static
+    {
+        $this->columnGap = max(0.0, $gap);
+
+        return $this;
+    }
+
+    public function getColumnGap(): float
+    {
+        return $this->columnGap;
+    }
+
+    /**
+     * Width of a single text column inside the content area.
+     */
+    public function getColumnWidth(): float
+    {
+        if ($this->columnCount <= 1) {
+            return $this->getContentWidth();
+        }
+
+        $gaps = ($this->columnCount - 1) * $this->columnGap;
+
+        return max(0.0, ($this->getContentWidth() - $gaps) / $this->columnCount);
+    }
+
+    /* -------------------------------------------------------------
      | JsonSerializable
      |------------------------------------------------------------- */
 
@@ -286,6 +334,8 @@ class PageSetup implements \JsonSerializable
                 'bottom' => $this->paddingBottom,
                 'left'   => $this->paddingLeft,
             ],
+            'columnCount'        => $this->columnCount,
+            'columnGap'          => $this->columnGap,
             'backgroundColor'    => $this->backgroundColor,
             'backgroundImage'    => $this->backgroundImage,
             'backgroundSize'     => $this->backgroundSize,

@@ -307,7 +307,7 @@ class TableContentRenderingTest extends TestCase
         $this->assertStringContainsString('Strong', $stream);
     }
 
-    public function test_pdf_cell_with_image_surfaces_alt_text(): void
+    public function test_pdf_cell_image_is_drawn_as_xobject(): void
     {
         if (! file_exists(self::FIXTURE_PNG)) {
             $this->markTestSkipped('PNG fixture missing');
@@ -319,10 +319,26 @@ class TableContentRenderingTest extends TestCase
         $bytes = (new PdfRenderer())->render($doc);
         $stream = $this->decompressPdfStreams($bytes);
 
-        // Alt text fallback for images inside cells is current PDF
-        // behaviour — drawing inline images inside cells is tracked as
-        // a future enhancement.
-        $this->assertStringContainsString('Paperdoc logo', $stream);
+        // Since v1.0.0, cell images are painted natively as XObjects.
+        $this->assertMatchesRegularExpression('/\/Im\d+ Do/', $stream);
+        $this->assertStringContainsString('/Subtype /Image', $bytes);
+    }
+
+    public function test_pdf_missing_cell_image_falls_back_to_alt_text(): void
+    {
+        $cell = (new TableCell())->addElement(
+            Image::make('/does/not/exist.png', 32, 16, 'Logo introuvable')
+        );
+        $table = (new Table())->addRow((new TableRow())->addCell($cell));
+
+        $doc = Document::make('pdf', 'pdf-tbl-missing-img');
+        $doc->openSection()->addElement($table);
+
+        $bytes = (new PdfRenderer())->render($doc);
+        $stream = $this->decompressPdfStreams($bytes);
+
+        $this->assertStringContainsString('Logo introuvable', $stream);
+        $this->assertStringNotContainsString('/Subtype /Image', $bytes);
     }
 
     /* =============================================================
@@ -354,7 +370,7 @@ class TableContentRenderingTest extends TestCase
     private function decompressPdfStreams(string $pdf): string
     {
         $out = '';
-        if (! preg_match_all('/stream\r?\n(.*?)\r?\nendstream/s', $pdf, $matches)) {
+        if (! preg_match_all('/stream\r?\n(.*?)\r?\n?endstream/s', $pdf, $matches)) {
             return $pdf;
         }
 

@@ -14,7 +14,7 @@ use Paperdoc\Contracts\BlockElementInterface;
  *  - HTML: `<pre><code class="language-…">…</code></pre>`
  *  - DOCX: monospaced paragraph with preserved whitespace
  */
-class CodeBlock implements BlockElementInterface, \JsonSerializable
+final class CodeBlock implements BlockElementInterface, \JsonSerializable
 {
     public function __construct(
         private string $code = '',

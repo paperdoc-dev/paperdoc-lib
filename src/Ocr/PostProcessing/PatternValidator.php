@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Ocr\PostProcessing;
 
+use Paperdoc\Support\Cast;
+
 /**
  * Layer 4 — Regex-based entity recognition, validation and normalisation.
  *
@@ -17,17 +19,26 @@ class PatternValidator implements PostProcessorInterface
     /**
      * Each rule: ['name' => string, 'pattern' => regex, 'normalizer' => ?callable, 'type' => string]
      *
-     * @var array<int, array{name: string, pattern: string, normalizer: ?callable, type: string}>
+     * @var list<array{name: string, pattern: string, normalizer: (callable(array<int|string, string>): string)|null, type: string}>
      */
     private array $rules;
 
     /**
-     * @param array<int, array{name: string, pattern: string, normalizer?: callable, type: string}> $customRules
+     * @param list<array{name: string, pattern: string, normalizer?: callable(array<int|string, string>): string, type: string}> $customRules
      *        Additional rules merged after the built-in set
      */
     public function __construct(array $customRules = [])
     {
-        $this->rules = array_merge(self::builtInRules(), $customRules);
+        $merged = array_merge(self::builtInRules(), $customRules);
+        $this->rules = [];
+        foreach ($merged as $rule) {
+            $this->rules[] = [
+                'name'       => $rule['name'],
+                'pattern'    => $rule['pattern'],
+                'type'       => $rule['type'],
+                'normalizer' => $rule['normalizer'] ?? null,
+            ];
+        }
     }
 
     public function getName(): string
@@ -35,31 +46,43 @@ class PatternValidator implements PostProcessorInterface
         return 'pattern_validator';
     }
 
+    /**
+     * @param array<string, mixed> $context
+     */
     public function process(string $text, array &$context): string
     {
         $context['entities'] ??= [];
 
         foreach ($this->rules as $rule) {
             $pattern = $rule['pattern'];
-            $normalizer = $rule['normalizer'] ?? null;
+            $normalizer = $rule['normalizer'];
             $type = $rule['type'];
 
-            $text = preg_replace_callback(
-                $pattern,
-                function (array $m) use (&$context, $type, $normalizer) {
-                    $raw = $m[0];
-                    $normalized = $normalizer !== null ? $normalizer($m) : $raw;
+            $text = Cast::asString(
+                preg_replace_callback(
+                    $pattern,
+                    function (array $m) use (&$context, $type, $normalizer): string {
+                        $raw = Cast::asString($m[0] ?? null);
+                        $matches = [];
+                        foreach ($m as $key => $value) {
+                            $matches[$key] = Cast::asString($value);
+                        }
+                        $normalized = $normalizer !== null ? $normalizer($matches) : $raw;
 
-                    $context['entities'][] = [
-                        'type'  => $type,
-                        'raw'   => $raw,
-                        'value' => $normalized,
-                    ];
+                        $entities = Cast::asList($context['entities'] ?? null);
+                        $entities[] = [
+                            'type'  => $type,
+                            'raw'   => $raw,
+                            'value' => $normalized,
+                        ];
+                        $context['entities'] = $entities;
 
-                    return $normalized;
-                },
+                        return $normalized;
+                    },
+                    $text,
+                ),
                 $text,
-            ) ?? $text;
+            );
         }
 
         return $text;
@@ -69,7 +92,9 @@ class PatternValidator implements PostProcessorInterface
     //  Built-in rules
     // ──────────────────────────────────────────────────────────────
 
-    /** @return array<int, array{name: string, pattern: string, normalizer: ?callable, type: string}> */
+    /**
+     * @return list<array{name: string, pattern: string, normalizer: (callable(array<int|string, string>): string)|null, type: string}>
+     */
     public static function builtInRules(): array
     {
         return [
@@ -78,12 +103,18 @@ class PatternValidator implements PostProcessorInterface
                 'name'    => 'date_dmy_slash',
                 'pattern' => '/\b(\d{1,2})\s*[\/\-\.]\s*(\d{1,2})\s*[\/\-\.]\s*(\d{2,4})\b/',
                 'type'    => 'date',
-                'normalizer' => fn (array $m) => sprintf(
-                    '%02d/%02d/%s',
-                    (int) $m[1],
-                    (int) $m[2],
-                    strlen($m[3]) === 2 ? '20' . $m[3] : $m[3],
-                ),
+                'normalizer' => function (array $m): string {
+                    $day = Cast::asInt($m[1] ?? null);
+                    $month = Cast::asInt($m[2] ?? null);
+                    $year = Cast::asString($m[3] ?? null);
+
+                    return sprintf(
+                        '%02d/%02d/%s',
+                        $day,
+                        $month,
+                        strlen($year) === 2 ? '20' . $year : $year,
+                    );
+                },
             ],
 
             // ── Phone numbers ────────────────────────────────────
@@ -91,7 +122,9 @@ class PatternValidator implements PostProcessorInterface
                 'name'    => 'phone_international',
                 'pattern' => '/(?:\+\d{1,3}[\s\-]?)?\(?\d{2,4}\)?[\s\-]?\d{2,3}[\s\-]?\d{2,3}[\s\-]?\d{2,4}\b/',
                 'type'    => 'phone',
-                'normalizer' => fn (array $m) => preg_replace('/\s+/', ' ', $m[0]),
+                'normalizer' => fn (array $m): string => Cast::asString(
+                    preg_replace('/\s+/', ' ', Cast::asString($m[0] ?? null)),
+                ),
             ],
 
             // ── Email addresses ──────────────────────────────────
@@ -123,7 +156,9 @@ class PatternValidator implements PostProcessorInterface
                 'name'    => 'iban',
                 'pattern' => '/\b[A-Z]{2}\d{2}[\s\-]?[\dA-Z]{4}[\s\-]?[\dA-Z]{4}[\s\-]?[\dA-Z]{4}(?:[\s\-]?[\dA-Z]{1,4}){0,5}\b/',
                 'type'    => 'iban',
-                'normalizer' => fn (array $m) => strtoupper(preg_replace('/[\s\-]/', '', $m[0])),
+                'normalizer' => fn (array $m): string => strtoupper(Cast::asString(
+                    preg_replace('/[\s\-]/', '', Cast::asString($m[0] ?? null)),
+                )),
             ],
 
             // ── SIRET / SIREN ────────────────────────────────────
@@ -131,7 +166,9 @@ class PatternValidator implements PostProcessorInterface
                 'name'    => 'siret',
                 'pattern' => '/\b\d{3}[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{2}\b/',
                 'type'    => 'siret',
-                'normalizer' => fn (array $m) => preg_replace('/[\s\-]/', ' ', $m[0]),
+                'normalizer' => fn (array $m): string => Cast::asString(
+                    preg_replace('/[\s\-]/', ' ', Cast::asString($m[0] ?? null)),
+                ),
             ],
 
             // ── Reference / document numbers ─────────────────────
@@ -147,7 +184,7 @@ class PatternValidator implements PostProcessorInterface
                 'name'    => 'spaced_number',
                 'pattern' => '/\b(\d{1,3}(?:\s\d{3}){1,4})\b/',
                 'type'    => 'number',
-                'normalizer' => fn (array $m) => str_replace(' ', ' ', $m[0]),
+                'normalizer' => fn (array $m): string => str_replace(' ', ' ', Cast::asString($m[0] ?? null)),
             ],
         ];
     }

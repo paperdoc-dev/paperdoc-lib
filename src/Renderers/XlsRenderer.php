@@ -6,6 +6,7 @@ namespace Paperdoc\Renderers;
 
 use Paperdoc\Contracts\DocumentInterface;
 use Paperdoc\Document\{Paragraph, Table};
+use Paperdoc\Support\Cast;
 use Paperdoc\Support\Ole2\Ole2Writer;
 
 /**
@@ -105,7 +106,7 @@ class XlsRenderer extends AbstractRenderer
 
             if (! empty($rows)) {
                 $name = $section->getName() ?: 'Sheet' . (count($sheets) + 1);
-                $name = substr(preg_replace('/[\\\\\/\?\*\[\]:]+/', '_', $name), 0, 31);
+                $name = substr(Cast::asString(preg_replace('/[\\\\\/\?\*\[\]:]+/', '_', $name), $name), 0, 31);
                 $sheets[] = ['name' => $name, 'rows' => $rows];
             }
         }
@@ -124,11 +125,14 @@ class XlsRenderer extends AbstractRenderer
     /**
      * Build SST index map: unique string → SST index.
      *
-     * @return array{strings: string[], index: array<string, int>}
+     * @param array<int, array{name: string, rows: array<int, array<int, string>>}> $sheets
+     * @return array{strings: list<string>, index: array<string, int>}
      */
     private function buildSst(array $sheets): array
     {
+        /** @var list<string> $strings */
         $strings = [];
+        /** @var array<string, int> $index */
         $index   = [];
 
         foreach ($sheets as $sheet) {
@@ -149,6 +153,10 @@ class XlsRenderer extends AbstractRenderer
      | Workbook Globals
      |============================================================= */
 
+    /**
+     * @param array<int, array{name: string, rows: array<int, array<int, string>>}> $sheets
+     * @param array{strings: list<string>, index: array<string, int>} $sst
+     */
     private function buildWorkbookGlobals(array $sheets, array $sst): string
     {
         $data = '';
@@ -258,6 +266,10 @@ class XlsRenderer extends AbstractRenderer
      | Sheet Data
      |============================================================= */
 
+    /**
+     * @param array{name: string, rows: array<int, array<int, string>>} $sheet
+     * @param array{strings: list<string>, index: array<string, int>} $sst
+     */
     private function buildSheet(array $sheet, array $sst): string
     {
         $data = '';
@@ -286,7 +298,7 @@ class XlsRenderer extends AbstractRenderer
         // Cell records
         foreach ($rows as $rowIdx => $cells) {
             foreach ($cells as $colIdx => $value) {
-                if (is_numeric($value) && $value !== '') {
+                if (is_numeric($value)) {
                     // NUMBER record
                     $data .= $this->biffRecord(self::RECORD_NUMBER,
                         pack('v', $rowIdx)

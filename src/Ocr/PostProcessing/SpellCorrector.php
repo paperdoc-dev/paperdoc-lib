@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Paperdoc\Ocr\PostProcessing;
 
+use Paperdoc\Support\Cast;
+
 /**
  * Layer 2 — Dictionary-based spell correction using Levenshtein distance.
  *
@@ -22,7 +24,7 @@ class SpellCorrector implements PostProcessorInterface
 
     private int $minWordLength;
 
-    /** Words that must never be "corrected" */
+    /** @var array<string, true> Words that must never be "corrected" */
     private array $ignore = [];
 
     /** Minimum frequency a candidate must have to be accepted */
@@ -97,7 +99,7 @@ class SpellCorrector implements PostProcessorInterface
      */
     public function trainFromText(string $text): void
     {
-        $words = preg_split('/[^\\p{L}]+/u', mb_strtolower($text));
+        $words = preg_split('/[^\\p{L}]+/u', mb_strtolower($text)) ?: [];
 
         foreach ($words as $word) {
             if (mb_strlen($word) < 2) {
@@ -125,7 +127,7 @@ class SpellCorrector implements PostProcessorInterface
         $this->dictionary[mb_strtolower($word)] = $frequency;
     }
 
-    /** @param string[] $words */
+    /** @param list<string> $words */
     public function addIgnoreList(array $words): void
     {
         foreach ($words as $w) {
@@ -160,9 +162,12 @@ class SpellCorrector implements PostProcessorInterface
     //  Processing
     // ──────────────────────────────────────────────────────────────
 
+    /**
+     * @param array<string, mixed> $context
+     */
     public function process(string $text, array &$context): string
     {
-        if (empty($this->dictionary)) {
+        if ($this->dictionary === []) {
             return $text;
         }
 
@@ -178,19 +183,23 @@ class SpellCorrector implements PostProcessorInterface
         return implode("\n", $result);
     }
 
+    /**
+     * @param array<string, mixed> $context
+     */
     private function processLine(string $line, array &$context): string
     {
-        $tokens = preg_split('/(\s+)/u', $line, -1, PREG_SPLIT_DELIM_CAPTURE);
+        $tokens = preg_split('/(\s+)/u', $line, -1, PREG_SPLIT_DELIM_CAPTURE) ?: [];
 
+        /** @var list<int> $wordIndices */
         $wordIndices = [];
         foreach ($tokens as $i => $tok) {
-            if (preg_match('/\p{L}/u', $tok)) {
+            if (preg_match('/\p{L}/u', $tok) === 1) {
                 $wordIndices[] = $i;
             }
         }
 
         foreach ($wordIndices as $pos => $i) {
-            $word = preg_replace('/[^\p{L}]/u', '', $tokens[$i]);
+            $word = Cast::asString(preg_replace('/[^\p{L}]/u', '', $tokens[$i]));
 
             if (mb_strlen($word) < $this->minWordLength) {
                 continue;
@@ -213,7 +222,9 @@ class SpellCorrector implements PostProcessorInterface
             }
 
             $corrected = self::matchCase($word, $suggestion);
-            $context['corrections'][] = ['from' => $word, 'to' => $corrected];
+            $corrections = Cast::asList($context['corrections'] ?? null);
+            $corrections[] = ['from' => $word, 'to' => $corrected];
+            $context['corrections'] = $corrections;
 
             $tokens[$i] = str_replace($word, $corrected, $tokens[$i]);
         }
@@ -221,20 +232,24 @@ class SpellCorrector implements PostProcessorInterface
         return implode('', $tokens);
     }
 
+    /**
+     * @param array<int, string> $tokens
+     * @param list<int>          $wordIndices
+     */
     private function looksLikeProperName(string $word, array $tokens, array $wordIndices, int $pos): bool
     {
-        if (! preg_match('/^\p{Lu}\p{Ll}/u', $word)) {
+        if (preg_match('/^\p{Lu}\p{Ll}/u', $word) !== 1) {
             return false;
         }
 
         $prevIdx = $pos > 0 ? $wordIndices[$pos - 1] : null;
         $nextIdx = $pos < count($wordIndices) - 1 ? $wordIndices[$pos + 1] : null;
 
-        if ($prevIdx !== null && preg_match('/^\p{Lu}/u', $tokens[$prevIdx])) {
+        if ($prevIdx !== null && preg_match('/^\p{Lu}/u', $tokens[$prevIdx]) === 1) {
             return true;
         }
 
-        if ($nextIdx !== null && preg_match('/^\p{Lu}\p{Ll}/u', $tokens[$nextIdx])) {
+        if ($nextIdx !== null && preg_match('/^\p{Lu}\p{Ll}/u', $tokens[$nextIdx]) === 1) {
             return true;
         }
 
@@ -295,7 +310,7 @@ class SpellCorrector implements PostProcessorInterface
             return mb_strtoupper($suggestion);
         }
 
-        if (preg_match('/^\\p{Lu}/u', $original)) {
+        if (preg_match('/^\\p{Lu}/u', $original) === 1) {
             return mb_strtoupper(mb_substr($suggestion, 0, 1)) . mb_substr($suggestion, 1);
         }
 

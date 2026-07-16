@@ -8,7 +8,7 @@ use Paperdoc\Contracts\StyleInterface;
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Enum\BorderStyle;
 
-class TableStyle implements StyleInterface, \JsonSerializable
+final class TableStyle implements StyleInterface, \JsonSerializable
 {
     private Alignment   $alignment   = Alignment::LEFT;
     private BorderStyle $borderStyle = BorderStyle::SOLID;

@@ -19,8 +19,6 @@ class XlsxParser extends AbstractParser implements ParserInterface
 {
     private const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
     private const NS_REL  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-    private const NS_DRAWING_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing';
-    private const NS_IMAGE_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
 
     /** @var string[] Shared strings table */
     private array $sharedStrings = [];
@@ -86,13 +84,10 @@ class XlsxParser extends AbstractParser implements ParserInterface
         $xpath = new \DOMXPath($dom);
         $xpath->registerNamespace('s', self::NS_MAIN);
 
-        $siNodes = $xpath->query('//s:si');
-
-        foreach ($siNodes as $si) {
+        foreach ($this->queryElements($xpath, '//s:si') as $si) {
             $text = '';
-            $tNodes = $xpath->query('.//s:t', $si);
 
-            foreach ($tNodes as $t) {
+            foreach ($this->queryElements($xpath, './/s:t', $si) as $t) {
                 $text .= $t->textContent;
             }
 
@@ -120,11 +115,9 @@ class XlsxParser extends AbstractParser implements ParserInterface
         $xpath->registerNamespace('s', self::NS_MAIN);
         $xpath->registerNamespace('r', self::NS_REL);
 
-        $sheetNodes = $xpath->query('//s:sheets/s:sheet');
         $rels = $this->loadRelationships($zip, 'xl/_rels/workbook.xml.rels');
 
-        foreach ($sheetNodes as $i => $node) {
-            /** @var \DOMElement $node */
+        foreach ($this->queryElements($xpath, '//s:sheets/s:sheet') as $i => $node) {
             $name = $node->getAttribute('name') ?: 'Sheet' . ($i + 1);
             $rId = $node->getAttributeNS(self::NS_REL, 'id');
 
@@ -170,9 +163,9 @@ class XlsxParser extends AbstractParser implements ParserInterface
         $xpath = new \DOMXPath($dom);
         $xpath->registerNamespace('s', self::NS_MAIN);
 
-        $rows = $xpath->query('//s:sheetData/s:row');
+        $rows = $this->queryElements($xpath, '//s:sheetData/s:row');
 
-        if ($rows->length === 0) {
+        if ($rows === []) {
             return null;
         }
 
@@ -182,12 +175,10 @@ class XlsxParser extends AbstractParser implements ParserInterface
         $maxCol = 0;
 
         foreach ($rows as $rowNode) {
-            /** @var \DOMElement $rowNode */
-            $cells = $xpath->query('s:c', $rowNode);
+            $cells = $this->queryElements($xpath, 's:c', $rowNode);
             $rowData = [];
 
             foreach ($cells as $cellNode) {
-                /** @var \DOMElement $cellNode */
                 $ref = $cellNode->getAttribute('r');
                 $colIndex = $this->colRefToIndex($ref);
                 $value = $this->getCellValue($cellNode, $xpath);
@@ -225,8 +216,8 @@ class XlsxParser extends AbstractParser implements ParserInterface
     private function getCellValue(\DOMElement $cell, \DOMXPath $xpath): string
     {
         $type = $cell->getAttribute('t');
-        $vNode = $xpath->query('s:v', $cell)->item(0);
-        $isNode = $xpath->query('s:is/s:t', $cell)->item(0);
+        $vNode = $this->queryElement($xpath, 's:v', $cell);
+        $isNode = $this->queryElement($xpath, 's:is/s:t', $cell);
 
         if ($isNode !== null) {
             return $isNode->textContent;
@@ -254,7 +245,7 @@ class XlsxParser extends AbstractParser implements ParserInterface
      */
     private function colRefToIndex(string $ref): int
     {
-        $letters = preg_replace('/[^A-Z]/i', '', strtoupper($ref));
+        $letters = preg_replace('/[^A-Z]/i', '', strtoupper($ref)) ?? '';
 
         if ($letters === '') {
             return 0;
@@ -384,5 +375,32 @@ class XlsxParser extends AbstractParser implements ParserInterface
             'wmf'         => 'image/x-wmf',
             default       => 'application/octet-stream',
         };
+    }
+
+    /**
+     * @return list<\DOMElement>
+     */
+    private function queryElements(\DOMXPath $xpath, string $expression, ?\DOMNode $contextNode = null): array
+    {
+        $list = $xpath->query($expression, $contextNode);
+        if ($list === false) {
+            return [];
+        }
+
+        $elements = [];
+        foreach ($list as $node) {
+            if ($node instanceof \DOMElement) {
+                $elements[] = $node;
+            }
+        }
+
+        return $elements;
+    }
+
+    private function queryElement(\DOMXPath $xpath, string $expression, ?\DOMNode $contextNode = null): ?\DOMElement
+    {
+        $elements = $this->queryElements($xpath, $expression, $contextNode);
+
+        return $elements[0] ?? null;
     }
 }

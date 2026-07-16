@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace Paperdoc\Renderers;
 
 use Paperdoc\Contracts\DocumentInterface;
-use Paperdoc\Document\{Image, PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Document\{PageBreak, Paragraph, Section, Table, TextRun};
+use Paperdoc\Support\Cast;
 
 /**
  * Renderer PPTX natif utilisant ZipArchive + XML.
@@ -18,9 +19,6 @@ class PptxRenderer extends AbstractRenderer
     private const SLIDE_WIDTH  = 9144000; // 10" in EMUs
     private const SLIDE_HEIGHT = 6858000; // 7.5" in EMUs
     private const MARGIN       = 457200;  // 0.5" in EMUs
-
-    /** @var array{name: string, data: string, mimeType: string}[] */
-    private array $mediaFiles = [];
 
     public function getFormat(): string { return 'pptx'; }
 
@@ -45,8 +43,6 @@ class PptxRenderer extends AbstractRenderer
 
     private function buildPptx(DocumentInterface $document, string $filename): void
     {
-        $this->mediaFiles = [];
-
         $zip = new \ZipArchive();
 
         if ($zip->open($filename, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
@@ -79,12 +75,7 @@ class PptxRenderer extends AbstractRenderer
             $zip->addFromString("ppt/slides/_rels/slide{$slideNum}.xml.rels", $this->buildSlideRels($slideNum));
         }
 
-        foreach ($this->mediaFiles as $media) {
-            $zip->addFromString('ppt/media/' . $media['name'], $media['data']);
-        }
-
         $zip->close();
-        $this->mediaFiles = [];
     }
 
     /* =============================================================
@@ -415,7 +406,7 @@ class PptxRenderer extends AbstractRenderer
     private function buildCoreMeta(DocumentInterface $document): string
     {
         $title = $this->escapeXml($document->getTitle());
-        $author = $this->escapeXml($document->getMetadata()['author'] ?? 'Paperdoc');
+        $author = $this->escapeXml(Cast::asString($document->getMetadata()['author'] ?? null, 'Paperdoc'));
 
         return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
             . '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">'

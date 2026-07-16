@@ -6,7 +6,7 @@ namespace Paperdoc\Document\Style;
 
 use Paperdoc\Contracts\StyleInterface;
 
-class TextStyle implements StyleInterface, \JsonSerializable
+final class TextStyle implements StyleInterface, \JsonSerializable
 {
     private string $fontFamily    = 'Helvetica';
     private float  $fontSize      = 12.0;
@@ -14,6 +14,8 @@ class TextStyle implements StyleInterface, \JsonSerializable
     private bool   $bold          = false;
     private bool   $italic        = false;
     private bool   $underline     = false;
+    private bool   $strikethrough = false;
+    private ?string $highlight    = null;
 
     /**
      * Extra space inserted between glyphs, in points (since v0.8.0).
@@ -43,6 +45,8 @@ class TextStyle implements StyleInterface, \JsonSerializable
     public function isBold(): bool           { return $this->bold; }
     public function isItalic(): bool         { return $this->italic; }
     public function isUnderline(): bool      { return $this->underline; }
+    public function isStrikethrough(): bool  { return $this->strikethrough; }
+    public function getHighlight(): ?string  { return $this->highlight; }
     public function getLetterSpacing(): float { return $this->letterSpacing; }
 
     /* -------------------------------------------------------------
@@ -55,6 +59,8 @@ class TextStyle implements StyleInterface, \JsonSerializable
     public function setBold(bool $v = true): static      { $this->bold = $v; return $this; }
     public function setItalic(bool $v = true): static    { $this->italic = $v; return $this; }
     public function setUnderline(bool $v = true): static { $this->underline = $v; return $this; }
+    public function setStrikethrough(bool $v = true): static { $this->strikethrough = $v; return $this; }
+    public function setHighlight(?string $color = '#FFFF00'): static { $this->highlight = $color; return $this; }
     public function setLetterSpacing(float $v): static   { $this->letterSpacing = $v; return $this; }
 
     /* -------------------------------------------------------------
@@ -70,6 +76,8 @@ class TextStyle implements StyleInterface, \JsonSerializable
             'bold'          => $this->bold,
             'italic'        => $this->italic,
             'underline'     => $this->underline,
+            'strikethrough' => $this->strikethrough,
+            'highlight'     => $this->highlight,
             'letterSpacing' => $this->letterSpacing,
         ];
     }
