@@ -798,9 +798,21 @@ We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before 
 
 ### Contributors
 
-Thanks to everyone who has contributed to **paperdoc-lib**. A full list is kept in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+Thanks to everyone who has contributed to **paperdoc-lib**. Full details: [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
-- **Olivier Mourlevat** — [@olivM](https://github.com/olivM) — DOCX hyperlink parsing, HTML/Markdown hyperlink rendering ([#4](https://github.com/paperdoc-dev/paperdoc-lib/pull/4))
+**Maintainers**
+
+- **Paperdoc team** — [@paperdoc-dev](https://github.com/paperdoc-dev)
+
+**Community**
+
+- **Olivier Mourlevat** — [@olivM](https://github.com/olivM)
+  - DOCX hyperlink parsing and HTML/Markdown hyperlink rendering ([#4](https://github.com/paperdoc-dev/paperdoc-lib/pull/4))
+  - DOCX bullet/numbered list parsing and Markdown list rendering ([#7](https://github.com/paperdoc-dev/paperdoc-lib/pull/7))
+- **Bogdan Hossu** — [@BogdanHossu](https://github.com/BogdanHossu)
+  - PDF CMap glyph code string cast fix ([#8](https://github.com/paperdoc-dev/paperdoc-lib/pull/8))
+
+Want to be listed? Open a PR that gets merged into `main` — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
