@@ -227,6 +227,30 @@ MD;
         $this->assertStringContainsString('Bob', $rows[2]->getCells()[0]->getPlainText());
     }
 
+    public function test_escaped_pipe_stays_inside_its_cell(): void
+    {
+        // C'est ce que produit MarkdownRenderer pour la cellule « Widget | A ».
+        $md = <<<'MD'
+| Produit     | Prix  |
+|-------------|-------|
+| Widget \| A | 29.99 |
+MD;
+
+        $path = $this->writeMd($md);
+        $doc = (new MarkdownParser())->parse($path);
+        $elements = $doc->getSections()[0]->getElements();
+
+        $tables = array_values(array_filter($elements, fn ($e) => $e instanceof Table));
+        $this->assertCount(1, $tables);
+
+        $rows = $tables[0]->getRows();
+
+        $this->assertCount(2, $rows[0]->getCells());
+        $this->assertCount(2, $rows[1]->getCells(), 'le pipe échappé a scindé la cellule');
+        $this->assertStringContainsString('Widget | A', $rows[1]->getCells()[0]->getPlainText());
+        $this->assertStringContainsString('29.99', $rows[1]->getCells()[1]->getPlainText());
+    }
+
     public function test_parse_bullet_list(): void
     {
         $md = <<<'MD'

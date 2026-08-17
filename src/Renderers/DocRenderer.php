@@ -51,8 +51,12 @@ class DocRenderer extends AbstractRenderer
     private function buildDoc(DocumentInterface $document, string $filename): void
     {
         $text = $this->collectText($document);
-        $textBytes = mb_convert_encoding($text, 'Windows-1252', 'UTF-8');
-        $ccpText = strlen($textBytes);
+
+        // UTF-16LE non compressé, comme PptRenderer et XlsRenderer : en
+        // Windows-1252 tout ce qui sort du latin-1 devenait « ? ».
+        // ccpText se compte en caractères (unités UTF-16), pas en octets.
+        $textBytes = mb_convert_encoding($text, 'UTF-16LE', 'UTF-8');
+        $ccpText = intdiv(strlen($textBytes), 2);
 
         $fibSize = $this->calculateFibSize();
         $textStart = $fibSize;
@@ -170,8 +174,9 @@ class DocRenderer extends AbstractRenderer
 
         // PCD[0] (8 bytes)
         $clx .= pack('v', 0x0000);           // ABCr
-        // fc: compressed (CP1252), bit 30 set, value = textStart * 2
-        $fc = 0x40000000 | ($textStartInWordDoc * 2);
+        // fc: bit 30 clear = texte UTF-16LE, fc est le décalage brut
+        // (bit 30 posé signifierait CP1252 avec un décalage à diviser par 2).
+        $fc = $textStartInWordDoc;
         $clx .= pack('V', $fc);
         $clx .= pack('v', 0x0000);           // prm
 

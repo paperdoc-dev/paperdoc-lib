@@ -22,6 +22,7 @@
 - **Hyperlinks** — parse from DOCX and round-trip to HTML, Markdown, DOCX and PDF (external URLs and internal anchors)
 - **PDF outline & table of contents** — navigation panel and linked TOC across all formats
 - **Watermark & rich text styles** — strikethrough, highlight, underline across formats
+- **Any script, any direction** — every format handles Cyrillic, Greek, Hebrew, Arabic, CJK and Devanagari; PDF embeds and subsets your own TrueType/OpenType fonts, with Unicode bidi reordering and Arabic shaping built in
 - **String I/O** — parse and convert content in memory, no file required
 - **Typed Format enum** — use strings or `Paperdoc\Enum\Format` everywhere
 - **Metadata** — title, author, subject, dates mapped to each format's native properties
@@ -612,10 +613,80 @@ Every element of the document model is natively rendered by **all four** core re
 | `Table`            | `<w:tbl>` with header rows + `gridSpan`                 | drawn cells with header bg                     | `<table>` + striped rows              | `\|` rows                         |
 | `PageBreak`        | `<w:br w:type="page"/>`                                 | `newPage()`                                    | `.page-break` divider                 | blank line                        |
 | `HorizontalRule` | bordered empty `<w:p>` (`<w:pBdr>`)            | stroked PDF line                               | `<hr>` with inline CSS                | `---` thematic break              |
-| `Metadata`         | `docProps/core.xml`                                     | full `/Info` dict *(v1.0.0)*                   | `<head>` meta + `lang` *(v1.0.0)*     | YAML frontmatter *(v1.0.0)*       |
+| `Metadata`         | `docProps/core.xml`                                     | full `/Info` dict *(v1.0.0)*                   | `<head>` meta + `lang` + `dir`        | YAML frontmatter *(v1.0.0)*       |
 | `Heading` → outline | (outline levels via `pStyle`)                          | `/Outlines` bookmarks panel *(v1.0.0)*         | `id` anchors                          | `{#id}` anchors                   |
 
 Both `Image::make($path)` (on-disk) and `Image::fromData($bytes, $mimeType)` (in-memory) are accepted everywhere; HTML and Markdown automatically inline embedded images as `data:` URIs, DOCX writes them to `word/media/`, and PDF embeds them as DCT XObjects (re-encoding GIF/PNG/WebP through GD when needed).
+
+---
+
+## Writing scripts other than Latin
+
+DOCX, HTML, Markdown, PPTX, XLSX, DOC, XLS, PPT and CSV handle every script out of the box — Cyrillic, Greek, Hebrew, Arabic, CJK, Devanagari — with nothing to configure.
+
+**PDF is the exception, and it needs one line of setup.** The 14 standard PDF fonts only exist in WinAnsi encoding, so anything outside Latin-1 renders as `?`. Embedding a font is the only way around it:
+
+```php
+use Paperdoc\Renderers\PdfRenderer;
+use Paperdoc\Document\Style\TextStyle;
+
+$renderer = new PdfRenderer();
+$renderer->registerTrueTypeFont('Universal', '/path/to/NotoSans.ttf');
+
+$section->addText(
+    'Общая сумма продаж составляет 1234 евро',
+    TextStyle::make()->setFontFamily('Universal'),   // ← the alias
+);
+
+$renderer->save($doc, 'report.pdf');
+```
+
+The alias becomes a `TextStyle` font family. Any run using it is written as glyph ids, so the whole Unicode repertoire covered by the font is available.
+
+**The library ships no font data** — only width *numbers* for the standard 14. You supply the file, and you are responsible for checking that its licence allows embedding. (Most open fonts — Noto, DejaVu, Liberation, Source Sans — allow it explicitly.)
+
+Accepted formats:
+
+| Format | Notes |
+|---|---|
+| `.ttf` | TrueType outlines. **Subsetted** — only the glyphs you actually use are embedded. |
+| `.otf` | CFF outlines, embedded as `CIDFontType0`. Embedded whole (no subsetting). |
+| `.ttc` | Collection — pass the face index: `registerTrueTypeFont('X', $path, 2)`. |
+
+Subsetting matters: a Latin page embeds ~9 KB out of a 410 KB font, a CJK page ~4 KB out of 4 MB. Prefer `.ttf` over `.otf` when file size counts.
+
+Pick a font that covers your script — a glyph the font lacks renders as `.notdef`. Note that "fallback" fonts are often partial: `DroidSansFallback` has CJK but no Latin and no digits.
+
+### Right-to-left text
+
+Arabic and Hebrew need no special handling. Direction is detected per document and per paragraph:
+
+- **HTML** gets `<html dir="rtl">`, **DOCX** gets `<w:bidi/>` and `<w:rtl/>` — the browser and Word then run the Unicode bidirectional algorithm themselves.
+- **PDF** has no such engine, so the library runs [UAX #9] itself before placing glyphs, plus Arabic contextual shaping (initial/medial/final forms and lam-alef ligatures). Reordering is verified against `fribidi`.
+
+```php
+$section->addText('إجمالي المبيعات هو 1234 يورو', $arabicStyle);
+// → cursive, right-to-left, with "1234" left-to-right inside it
+```
+
+Text containing no right-to-left character skips both passes entirely, so this costs nothing for Latin documents.
+
+If you need the pieces on their own:
+
+```php
+use Paperdoc\Support\TextDirection;
+use Paperdoc\Support\Text\{Bidi, ArabicShaper};
+
+TextDirection::detect($text);             // 'rtl' | 'ltr'
+Bidi::reorder($text);                     // logical order → visual order
+ArabicShaper::shape($text);               // contextual presentation forms
+```
+
+### Limitations
+
+- Variable fonts (`CFF2`) are rejected with an explicit message; use a static instance.
+- CFF outlines are not subsetted.
+- Explicit bidi controls (LRE, RLE, LRO, RLO, PDF, LRI, RLI, FSI, PDI) are treated as boundary-neutral rather than stacked.
 
 ---
 

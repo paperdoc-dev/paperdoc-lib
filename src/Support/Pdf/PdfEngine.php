@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Paperdoc\Support\Pdf;
 
 use Paperdoc\Document\Style\PdfProtection;
+use Paperdoc\Support\Text\ArabicShaper;
+use Paperdoc\Support\Text\Bidi;
 
 /**
  * Moteur PDF natif sans dépendance tierce.
@@ -52,6 +54,36 @@ class PdfEngine
     private array $fontRefs = [];
 
     private int $fontCounter = 0;
+
+    /**
+     * Polices TrueType embarquées, par alias. Les 14 polices standard sont
+     * limitées à WinAnsiEncoding ; embarquer un fichier est la seule façon
+     * d'écrire autre chose que du latin-1.
+     *
+     * @var array<string, TrueTypeFont>
+     */
+    private array $embeddedFonts = [];
+
+    /**
+     * Points de code réellement écrits avec chaque police embarquée, et
+     * l'identifiant de glyphe du sous-ensemble qui leur correspond. Sert
+     * à bâtir la CMap ToUnicode.
+     *
+     * @var array<string, array<int, int>>
+     */
+    private array $embeddedFontCodepoints = [];
+
+    /**
+     * Renumérotation des glyphes, par police : ancien identifiant →
+     * identifiant dans le sous-ensemble. Attribuée au fil de l'écriture
+     * pour que le flux de contenu et la police réduite concordent.
+     *
+     * @var array<string, array<int, int>>
+     */
+    private array $embeddedFontGlyphs = [];
+
+    /** @var array<string, int> alias => numéro d'objet Type0 à remplir */
+    private array $pendingEmbeddedFonts = [];
 
     /** @var array<string, int> Image hash => object number */
     private array $images = [];
@@ -309,7 +341,7 @@ class PdfEngine
         $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
         $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
         $this->currentPageContent .= sprintf("%.2f %.2f Td\n", -$width / 2.0, -$fontSize / 3.0);
-        $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($text));
+        $this->currentPageContent .= sprintf("%s Tj\n", $this->showTextOperand($text, $fontName));
         $this->currentPageContent .= "ET\nQ\n";
     }
 
@@ -736,7 +768,7 @@ class PdfEngine
         $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
         $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
         $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $this->cursorX, $this->cursorY);
-        $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($text));
+        $this->currentPageContent .= sprintf("%s Tj\n", $this->showTextOperand($text, $fontName));
         $this->currentPageContent .= "ET\n";
     }
 
@@ -1016,6 +1048,25 @@ class PdfEngine
         float $fontSize,
         float $letterSpacing = 0.0,
     ): float {
+        $embedded = $this->embeddedFonts[$fontName] ?? null;
+
+        if ($embedded !== null) {
+            // Mesurer les formes réellement dessinées : une lettre arabe
+            // médiane n'a pas la chasse de sa forme isolée. Le
+            // réordonnancement, lui, ne change pas la largeur totale.
+            $text = ArabicShaper::shape($text);
+
+            $units = 0;
+            $glyphCount = 0;
+
+            foreach ($embedded->codepoints($text) as $codepoint) {
+                $units += $embedded->glyphWidth($embedded->glyphForCodepoint($codepoint));
+                $glyphCount++;
+            }
+
+            return $units * $fontSize / 1000.0 + max(0, $glyphCount - 1) * $letterSpacing;
+        }
+
         $fontTable = Core14Widths::FONTS[$fontName] ?? null;
 
         if ($fontTable === null) {
@@ -1058,6 +1109,16 @@ class PdfEngine
      */
     public function getFontMetrics(string $fontName): array
     {
+        $embedded = $this->embeddedFonts[$fontName] ?? null;
+
+        if ($embedded !== null) {
+            return [
+                'ascender'  => $embedded->getAscender(),
+                'descender' => $embedded->getDescender(),
+                'capHeight' => $embedded->getCapHeight(),
+            ];
+        }
+
         $t = Core14Widths::FONTS[$fontName] ?? null;
         if ($t === null) {
             return ['ascender' => 718, 'descender' => -207, 'capHeight' => 718];
@@ -1089,7 +1150,7 @@ class PdfEngine
         $this->currentPageContent .= sprintf("%.2f %.2f %.2f rg\n", $r, $g, $b);
         $this->currentPageContent .= sprintf("%s %.1f Tf\n", $fontRef, $fontSize);
         $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $x, $y);
-        $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($text));
+        $this->currentPageContent .= sprintf("%s Tj\n", $this->showTextOperand($text, $fontName));
         $this->currentPageContent .= "ET\n";
     }
 
@@ -1292,7 +1353,7 @@ class PdfEngine
             $this->currentPageContent .= sprintf("%.3f Tc\n", $totalTc);
         }
         $this->currentPageContent .= sprintf("%.2f %.2f Td\n", $drawX, $baselineY);
-        $this->currentPageContent .= sprintf("(%s) Tj\n", $this->escapePdfString($line));
+        $this->currentPageContent .= sprintf("%s Tj\n", $this->showTextOperand($line, $fontName));
         if ($extraTw > 0.0) {
             // Always reset Tw so subsequent text isn't accidentally justified.
             $this->currentPageContent .= "0 Tw\n";
@@ -1452,21 +1513,52 @@ class PdfEngine
         $lines = [];
         $currentLine = '';
 
+        // For the first emitted line, a possibly tighter budget applies
+        // (text-indent shrinks the first line's available width).
+        $budgetFor = static fn (int $emitted): float => ($emitted === 0 && $firstLineMaxWidth !== null)
+            ? $firstLineMaxWidth
+            : $maxWidth;
+
         foreach ($words as $word) {
             $testLine  = $currentLine === '' ? $word : $currentLine . ' ' . $word;
             $testWidth = $this->measureTextWidth($testLine, $fontName, $fontSize, $letterSpacing);
+            $budget    = $budgetFor(count($lines));
 
-            // For the first emitted line, a possibly tighter budget applies
-            // (text-indent shrinks the first line's available width).
-            $budget = (count($lines) === 0 && $firstLineMaxWidth !== null)
-                ? $firstLineMaxWidth
-                : $maxWidth;
-
-            if ($testWidth > $budget && $currentLine !== '') {
-                $lines[] = $currentLine;
-                $currentLine = $word;
-            } else {
+            if ($testWidth <= $budget) {
                 $currentLine = $testLine;
+
+                continue;
+            }
+
+            if ($currentLine !== '') {
+                $lines[] = $currentLine;
+                $currentLine = '';
+                $budget = $budgetFor(count($lines));
+            }
+
+            if ($this->measureTextWidth($word, $fontName, $fontSize, $letterSpacing) <= $budget) {
+                $currentLine = $word;
+
+                continue;
+            }
+
+            // Le japonais, le chinois et le thaï ne séparent pas les mots
+            // par des espaces : tout le paragraphe arrive ici en un seul
+            // « mot ». Sans coupure interne il tenait sur une ligne unique
+            // qui débordait de la page. Sert aussi aux URL interminables.
+            $pieces = $this->breakOversizedWord(
+                $word,
+                $fontName,
+                $fontSize,
+                $letterSpacing,
+                $budget,
+                $maxWidth,
+            );
+
+            $currentLine = (string) array_pop($pieces);
+
+            foreach ($pieces as $piece) {
+                $lines[] = $piece;
             }
         }
 
@@ -1477,6 +1569,49 @@ class PdfEngine
         return $lines ?: [''];
     }
 
+    /**
+     * Découpe un mot plus large que la ligne, sur des limites de groupes
+     * de graphèmes — une voyelle thaïe ou une matra devanagari doit rester
+     * attachée à sa consonne.
+     *
+     * @return string[] jamais vide ; seul le dernier élément est incomplet
+     */
+    private function breakOversizedWord(
+        string $word,
+        string $fontName,
+        float $fontSize,
+        float $letterSpacing,
+        float $firstBudget,
+        float $restBudget,
+    ): array {
+        preg_match_all('/\X/u', $word, $matches);
+
+        $clusters = $matches[0] ?: [$word];
+        $pieces = [];
+        $piece = '';
+
+        foreach ($clusters as $cluster) {
+            $candidate = $piece . $cluster;
+            $budget = $pieces === [] ? $firstBudget : $restBudget;
+
+            // Le test sur $piece garantit au moins un groupe par ligne,
+            // sinon un caractère plus large que la ligne bouclerait.
+            if ($piece !== ''
+                && $this->measureTextWidth($candidate, $fontName, $fontSize, $letterSpacing) > $budget) {
+                $pieces[] = $piece;
+                $piece = $cluster;
+
+                continue;
+            }
+
+            $piece = $candidate;
+        }
+
+        $pieces[] = $piece;
+
+        return $pieces;
+    }
+
     /* -------------------------------------------------------------
      | Output
      |------------------------------------------------------------- */
@@ -1484,6 +1619,7 @@ class PdfEngine
     public function output(): string
     {
         $this->flushPage();
+        $this->flushEmbeddedFonts();
         $this->bootstrapSecurity();
 
         $pageCount = count($this->pageObjects);
@@ -1918,6 +2054,27 @@ class PdfEngine
         return "<< {$dict} >>";
     }
 
+    /**
+     * Rend une police TrueType disponible sous $alias. Le texte rendu avec
+     * cet alias est encodé en identifiants de glyphes, ce qui lève la
+     * limite du latin-1 des 14 polices standard.
+     *
+     * La bibliothèque ne livre aucune donnée de police : c'est à l'appelant
+     * de fournir le fichier, et de s'assurer que sa licence en autorise
+     * l'incorporation dans un document.
+     *
+     * @throws \RuntimeException si le fichier n'est pas un TrueType exploitable
+     */
+    public function registerTrueTypeFont(string $alias, string $filename, int $fontIndex = 0): void
+    {
+        $this->embeddedFonts[$alias] = TrueTypeFont::fromFile($filename, $fontIndex);
+    }
+
+    public function hasEmbeddedFont(string $alias): bool
+    {
+        return isset($this->embeddedFonts[$alias]);
+    }
+
     private function ensureFont(string $fontName): string
     {
         if (isset($this->fontRefs[$fontName])) {
@@ -1930,6 +2087,15 @@ class PdfEngine
         $ref = '/F' . (++$this->fontCounter);
         $this->fontRefs[$fontName] = $ref;
 
+        if (isset($this->embeddedFonts[$fontName])) {
+            // Le contenu n'est écrit qu'à output() : la CMap ToUnicode a
+            // besoin de connaître tous les points de code employés, or on
+            // est ici au premier usage, avant que le texte ne soit émis.
+            $this->pendingEmbeddedFonts[$fontName] = $objNum;
+
+            return $ref;
+        }
+
         $this->objects[$objNum] = new PdfObject(
             $objNum,
             sprintf(
@@ -1940,6 +2106,199 @@ class PdfEngine
 
         return $ref;
     }
+
+    /**
+     * Graphe d'objets d'une police embarquée : Type0 (Identity-H) →
+     * CIDFontType2 → FontDescriptor → FontFile2, plus un CMap ToUnicode
+     * pour que le texte reste sélectionnable et extractible.
+     */
+    private function flushEmbeddedFonts(): void
+    {
+        foreach ($this->pendingEmbeddedFonts as $alias => $objNum) {
+            $this->writeEmbeddedFontObjects($objNum, $this->embeddedFonts[$alias], $alias);
+        }
+
+        $this->pendingEmbeddedFonts = [];
+    }
+
+    private function writeEmbeddedFontObjects(int $type0Obj, TrueTypeFont $font, string $alias): void
+    {
+        $cidObj        = $this->allocateObject();
+        $descriptorObj = $this->allocateObject();
+        $fileObj       = $this->allocateObject();
+        $toUnicodeObj  = $this->allocateObject();
+
+        $name = $font->getPostScriptName();
+        [$x0, $y0, $x1, $y1] = $font->getBoundingBox();
+
+        $this->objects[$type0Obj] = new PdfObject($type0Obj, sprintf(
+            '<< /Type /Font /Subtype /Type0 /BaseFont /%s /Encoding /Identity-H '
+            . '/DescendantFonts [%d 0 R] /ToUnicode %d 0 R >>',
+            $name,
+            $cidObj,
+            $toUnicodeObj,
+        ));
+
+        // Réduire la police aux seuls glyphes employés : embarquer le
+        // fichier entier coûte 423 Ko en latin et plus de 4 Mo en CJK,
+        // quelle que soit la quantité de texte réellement écrite.
+        $subsetter = new TrueTypeSubset($font);
+        $glyphMap = $this->embeddedFontGlyphs[$alias] ?? [0 => 0];
+        $isCff = $font->isCff();
+
+        if (! $isCff && $subsetter->isSupported()) {
+            $glyphMap = $subsetter->closeOverComponents($glyphMap);
+            $raw = $subsetter->build($glyphMap);
+        } else {
+            // Contours CFF : les découper demanderait de réécrire le CFF
+            // lui-même. On embarque le fichier tel quel, identifiants de
+            // glyphes d'origine compris.
+            $raw = $font->getData();
+        }
+
+        // Un CFF s'embarque en CIDFontType0 : le PDF prend alors les CID
+        // pour des indices de glyphes, ce que fait déjà Identity-H.
+        $this->objects[$cidObj] = new PdfObject($cidObj, sprintf(
+            '<< /Type /Font /Subtype /%s /BaseFont /%s '
+            . '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> '
+            . '/FontDescriptor %d 0 R /DW 1000 /W %s%s >>',
+            $isCff ? 'CIDFontType0' : 'CIDFontType2',
+            $name,
+            $descriptorObj,
+            $this->buildCidWidthArray($font, $glyphMap),
+            $isCff ? '' : ' /CIDToGIDMap /Identity',
+        ));
+
+        $this->objects[$descriptorObj] = new PdfObject($descriptorObj, sprintf(
+            '<< /Type /FontDescriptor /FontName /%s /Flags %d /FontBBox [%d %d %d %d] '
+            . '/ItalicAngle %d /Ascent %d /Descent %d /CapHeight %d /StemV 80 /%s %d 0 R >>',
+            $name,
+            $font->getFlags(),
+            $x0,
+            $y0,
+            $x1,
+            $y1,
+            $font->getItalicAngle(),
+            $font->getAscender(),
+            $font->getDescender(),
+            $font->getCapHeight(),
+            $isCff ? 'FontFile3' : 'FontFile2',
+            $fileObj,
+        ));
+
+        $this->objects[$fileObj] = new PdfObject($fileObj, $isCff
+            ? sprintf(
+                "<< /Length %d /Subtype /OpenType >>\nstream\n%s\nendstream",
+                strlen($raw),
+                $raw,
+            )
+            : sprintf(
+                "<< /Length %d /Length1 %d >>\nstream\n%s\nendstream",
+                strlen($raw),
+                strlen($raw),
+                $raw,
+            ));
+
+        $cmap = $this->buildToUnicodeCMap($font, $alias);
+
+        $this->objects[$toUnicodeObj] = new PdfObject($toUnicodeObj, sprintf(
+            "<< /Length %d >>\nstream\n%s\nendstream",
+            strlen($cmap),
+            $cmap,
+        ));
+    }
+
+    /**
+     * Tableau /W : les glyphes dont la chasse diffère de /DW 1000. Écrit
+     * en plages consécutives pour ne pas gonfler le fichier.
+     *
+     * @param array<int, int> $glyphMap ancien identifiant → nouveau
+     */
+    private function buildCidWidthArray(TrueTypeFont $font, array $glyphMap): string
+    {
+        // Les identifiants du sous-ensemble, dans l'ordre.
+        $byNewGid = array_flip($glyphMap);
+        ksort($byNewGid);
+
+        // Seuls les glyphes dont la chasse diffère du /DW ont besoin d'une
+        // entrée.
+        $widths = [];
+
+        foreach ($byNewGid as $gid => $oldGid) {
+            $width = $font->glyphWidth($oldGid);
+
+            if ($width !== 1000) {
+                $widths[$gid] = $width;
+            }
+        }
+
+        $entries = [];
+        $runStart = null;
+        $expected = null;
+        $run = [];
+
+        foreach ($widths as $gid => $width) {
+            // Une plage « C [w1 w2 …] » attribue ses largeurs à des CID
+            // consécutifs. Ils le sont dans un sous-ensemble, mais épars
+            // pour une police CFF embarquée telle quelle : rompre la plage
+            // évite d'attribuer les largeurs aux mauvais glyphes.
+            if ($runStart !== null && $gid !== $expected) {
+                $entries[] = $runStart . ' [' . implode(' ', $run) . ']';
+                $runStart = null;
+                $run = [];
+            }
+
+            $runStart ??= $gid;
+            $run[] = $width;
+            $expected = $gid + 1;
+        }
+
+        if ($runStart !== null) {
+            $entries[] = $runStart . ' [' . implode(' ', $run) . ']';
+        }
+
+        return '[' . implode(' ', $entries) . ']';
+    }
+
+    /**
+     * CMap ToUnicode : sans elle le texte du PDF n'est qu'une suite
+     * d'identifiants de glyphes, illisible pour un copier-coller comme
+     * pour un extracteur.
+     */
+    private function buildToUnicodeCMap(TrueTypeFont $font, string $alias): string
+    {
+        $pairs = [];
+
+        foreach ($this->embeddedFontCodepoints[$alias] ?? [] as $codepoint => $gid) {
+            if ($codepoint > 0xFFFF) {
+                // Hors BMP : paire de substitution UTF-16BE
+                $adjusted = $codepoint - 0x10000;
+                $high = 0xD800 + ($adjusted >> 10);
+                $low  = 0xDC00 + ($adjusted & 0x3FF);
+                $value = sprintf('%04X%04X', $high, $low);
+            } else {
+                $value = sprintf('%04X', $codepoint);
+            }
+
+            $pairs[] = sprintf('<%04X> <%s>', $gid, $value);
+        }
+
+        $body = '';
+
+        // bfchar n'accepte que 100 entrées par bloc (PDF 1.7 §9.10.3).
+        foreach (array_chunk($pairs, 100) as $chunk) {
+            $body .= count($chunk) . " beginbfchar\n" . implode("\n", $chunk) . "\nendbfchar\n";
+        }
+
+        return "/CIDInit /ProcSet findresource begin\n"
+            . "12 dict begin\nbegincmap\n"
+            . "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
+            . "/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n"
+            . "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+            . $body
+            . "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend";
+    }
+
 
     /**
      * Enregistre l'image comme XObject DCT. N'écrit jamais de référence
@@ -2094,6 +2453,71 @@ class PdfEngine
      *
      * Backslash, '(' and ')' are escaped per PDF 1.7 §7.3.4.2.
      */
+    /**
+     * Opérande de l'opérateur Tj. Une police standard reçoit une chaîne
+     * littérale WinAnsi ; une police embarquée reçoit une chaîne
+     * hexadécimale d'identifiants de glyphes, seule façon d'adresser un
+     * caractère hors latin-1.
+     */
+    private function showTextOperand(string $text, string $fontName): string
+    {
+        $text = $this->prepareForDisplay($text);
+
+        $font = $this->embeddedFonts[$fontName] ?? null;
+
+        if ($font === null) {
+            return '(' . $this->escapePdfString($text) . ')';
+        }
+
+        $hex = '';
+
+        foreach ($font->codepoints($text) as $codepoint) {
+            $newGid = $this->mapGlyph($fontName, $font->glyphForCodepoint($codepoint));
+            $this->embeddedFontCodepoints[$fontName][$codepoint] = $newGid;
+            $hex .= sprintf('%04X', $newGid);
+        }
+
+        return '<' . $hex . '>';
+    }
+
+    /**
+     * Identifiant d'un glyphe dans le sous-ensemble, attribué à la volée.
+     * .notdef occupe toujours la place 0, comme l'exige le format.
+     */
+    private function mapGlyph(string $alias, int $oldGid): int
+    {
+        // Une police CFF s'embarque telle quelle : ses identifiants doivent
+        // rester ceux d'origine, sans quoi le CFF ne s'y retrouve plus.
+        if (! ($this->embeddedFonts[$alias] ?? null)?->isSubsettable()) {
+            $this->embeddedFontGlyphs[$alias][$oldGid] = $oldGid;
+
+            return $oldGid;
+        }
+
+        if (! isset($this->embeddedFontGlyphs[$alias])) {
+            $this->embeddedFontGlyphs[$alias] = [0 => 0];
+        }
+
+        return $this->embeddedFontGlyphs[$alias][$oldGid]
+            ??= count($this->embeddedFontGlyphs[$alias]);
+    }
+
+    /**
+     * Passe du texte en ordre logique à l'ordre visuel.
+     *
+     * HTML et DOCX déclarent le sens et laissent le navigateur ou Word
+     * faire ce travail. PDF pose les glyphes exactement là où on le lui
+     * dit : sans cette étape, une phrase arabe ou hébraïque sort à
+     * l'envers, et les lettres arabes restent détachées.
+     *
+     * Sans caractère droite-à-gauche, les deux passes rendent la chaîne
+     * telle quelle.
+     */
+    private function prepareForDisplay(string $text): string
+    {
+        return Bidi::reorder(ArabicShaper::shape($text));
+    }
+
     private function escapePdfString(string $text): string
     {
         $text = str_replace('\\', '\\\\', $text);

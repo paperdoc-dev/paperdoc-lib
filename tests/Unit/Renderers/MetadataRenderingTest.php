@@ -46,7 +46,7 @@ class MetadataRenderingTest extends TestCase
     {
         $html = (new HtmlRenderer())->render($this->documentWithProperties());
 
-        $this->assertStringContainsString('<html lang="fr-FR">', $html);
+        $this->assertStringContainsString('<html lang="fr-FR" dir="ltr">', $html);
     }
 
     public function test_html_lang_falls_back_to_english(): void
@@ -56,7 +56,7 @@ class MetadataRenderingTest extends TestCase
 
         $html = (new HtmlRenderer())->render($doc);
 
-        $this->assertStringContainsString('<html lang="en">', $html);
+        $this->assertStringContainsString('<html lang="en" dir="ltr">', $html);
         $this->assertStringNotContainsString('meta name="author"', $html);
     }
 

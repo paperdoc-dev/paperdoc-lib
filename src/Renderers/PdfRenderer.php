@@ -43,6 +43,9 @@ class PdfRenderer extends AbstractRenderer
 {
     private PdfEngine $engine;
 
+    /** @var array<string, array{string, int}> alias => [chemin, index dans la collection] */
+    private array $embeddedFonts = [];
+
     /**
      * Footnotes collected per physical page number (1-indexed).
      *
@@ -99,9 +102,51 @@ class PdfRenderer extends AbstractRenderer
         $this->buildPdf($document, $filename);
     }
 
+    /**
+     * Rend une police disponible sous $alias, à employer comme famille de
+     * police dans un TextStyle. Sans cela le rendu PDF est borné aux 14
+     * polices standard, donc au latin-1 : cyrillique, grec, arabe, hébreu
+     * et CJK y deviennent « ? ».
+     *
+     * Accepte .ttf, .otf (contours CFF) et .ttc — pour une collection,
+     * $fontIndex désigne la police voulue.
+     *
+     * La bibliothèque ne livre aucune donnée de police ; l'appelant
+     * fournit le fichier et répond de sa licence d'incorporation.
+     */
+    public function registerTrueTypeFont(string $alias, string $filename, int $fontIndex = 0): void
+    {
+        $this->embeddedFonts[$alias] = [$filename, $fontIndex];
+    }
+
+    /**
+     * getPdfFontName() ramène toute famille inconnue à Helvetica, ce qui
+     * effacerait l'alias d'une police embarquée. On garde donc la famille
+     * telle quelle quand elle en désigne une.
+     */
+    private function resolveFontName(?TextStyle $style): string
+    {
+        if ($style === null) {
+            return 'Helvetica';
+        }
+
+        $family = $style->getFontFamily();
+
+        if ($family !== '' && isset($this->embeddedFonts[$family])) {
+            return $family;
+        }
+
+        return $style->getPdfFontName();
+    }
+
     private function buildPdf(DocumentInterface $document, string $filename): void
     {
         $this->engine = new PdfEngine();
+
+        foreach ($this->embeddedFonts as $alias => [$fontPath, $fontIndex]) {
+            $this->engine->registerTrueTypeFont($alias, $fontPath, $fontIndex);
+        }
+
         $this->engine->setTitle($document->getTitle());
         $this->documentTitle = $document->getTitle();
         $this->lastBlockLineHeight = 0.0;
@@ -397,7 +442,7 @@ class PdfRenderer extends AbstractRenderer
         }
 
         $style    = $element->getStyle();
-        $fontName = $style->getPdfFontName();
+        $fontName = $this->resolveFontName($style);
         $fontSize = $style->getFontSize();
         [$r, $g, $b] = $style->getColorRgb();
 
@@ -615,7 +660,7 @@ class PdfRenderer extends AbstractRenderer
             : ($firstRun?->getStyle() ?? $document->getDefaultTextStyle());
         $effectiveSpaceBefore = $this->reserveAscentFor(
             $firstRunStyle->getFontSize(),
-            $firstRunStyle->getPdfFontName(),
+            $this->resolveFontName($firstRunStyle),
             $spaceBefore,
         );
 
@@ -680,7 +725,7 @@ class PdfRenderer extends AbstractRenderer
                 ->setColor($style->getColor() === '#000000' ? '#0563C1' : $style->getColor());
         }
 
-        $fontName = $style->getPdfFontName();
+        $fontName = $this->resolveFontName($style);
         $fontSize = $style->getFontSize();
         [$r, $g, $b] = $style->getColorRgb();
 
@@ -857,7 +902,7 @@ class PdfRenderer extends AbstractRenderer
     private function writeListItemLine(ListItem $item, string $marker, DocumentInterface $document, float $indent): void
     {
         $style = $document->getDefaultTextStyle();
-        $fontName = $style->getPdfFontName();
+        $fontName = $this->resolveFontName($style);
         $fontSize = $style->getFontSize();
         [$r, $g, $b] = $style->getColorRgb();
 
@@ -1025,7 +1070,7 @@ class PdfRenderer extends AbstractRenderer
                 $cellStyle = $this->cellStyleForPdf($cell, $defaultStyle);
 
                 $cellSize  = $cellStyle->getFontSize() > 0 ? $cellStyle->getFontSize() : $fontSize;
-                $fontName  = $cellStyle->getPdfFontName();
+                $fontName  = $this->resolveFontName($cellStyle);
 
                 if ($row->isHeader() && ! str_contains($fontName, 'Bold')) {
                     $fontName = str_replace(
@@ -1269,7 +1314,7 @@ class PdfRenderer extends AbstractRenderer
             $firstRun      = $paragraph->getRuns()[0] ?? null;
             $firstRunStyle = $firstRun?->getStyle() ?? $document->getDefaultTextStyle();
             if ($prevLineHeightPt > 0.0) {
-                $ascentEm = $this->engine->getFontMetrics($firstRunStyle->getPdfFontName())['ascender'];
+                $ascentEm = $this->engine->getFontMetrics($this->resolveFontName($firstRunStyle))['ascender'];
                 $ascentPt = $ascentEm * $firstRunStyle->getFontSize() / 1000.0;
                 $needed   = max(0.0, $ascentPt - $prevLineHeightPt);
                 $cursorOffset += max($spaceBefore, $needed);
@@ -1305,7 +1350,7 @@ class PdfRenderer extends AbstractRenderer
                 try {
                     $result = $this->engine->writeWrappedTextAt(
                         text:            $run->getText(),
-                        fontName:        $style->getPdfFontName(),
+                        fontName:        $this->resolveFontName($style),
                         fontSize:        $style->getFontSize(),
                         x:               $textX,
                         yTopLeft:        $textTopY + $cursorOffset,

@@ -28,6 +28,7 @@ use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 use Paperdoc\Support\Cast;
+use Paperdoc\Support\TextDirection;
 
 /**
  * Native DOCX renderer producing a valid Office Open XML
@@ -301,7 +302,11 @@ class DocxRenderer extends AbstractRenderer
     private function renderParagraph(Paragraph $paragraph, int $indentTwips = 0): string
     {
         $xml = '<w:p>';
-        $xml .= $this->renderParagraphProperties($paragraph->getStyle(), indent: $indentTwips);
+        $xml .= $this->renderParagraphProperties(
+            $paragraph->getStyle(),
+            indent: $indentTwips,
+            rtl: TextDirection::isRtl($paragraph->getPlainText()),
+        );
 
         foreach ($paragraph->getRuns() as $run) {
             $xml .= $this->renderRun($run);
@@ -349,8 +354,15 @@ class DocxRenderer extends AbstractRenderer
         int $indent = 0,
         bool $preserveSpaces = false,
         bool $indentFromStyleOnly = false,
+        bool $rtl = false,
     ): string {
         $parts = '';
+
+        // <w:bidi/> pose le sens du paragraphe : Word applique alors
+        // l'algorithme bidirectionnel et aligne à droite par défaut.
+        if ($rtl) {
+            $parts .= '<w:bidi/>';
+        }
 
         if ($extraStyleId !== null) {
             $parts .= '<w:pStyle w:val="' . $extraStyleId . '"/>';
@@ -701,7 +713,7 @@ class DocxRenderer extends AbstractRenderer
         }
 
         $xml = '<w:r>';
-        $rPr = $this->renderRunProperties($run->getStyle());
+        $rPr = $this->renderRunProperties($run->getStyle(), TextDirection::isRtl($text));
         if ($rPr !== '') {
             $xml .= $rPr;
         }
@@ -777,13 +789,16 @@ class DocxRenderer extends AbstractRenderer
         return $style;
     }
 
-    private function renderRunProperties(?TextStyle $style): string
+    private function renderRunProperties(?TextStyle $style, bool $rtl = false): string
     {
-        if ($style === null) {
-            return '';
-        }
+        // <w:rtl/> indique à Word que le contenu est de droite à gauche :
+        // sans lui l'arabe et l'hébreu sont posés comme du texte gauche-droite
+        // et la ponctuation atterrit du mauvais côté.
+        $parts = $rtl ? '<w:rtl/>' : '';
 
-        $parts = '';
+        if ($style === null) {
+            return $parts === '' ? '' : '<w:rPr>' . $parts . '</w:rPr>';
+        }
 
         $font = $style->getFontFamily();
         if ($font !== '' && $font !== 'Helvetica') {

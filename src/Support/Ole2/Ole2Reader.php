@@ -271,7 +271,20 @@ class Ole2Reader
         $current = $startSector;
         $remaining = $maxSize;
 
+        /** @var array<int, true> $visited */
+        $visited = [];
+
         while ($current >= 0 && $current < self::ENDOFCHAIN && $remaining > 0) {
+            // Une FAT malformée ou hostile peut renvoyer un secteur sur sa
+            // propre chaîne. $maxSize vaut PHP_INT_MAX pour le directory et
+            // la mini-FAT : sans ce garde-fou la boucle concatène jusqu'à
+            // épuisement mémoire (erreur fatale, non rattrapable).
+            if (isset($visited[$current])) {
+                break;
+            }
+
+            $visited[$current] = true;
+
             $offset = $this->sectorOffset($current);
             $chunk = min($this->sectorSize, $remaining);
 
@@ -302,7 +315,16 @@ class Ole2Reader
         $current = $startMiniSector;
         $remaining = $size;
 
+        /** @var array<int, true> $visited */
+        $visited = [];
+
         while ($current >= 0 && $current < self::ENDOFCHAIN && $remaining > 0) {
+            if (isset($visited[$current])) {
+                break;
+            }
+
+            $visited[$current] = true;
+
             $offset = $current * $this->miniSectorSize;
             $chunk = min($this->miniSectorSize, $remaining);
 

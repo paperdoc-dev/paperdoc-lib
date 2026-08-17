@@ -88,6 +88,36 @@ class DocParserTest extends TestCase
         $this->assertSame('test', $doc->getTitle());
     }
 
+    /**
+     * Les autres cas ne vérifient que le format et le nombre de sections :
+     * un .doc rendu puis relu revenait entièrement vide sans faire échouer
+     * un seul test.
+     */
+    public function test_rendered_doc_round_trips_its_text(): void
+    {
+        $doc = \Paperdoc\Support\DocumentManager::create('doc', 'Aller-retour');
+        $section = \Paperdoc\Document\Section::make('main');
+        $section->addText('Chapitre 1 — Résumé');
+        $section->addText('Texte avec accents éàçüñ et un pipe |');
+        $doc->addSection($section);
+
+        $path = $this->tmpDir . '/roundtrip.doc';
+        \Paperdoc\Support\DocumentManager::save($doc, $path);
+
+        $text = '';
+        foreach ($this->parser->parse($path)->getSections() as $parsed) {
+            foreach ($parsed->getElements() as $element) {
+                if ($element instanceof Paragraph) {
+                    $text .= $element->getPlainText() . "\n";
+                }
+            }
+        }
+
+        $this->assertStringContainsString('Chapitre 1 — Résumé', $text);
+        $this->assertStringContainsString('accents éàçüñ', $text);
+        $this->assertStringContainsString('pipe |', $text);
+    }
+
     public function test_parser_factory_returns_doc_parser(): void
     {
         $parser = \Paperdoc\Factory\ParserFactory::getParser('file.doc');

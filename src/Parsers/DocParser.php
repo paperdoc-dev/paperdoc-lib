@@ -68,7 +68,9 @@ class DocParser extends AbstractParser implements ParserInterface
 
         $fib = $this->parseFib($wordDoc);
 
-        if ($fib['fcClx'] > 0 && $fib['lcbClx'] > 0) {
+        // fcClx est un décalage dans le flux table : 0 est une valeur valide
+        // (CLX en tête de flux). Seul lcbClx dit si la Piece Table existe.
+        if ($fib['lcbClx'] > 0) {
             $tableStream = $this->getTableStream($ole, $fib);
 
             if ($tableStream !== null) {
@@ -201,6 +203,7 @@ class DocParser extends AbstractParser implements ParserInterface
      */
     private function parseFib(string $wordDoc): array
     {
+        $nFib = $this->readUint16($wordDoc, 2);
         $flags = $this->readUint16($wordDoc, 10);
         $whichTable = ($flags >> 9) & 1;
 
@@ -221,7 +224,11 @@ class DocParser extends AbstractParser implements ParserInterface
         $rgFcLcbStart = $pos;
         $pos += $cbRgFcLcb * 8;
 
-        if ($pos + 2 <= strlen($wordDoc)) {
+        // FibRgCswNew n'existe qu'à partir de Word 2000 (nFib >= 0x0101) —
+        // [MS-DOC] 2.5.1. Sur un fichier Word 97 (nFib = 0x00C1) le FIB
+        // s'arrête ici : lire un cswNew imaginaire consomme le début du
+        // texte et projette fibEndOffset hors du flux.
+        if ($nFib >= 0x0101 && $pos + 2 <= strlen($wordDoc)) {
             $cswNew = $this->readUint16($wordDoc, $pos);
             $pos += 2 + $cswNew * 2;
         }
@@ -272,7 +279,7 @@ class DocParser extends AbstractParser implements ParserInterface
         $fcClx  = $fib['fcClx'];
         $lcbClx = $fib['lcbClx'];
 
-        if ($fcClx <= 0 || $lcbClx <= 0 || $fcClx + $lcbClx > strlen($tableStream)) {
+        if ($fcClx < 0 || $lcbClx <= 0 || $fcClx + $lcbClx > strlen($tableStream)) {
             return '';
         }
 

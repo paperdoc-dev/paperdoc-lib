@@ -346,14 +346,14 @@ class PdfParser extends AbstractParser implements ParserInterface
     /**
      * @param array<string, string> $cmap glyph hex → UTF-8 character
      */
-    private function decodeHexViaCMap(string $hex, array $cmap): string
+    private function decodeHexViaCMap(string $hex, array $cmap, bool $trim = true): string
     {
         $hex = strtoupper(trim($hex));
 
         if (empty($cmap)) {
             $bytes = hex2bin($hex);
 
-            return $bytes !== false ? $this->decodePdfString($bytes) : '';
+            return $bytes !== false ? $this->decodePdfString($bytes, $trim) : '';
         }
 
         $charLen = strlen((string) array_key_first($cmap));
@@ -1264,15 +1264,19 @@ class PdfParser extends AbstractParser implements ParserInterface
 
         $readableChars = 0;
 
-        if (preg_match_all('/[a-zA-Z]{2,}/', $text, $words)) {
+        // \p{L} et non [a-zA-Z] : sinon toute écriture non latine —
+        // cyrillique, grec, arabe, hébreu, japonais, thaï… — compte pour
+        // zéro et la page entière part à la poubelle. mb_strlen et non
+        // strlen : $totalChars est en caractères, pas en octets.
+        if (preg_match_all('/\p{L}{2,}/u', $text, $words)) {
             foreach ($words[0] as $w) {
-                $readableChars += strlen($w);
+                $readableChars += mb_strlen($w, 'UTF-8');
             }
         }
 
-        if (preg_match_all('/\d{2,}/', $text, $nums)) {
+        if (preg_match_all('/\p{N}{2,}/u', $text, $nums)) {
             foreach ($nums[0] as $n) {
-                $readableChars += strlen($n);
+                $readableChars += mb_strlen($n, 'UTF-8');
             }
         }
 
@@ -1283,7 +1287,7 @@ class PdfParser extends AbstractParser implements ParserInterface
      | String Decoding
      |============================================================= */
 
-    private function decodePdfString(string $str): string
+    private function decodePdfString(string $str, bool $trim = true): string
     {
         $str = preg_replace_callback('/\\\\(\d{3})/', fn ($m) => chr(((int) octdec($m[1])) & 0xFF), $str) ?? $str;
 
@@ -1294,20 +1298,28 @@ class PdfParser extends AbstractParser implements ParserInterface
         );
 
         if (str_starts_with($str, "\xFE\xFF")) {
-            return trim(mb_convert_encoding(substr($str, 2), 'UTF-8', 'UTF-16BE'));
+            $decoded = mb_convert_encoding(substr($str, 2), 'UTF-8', 'UTF-16BE');
+
+            return $trim ? trim($decoded) : $decoded;
         }
 
         if ($this->looksLikeUtf16BE($str)) {
-            return trim(mb_convert_encoding($str, 'UTF-8', 'UTF-16BE'));
+            $decoded = mb_convert_encoding($str, 'UTF-8', 'UTF-16BE');
+
+            return $trim ? trim($decoded) : $decoded;
         }
 
         if (! mb_check_encoding($str, 'UTF-8') && preg_match('/[\x80-\xFF]/', $str)) {
-            $str = mb_convert_encoding($str, 'UTF-8', 'ISO-8859-1');
+            // WinAnsiEncoding, pas Latin-1 : c'est l'encodage des polices
+            // Type 1 simples (et celui que PdfEngine écrit). En ISO-8859-1
+            // la plage 0x80–0x9F est constituée de contrôles C1, ce qui
+            // détruit — ' " € • … œ Ž ™ et les 19 autres caractères.
+            $str = mb_convert_encoding($str, 'UTF-8', 'Windows-1252');
         }
 
         $str = $this->collapseCidSpacing($str);
 
-        return trim($str);
+        return $trim ? trim($str) : $str;
     }
 
     /**
@@ -1322,15 +1334,40 @@ class PdfParser extends AbstractParser implements ParserInterface
             return false;
         }
 
-        $nullHighBytes = 0;
+        $highBytes = [];
+        $lowBytes  = [];
 
         for ($i = 0; $i < $len; $i += 2) {
-            if ($str[$i] === "\x00") {
-                $nullHighBytes++;
-            }
+            $highBytes[] = $str[$i];
+            $lowBytes[]  = $str[$i + 1];
         }
 
-        return $nullHighBytes >= ($len / 2) * 0.7;
+        $units = count($highBytes);
+
+        // Un texte UTF-16BE d'une seule écriture répète le même octet de
+        // poids fort : 0x00 en ASCII, mais aussi 0x04 en cyrillique, 0x03
+        // en grec, 0x05 en hébreu, 0x06 en arabe, 0x0E en thaï. Ne tester
+        // que 0x00 revenait à ne reconnaître que le latin.
+        $counts = array_count_values(array_map('ord', $highBytes));
+        arsort($counts);
+        $dominant = (int) array_key_first($counts);
+
+        if ($counts[$dominant] < $units * 0.7) {
+            return false;
+        }
+
+        // Les octets de poids faible d'un vrai texte varient. Sans ce
+        // garde-fou, une suite d'octets répétés serait prise pour de
+        // l'UTF-16 alors que c'est du simple octet.
+        if (count(array_unique($lowBytes)) < min(3, $units)) {
+            return false;
+        }
+
+        // Le plan multilingue de base au-delà de 0x0FFF est occupé par les
+        // écritures indiennes, le CJK, etc. — un octet de poids fort élevé
+        // et constant est bien plus probablement du texte simple octet
+        // dont les lettres se ressemblent que de l'UTF-16.
+        return $dominant <= 0x0F;
     }
 
     /**
@@ -1348,9 +1385,9 @@ class PdfParser extends AbstractParser implements ParserInterface
             $kernToken = $part[3] ?? null;
 
             if ($literal !== '') {
-                $text .= $this->decodePdfString($literal);
+                $text .= $this->decodePdfString($literal, false);
             } elseif ($hex !== '') {
-                $text .= $this->decodeHexViaCMap($hex, $cmap);
+                $text .= $this->decodeHexViaCMap($hex, $cmap, false);
             } elseif ($kernToken !== null) {
                 $kern = (int) $kernToken;
                 if ($kern < -100) {

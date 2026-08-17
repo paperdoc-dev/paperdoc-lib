@@ -19,6 +19,9 @@ class Ole2Writer
     private const ENTRIES_PER_SECTOR = 128; // 512 / 4
     private const DIRS_PER_SECTOR    = 4;   // 512 / 128
 
+    private const MINI_SECTOR_SIZE    = 64;
+    private const MINI_STREAM_CUTOFF  = 4096;
+
     private const ENDOFCHAIN = 0xFFFFFFFE;
     private const FREESECT   = 0xFFFFFFFF;
     private const FATSECT    = 0xFFFFFFFD;
@@ -40,12 +43,24 @@ class Ole2Writer
     {
         $layout = $this->planLayout();
 
+        // Sectors are emitted in index order — sector N must sit at
+        // 512 + N * 512 — so this order mirrors planLayout()'s allocation.
         $output = $this->buildHeader($layout);
 
-        foreach ($this->streams as $stream) {
-            $data = $stream['data'];
-            $padded = (int) ceil(max(1, strlen($data)) / self::SECTOR_SIZE) * self::SECTOR_SIZE;
-            $output .= str_pad($data, $padded, "\x00");
+        foreach ($this->streams as $i => $stream) {
+            if ($layout['isMini'][$i] || $stream['data'] === '') {
+                continue;
+            }
+
+            $output .= $this->padToSector($stream['data']);
+        }
+
+        if ($layout['miniStream'] !== '') {
+            $output .= $this->padToSector($layout['miniStream']);
+        }
+
+        if ($layout['miniFatBin'] !== '') {
+            $output .= $this->padToSector($layout['miniFatBin'], "\xFF");
         }
 
         $output .= str_pad(
@@ -63,24 +78,95 @@ class Ole2Writer
         return $output;
     }
 
+    private function padToSector(string $data, string $pad = "\x00"): string
+    {
+        $len = (int) ceil(strlen($data) / self::SECTOR_SIZE) * self::SECTOR_SIZE;
+
+        return str_pad($data, $len, $pad);
+    }
+
     /* =============================================================
      | Layout Planning
      |============================================================= */
 
     /**
-     * @return array{streamStarts: int[], dirStart: int, fatStart: int,
+     * Streams shorter than 4096 bytes must live in the mini-stream, chained
+     * through the mini-FAT — [MS-CFB] 2.6.1. A conformant reader routes any
+     * such stream through the mini-stream, so storing it in a normal sector
+     * makes it read back as empty.
+     *
+     * @return array{streamStarts: int[], isMini: bool[], miniStream: string,
+     *               miniFatBin: string, miniStreamStart: int, miniFatStart: int,
+     *               numMiniFatSectors: int, dirStart: int, fatStart: int,
      *               numDirSectors: int, numFatSectors: int, fat: int[]}
      */
     private function planLayout(): array
     {
-        $sectorIdx = 0;
         $streamStarts = [];
+        $isMini       = [];
+        $miniStream   = '';
+        $miniFat      = [];
 
-        foreach ($this->streams as $stream) {
+        // 1. Small streams: pack into the mini-stream, chain in the mini-FAT.
+        foreach ($this->streams as $i => $stream) {
             $len = strlen($stream['data']);
-            $numSectors = max(1, (int) ceil($len / self::SECTOR_SIZE));
-            $streamStarts[] = $sectorIdx;
-            $sectorIdx += $numSectors;
+            $isMini[$i] = $len > 0 && $len < self::MINI_STREAM_CUTOFF;
+
+            if (! $isMini[$i]) {
+                continue;
+            }
+
+            $numMini = (int) ceil($len / self::MINI_SECTOR_SIZE);
+            $first   = intdiv(strlen($miniStream), self::MINI_SECTOR_SIZE);
+
+            $streamStarts[$i] = $first;
+
+            for ($s = 0; $s < $numMini; $s++) {
+                $miniFat[] = ($s < $numMini - 1) ? $first + $s + 1 : self::ENDOFCHAIN;
+            }
+
+            $miniStream .= str_pad($stream['data'], $numMini * self::MINI_SECTOR_SIZE, "\x00");
+        }
+
+        // 2. Normal sectors, in the order build() emits them.
+        $sectorIdx = 0;
+
+        foreach ($this->streams as $i => $stream) {
+            if ($isMini[$i]) {
+                continue;
+            }
+
+            if ($stream['data'] === '') {
+                $streamStarts[$i] = self::ENDOFCHAIN;
+
+                continue;
+            }
+
+            $streamStarts[$i] = $sectorIdx;
+            $sectorIdx += (int) ceil(strlen($stream['data']) / self::SECTOR_SIZE);
+        }
+
+        $miniStreamStart      = self::ENDOFCHAIN;
+        $numMiniStreamSectors = 0;
+
+        if ($miniStream !== '') {
+            $numMiniStreamSectors = (int) ceil(strlen($miniStream) / self::SECTOR_SIZE);
+            $miniStreamStart      = $sectorIdx;
+            $sectorIdx += $numMiniStreamSectors;
+        }
+
+        $miniFatBin        = '';
+        $miniFatStart      = self::ENDOFCHAIN;
+        $numMiniFatSectors = 0;
+
+        if ($miniFat !== []) {
+            foreach ($miniFat as $entry) {
+                $miniFatBin .= pack('V', $entry);
+            }
+
+            $numMiniFatSectors = (int) ceil(strlen($miniFatBin) / self::SECTOR_SIZE);
+            $miniFatStart      = $sectorIdx;
+            $sectorIdx += $numMiniFatSectors;
         }
 
         $numDirEntries = 1 + count($this->streams); // root + streams
@@ -95,33 +181,50 @@ class Ole2Writer
         $fatStart = $sectorIdx;
         $totalSectors = $sectorIdx + $numFatSectors;
 
+        // 3. FAT chains for everything held in normal sectors.
         $fat = array_fill(0, $totalSectors, self::FREESECT);
 
-        foreach ($this->streams as $i => $stream) {
-            $len = strlen($stream['data']);
-            $numSectors = max(1, (int) ceil($len / self::SECTOR_SIZE));
-
-            for ($s = 0; $s < $numSectors; $s++) {
-                $sector = $streamStarts[$i] + $s;
-                $fat[$sector] = ($s < $numSectors - 1) ? $sector + 1 : self::ENDOFCHAIN;
+        $chain = static function (int $start, int $count) use (&$fat): void {
+            for ($s = 0; $s < $count; $s++) {
+                $fat[$start + $s] = ($s < $count - 1) ? $start + $s + 1 : self::ENDOFCHAIN;
             }
+        };
+
+        foreach ($this->streams as $i => $stream) {
+            if ($isMini[$i] || $stream['data'] === '') {
+                continue;
+            }
+
+            $chain($streamStarts[$i], (int) ceil(strlen($stream['data']) / self::SECTOR_SIZE));
         }
 
-        for ($s = 0; $s < $numDirSectors; $s++) {
-            $fat[$dirStart + $s] = ($s < $numDirSectors - 1) ? $dirStart + $s + 1 : self::ENDOFCHAIN;
+        if ($numMiniStreamSectors > 0) {
+            $chain($miniStreamStart, $numMiniStreamSectors);
         }
+
+        if ($numMiniFatSectors > 0) {
+            $chain($miniFatStart, $numMiniFatSectors);
+        }
+
+        $chain($dirStart, $numDirSectors);
 
         for ($s = 0; $s < $numFatSectors; $s++) {
             $fat[$fatStart + $s] = self::FATSECT;
         }
 
         return [
-            'streamStarts'  => $streamStarts,
-            'dirStart'      => $dirStart,
-            'fatStart'      => $fatStart,
-            'numDirSectors' => $numDirSectors,
-            'numFatSectors' => $numFatSectors,
-            'fat'           => $fat,
+            'streamStarts'      => $streamStarts,
+            'isMini'            => $isMini,
+            'miniStream'        => $miniStream,
+            'miniFatBin'        => $miniFatBin,
+            'miniStreamStart'   => $miniStreamStart,
+            'miniFatStart'      => $miniFatStart,
+            'numMiniFatSectors' => $numMiniFatSectors,
+            'dirStart'          => $dirStart,
+            'fatStart'          => $fatStart,
+            'numDirSectors'     => $numDirSectors,
+            'numFatSectors'     => $numFatSectors,
+            'fat'               => $fat,
         ];
     }
 
@@ -130,11 +233,15 @@ class Ole2Writer
      |============================================================= */
 
     /**
-     * @param array{streamStarts: int[], dirStart: int, fatStart: int, numDirSectors: int, numFatSectors: int, fat: int[]} $layout
+     * @param array{streamStarts: int[], isMini: bool[], miniStream: string,
+     *               miniFatBin: string, miniStreamStart: int, miniFatStart: int,
+     *               numMiniFatSectors: int, dirStart: int, fatStart: int,
+     *               numDirSectors: int, numFatSectors: int, fat: int[]} $layout
      */
     private function buildHeader(array $layout): string
     {
         $h  = self::MAGIC;
+        $h .= str_repeat("\x00", 16);               // CLSID — [MS-CFB] 2.2, offset 8
         $h .= pack('v', 0x003E);                   // minor version
         $h .= pack('v', 0x0003);                   // major version 3
         $h .= pack('v', 0xFFFE);                   // byte order (little-endian)
@@ -145,9 +252,9 @@ class Ole2Writer
         $h .= pack('V', $layout['numFatSectors']);  // total FAT sectors
         $h .= pack('V', $layout['dirStart']);        // first directory sector SID
         $h .= pack('V', 0);                         // transaction signature
-        $h .= pack('V', 0x00001000);                // mini-stream cutoff (4096)
-        $h .= pack('V', self::ENDOFCHAIN);           // first mini-FAT sector (none)
-        $h .= pack('V', 0);                         // num mini-FAT sectors
+        $h .= pack('V', self::MINI_STREAM_CUTOFF);  // mini-stream cutoff (4096)
+        $h .= pack('V', $layout['miniFatStart']);    // first mini-FAT sector
+        $h .= pack('V', $layout['numMiniFatSectors']);
         $h .= pack('V', self::ENDOFCHAIN);           // first DIFAT sector (none)
         $h .= pack('V', 0);                         // num DIFAT sectors
 
@@ -165,14 +272,24 @@ class Ole2Writer
      |============================================================= */
 
     /**
-     * @param array{streamStarts: int[], dirStart: int, fatStart: int, numDirSectors: int, numFatSectors: int, fat: int[]} $layout
+     * @param array{streamStarts: int[], isMini: bool[], miniStream: string,
+     *               miniFatBin: string, miniStreamStart: int, miniFatStart: int,
+     *               numMiniFatSectors: int, dirStart: int, fatStart: int,
+     *               numDirSectors: int, numFatSectors: int, fat: int[]} $layout
      */
     private function buildDirectoryData(array $layout): string
     {
         $data = '';
 
-        // Root Entry
-        $data .= $this->packDirEntry('Root Entry', 5, self::ENDOFCHAIN, 0, count($this->streams) > 0 ? 1 : self::FREESECT);
+        // Root Entry — owns the mini-stream: its sector chain and byte length
+        // are how a reader locates the storage backing every small stream.
+        $data .= $this->packDirEntry(
+            'Root Entry',
+            5,
+            $layout['miniStreamStart'],
+            strlen($layout['miniStream']),
+            count($this->streams) > 0 ? 1 : self::FREESECT,
+        );
 
         foreach ($this->streams as $i => $stream) {
             $nextSibling = ($i + 1 < count($this->streams))

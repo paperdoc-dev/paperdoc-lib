@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
-use Paperdoc\Document\{Document, Image, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\{Document, Image, ListBlock, ListItem, PageBreak, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\Link\TextLink;
 use Paperdoc\Document\Style\{ParagraphStyle, TableStyle, TextStyle};
 use Paperdoc\Enum\Alignment;
 
@@ -16,6 +17,16 @@ use Paperdoc\Enum\Alignment;
  */
 class HtmlParser extends AbstractParser implements ParserInterface
 {
+    /**
+     * Tags parseNode() turns into document elements. Their presence inside an
+     * unhandled wrapper means the wrapper has to be descended into, not flattened.
+     */
+    private const BLOCK_ELEMENTS = [
+        'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'table',
+        'img', 'figure', 'hr', 'div', 'section', 'article', 'main',
+        'header', 'footer', 'nav',
+    ];
+
     public function supports(string $extension): bool
     {
         return in_array(strtolower($extension), ['html', 'htm'], true);
@@ -36,7 +47,7 @@ class HtmlParser extends AbstractParser implements ParserInterface
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
 
-        if (stripos($html, '<meta charset') === false && stripos($html, 'encoding') === false) {
+        if (! $this->declaresCharset($html)) {
             $html = '<?xml encoding="UTF-8">' . $html;
         }
 
@@ -55,52 +66,116 @@ class HtmlParser extends AbstractParser implements ParserInterface
             return $document;
         }
 
-        $sections = $dom->getElementsByTagName('section');
+        $sections = [];
+        $loose = new Section('main');
 
-        if ($sections->length > 0) {
-            foreach ($sections as $sectionNode) {
-                $section = new Section($sectionNode->getAttribute('id'));
-                $this->parseChildNodes($sectionNode, $section);
-                $document->addSection($section);
-            }
-        } else {
-            $section = new Section('main');
-            $this->parseChildNodes($body, $section);
+        $this->collectSections($body, $loose, $sections);
+
+        if ($sections === [] || count($loose->getElements()) > 0) {
+            $sections[] = $loose;
+        }
+
+        foreach ($sections as $section) {
             $document->addSection($section);
         }
 
         return $document;
     }
 
-    private function parseChildNodes(\DOMNode $parent, Section $section): void
+    /**
+     * Walks the body in document order, opening a new Section on each <section>.
+     * Content sitting outside any <section> lands in $loose so it is never
+     * dropped — a <table> before the first <section> used to vanish entirely.
+     *
+     * @param array<int, Section> $sections
+     */
+    private function collectSections(\DOMNode $parent, Section &$loose, array &$sections): void
     {
         foreach ($parent->childNodes as $node) {
-            if ($node->nodeType !== XML_ELEMENT_NODE) {
-                if ($node->nodeType === XML_TEXT_NODE && trim($node->textContent) !== '') {
-                    $section->addText($node->textContent);
-                }
+            if (! $node instanceof \DOMElement) {
+                $this->parseNode($node, $loose);
 
                 continue;
             }
 
-            /** @var \DOMElement $node */
-            match (strtolower($node->nodeName)) {
-                'p'          => $this->parseParagraph($node, $section),
-                'h1'         => $section->addHeading($node->textContent, 1),
-                'h2'         => $section->addHeading($node->textContent, 2),
-                'h3'         => $section->addHeading($node->textContent, 3),
-                'h4'         => $section->addHeading($node->textContent, 4),
-                'h5'         => $section->addHeading($node->textContent, 5),
-                'h6'         => $section->addHeading($node->textContent, 6),
-                'table'      => $this->parseTable($node, $section),
-                'img'        => $this->parseImage($node, $section),
-                'figure'     => $this->parseFigure($node, $section),
-                'hr'         => $section->addPageBreak(),
-                'div', 'article', 'main', 'header', 'footer', 'nav'
-                             => $this->parseChildNodes($node, $section),
-                default      => $this->parseFallbackElement($node, $section),
-            };
+            if (strtolower($node->nodeName) === 'section') {
+                if (count($loose->getElements()) > 0) {
+                    $sections[] = $loose;
+                    $loose = new Section('main');
+                }
+
+                $section = new Section($node->getAttribute('id'));
+                $this->parseChildNodes($node, $section);
+                $sections[] = $section;
+
+                continue;
+            }
+
+            // A wrapper may hold <section> children; descend so their
+            // boundaries are honoured wherever they sit in the tree.
+            if ($node->getElementsByTagName('section')->length > 0) {
+                $this->collectSections($node, $loose, $sections);
+
+                continue;
+            }
+
+            $this->parseNode($node, $loose);
         }
+    }
+
+    /**
+     * Un document qui déclare son encodage ne doit pas se voir imposer
+     * UTF-8. La déclaration ne peut vivre que dans le prologue : chercher
+     * « encoding » dans tout le fichier faisait passer pour déclaré
+     * n'importe quel texte employant le mot, et libxml retombait alors
+     * sur ISO-8859-1 — mojibake sur tout contenu non ASCII.
+     */
+    private function declaresCharset(string $html): bool
+    {
+        $bodyStart = stripos($html, '<body');
+        $prologue  = substr($html, 0, $bodyStart === false ? 4096 : $bodyStart);
+
+        return (bool) preg_match(
+            '/<\?xml[^>]*\bencoding\s*=|<meta[^>]*\bcharset\s*=/i',
+            $prologue,
+        );
+    }
+
+    private function parseChildNodes(\DOMNode $parent, Section $section): void
+    {
+        foreach ($parent->childNodes as $node) {
+            $this->parseNode($node, $section);
+        }
+    }
+
+    private function parseNode(\DOMNode $node, Section $section): void
+    {
+        if ($node->nodeType !== XML_ELEMENT_NODE) {
+            if ($node->nodeType === XML_TEXT_NODE && trim($node->textContent) !== '') {
+                $section->addText($node->textContent);
+            }
+
+            return;
+        }
+
+        /** @var \DOMElement $node */
+        match (strtolower($node->nodeName)) {
+            'p'          => $this->parseParagraph($node, $section),
+            'h1'         => $section->addHeading($node->textContent, 1),
+            'h2'         => $section->addHeading($node->textContent, 2),
+            'h3'         => $section->addHeading($node->textContent, 3),
+            'h4'         => $section->addHeading($node->textContent, 4),
+            'h5'         => $section->addHeading($node->textContent, 5),
+            'h6'         => $section->addHeading($node->textContent, 6),
+            'ul', 'ol'   => $this->parseList($node, $section),
+            'table'      => $this->parseTable($node, $section),
+            'img'        => $this->parseImage($node, $section),
+            'figure'     => $this->parseFigure($node, $section),
+            'hr'         => $section->addPageBreak(),
+            'div', 'article', 'main', 'header', 'footer', 'nav', 'section'
+                         => $this->parseChildNodes($node, $section),
+            default      => $this->parseFallbackElement($node, $section),
+        };
     }
 
     private function parseParagraph(\DOMElement $node, Section $section): void
@@ -119,50 +194,157 @@ class HtmlParser extends AbstractParser implements ParserInterface
         }
     }
 
-    private function parseInlineContent(\DOMNode $parent, Paragraph $paragraph): void
+    /**
+     * $link is inherited from an enclosing <a>, so every run produced below
+     * an anchor keeps the hyperlink — including nested <strong>, <em>…
+     */
+    private function parseInlineContent(\DOMNode $parent, Paragraph $paragraph, ?TextLink $link = null): void
     {
         foreach ($parent->childNodes as $child) {
-            if ($child->nodeType === XML_TEXT_NODE) {
-                $text = $child->textContent;
-
-                if (trim($text) !== '') {
-                    $paragraph->addRun(new TextRun($text));
-                }
-
-                continue;
-            }
-
-            if ($child->nodeType !== XML_ELEMENT_NODE) {
-                continue;
-            }
-
-            /** @var \DOMElement $child */
-            $tag = strtolower($child->nodeName);
-
-            $textStyle = $this->extractTextStyle($child);
-
-            match ($tag) {
-                'strong', 'b' => $this->addStyledRun($child, $paragraph, (clone ($textStyle ?? TextStyle::make()))->setBold()),
-                'em', 'i'    => $this->addStyledRun($child, $paragraph, (clone ($textStyle ?? TextStyle::make()))->setItalic()),
-                'u'          => $this->addStyledRun($child, $paragraph, (clone ($textStyle ?? TextStyle::make()))->setUnderline()),
-                'span'       => $this->addStyledRun($child, $paragraph, $textStyle),
-                'br'         => $paragraph->addRun(new TextRun("\n")),
-                default      => $paragraph->addRun(new TextRun($child->textContent, $textStyle)),
-            };
+            $this->parseInlineNode($child, $paragraph, $link);
         }
     }
 
-    private function addStyledRun(\DOMElement $node, Paragraph $paragraph, ?TextStyle $style): void
+    private function parseInlineNode(\DOMNode $node, Paragraph $paragraph, ?TextLink $link = null): void
+    {
+        if ($node->nodeType === XML_TEXT_NODE) {
+            $text = $node->textContent;
+
+            if (trim($text) !== '') {
+                $paragraph->addRun(new TextRun($text, null, $link));
+            }
+
+            return;
+        }
+
+        if ($node->nodeType !== XML_ELEMENT_NODE) {
+            return;
+        }
+
+        /** @var \DOMElement $node */
+        $tag = strtolower($node->nodeName);
+
+        $textStyle = $this->extractTextStyle($node);
+
+        match ($tag) {
+            'strong', 'b' => $this->addStyledRun($node, $paragraph, (clone ($textStyle ?? TextStyle::make()))->setBold(), $link),
+            'em', 'i'    => $this->addStyledRun($node, $paragraph, (clone ($textStyle ?? TextStyle::make()))->setItalic(), $link),
+            'u'          => $this->addStyledRun($node, $paragraph, (clone ($textStyle ?? TextStyle::make()))->setUnderline(), $link),
+            'span'       => $this->addStyledRun($node, $paragraph, $textStyle, $link),
+            'a'          => $this->addStyledRun($node, $paragraph, $textStyle, $this->extractLink($node) ?? $link),
+            'br'         => $paragraph->addRun(new TextRun("\n", null, $link)),
+            default      => $paragraph->addRun(new TextRun($node->textContent, $textStyle, $link)),
+        };
+    }
+
+    private function addStyledRun(\DOMElement $node, Paragraph $paragraph, ?TextStyle $style, ?TextLink $link = null): void
     {
         foreach ($node->childNodes as $child) {
             if ($child->nodeType === XML_TEXT_NODE) {
-                $paragraph->addRun(new TextRun($child->textContent, $style));
+                $paragraph->addRun(new TextRun($child->textContent, $style, $link));
             } elseif ($child->nodeType === XML_ELEMENT_NODE) {
-                $this->parseInlineContent($node, $paragraph);
+                $this->parseInlineContent($node, $paragraph, $link);
 
                 return;
             }
         }
+    }
+
+    /**
+     * A bare fragment href ("#intro") becomes an internal anchor, anything
+     * else an external URL — TextLink::getHref() recomposes both.
+     */
+    private function extractLink(\DOMElement $node): ?TextLink
+    {
+        $href = trim($node->getAttribute('href'));
+
+        if ($href === '') {
+            return null;
+        }
+
+        $title = $node->getAttribute('title');
+
+        if (str_starts_with($href, '#')) {
+            return TextLink::make('', ltrim($href, '#'), $title);
+        }
+
+        return TextLink::make($href, '', $title);
+    }
+
+    private function parseList(\DOMElement $node, Section $section): void
+    {
+        $list = $this->buildList($node);
+
+        if (! $list->isEmpty()) {
+            $section->addElement($list);
+        }
+    }
+
+    /**
+     * Build a ListBlock from a <ul>/<ol> node. Nested lists are attached
+     * to their parent ListItem, so the recursion mirrors the markup.
+     */
+    private function buildList(\DOMElement $node): ListBlock
+    {
+        $isOrdered = strtolower($node->nodeName) === 'ol';
+
+        $start = $isOrdered ? filter_var($node->getAttribute('start'), FILTER_VALIDATE_INT) : false;
+
+        $list = new ListBlock(
+            $isOrdered ? ListBlock::STYLE_ORDERED : ListBlock::STYLE_BULLET,
+            $start === false ? 1 : $start,
+        );
+
+        foreach ($node->childNodes as $child) {
+            if (! $child instanceof \DOMElement) {
+                continue;
+            }
+
+            $tag = strtolower($child->nodeName);
+
+            if ($tag === 'li') {
+                $list->addItem($this->parseListItem($child));
+
+                continue;
+            }
+
+            // Some editors and Word exports place a nested list as a sibling
+            // of the <li> it belongs to rather than inside it.
+            if ($tag === 'ul' || $tag === 'ol') {
+                $items = $list->getItems();
+                $parent = $items === [] ? $list->addText('') : end($items);
+                $parent->addList($this->buildList($child));
+            }
+        }
+
+        return $list;
+    }
+
+    private function parseListItem(\DOMElement $node): ListItem
+    {
+        $item = new ListItem();
+
+        // Runs are collected through a scratch Paragraph so <li> labels get
+        // the same inline handling (bold, italic, styled spans) as elsewhere.
+        $label = new Paragraph();
+
+        foreach ($node->childNodes as $child) {
+            $tag = $child instanceof \DOMElement ? strtolower($child->nodeName) : '';
+
+            match ($tag) {
+                'ul', 'ol' => $item->addList($this->buildList($child)),
+                // Block wrappers around the label — <li><p>text</p></li> is
+                // what rich-text editors emit.
+                'p', 'div' => $this->parseInlineContent($child, $label),
+                default    => $this->parseInlineNode($child, $label),
+            };
+        }
+
+        foreach ($label->getRuns() as $run) {
+            $item->addRun($run);
+        }
+
+        return $item;
     }
 
     private function parseTable(\DOMElement $node, Section $section): void
@@ -258,11 +440,39 @@ class HtmlParser extends AbstractParser implements ParserInterface
 
     private function parseFallbackElement(\DOMElement $node, Section $section): void
     {
+        // Unhandled wrappers (<aside>, <blockquote>, <form>, <details>…) must
+        // not swallow the blocks they carry: flattening to textContent turns a
+        // nested <table> into a single text run.
+        if ($this->containsBlockElement($node)) {
+            $this->parseChildNodes($node, $section);
+
+            return;
+        }
+
         $text = trim($node->textContent);
 
         if ($text !== '') {
             $section->addText($text);
         }
+    }
+
+    private function containsBlockElement(\DOMElement $node): bool
+    {
+        foreach ($node->childNodes as $child) {
+            if (! $child instanceof \DOMElement) {
+                continue;
+            }
+
+            if (in_array(strtolower($child->nodeName), self::BLOCK_ELEMENTS, true)) {
+                return true;
+            }
+
+            if ($this->containsBlockElement($child)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /* -------------------------------------------------------------

@@ -319,7 +319,9 @@ class MarkdownParser extends AbstractParser implements ParserInterface
             $line = substr($line, 1);
         }
 
-        if (str_ends_with($line, '|')) {
+        // Un « \| » final est un pipe échappé appartenant à la cellule,
+        // pas le délimiteur de fin de ligne.
+        if (str_ends_with($line, '|') && ! str_ends_with($line, '\\|')) {
             $line = substr($line, 0, -1);
         }
 
@@ -327,7 +329,15 @@ class MarkdownParser extends AbstractParser implements ParserInterface
             return [];
         }
 
-        return explode('|', $line);
+        // MarkdownRenderer échappe les pipes contenus dans les cellules ;
+        // découper sur tous les « | » scinderait la cellule en deux et
+        // décalerait toute la ligne par rapport à l'en-tête.
+        $cells = preg_split('/(?<!\\\\)\|/', $line) ?: [];
+
+        return array_map(
+            static fn (string $cell): string => str_replace('\\|', '|', $cell),
+            $cells,
+        );
     }
 
     /**

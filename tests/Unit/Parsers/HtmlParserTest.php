@@ -6,7 +6,7 @@ namespace Paperdoc\Tests\Unit\Parsers;
 
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\ParserInterface;
-use Paperdoc\Document\{Image, Paragraph, Table};
+use Paperdoc\Document\{Image, ListBlock, Paragraph, Table};
 use Paperdoc\Parsers\HtmlParser;
 
 class HtmlParserTest extends TestCase
@@ -250,6 +250,265 @@ class HtmlParserTest extends TestCase
 
         $cell = $tables[0]->getRows()[0]->getCells()[0];
         $this->assertSame(3, $cell->getColspan());
+    }
+
+    public function test_table_outside_section_is_kept(): void
+    {
+        $path = $this->writeHtml('
+            <html><body>
+                <table><tr><th>A</th></tr><tr><td>1</td></tr></table>
+                <section id="s1"><p>Inside</p></section>
+            </body></html>
+        ');
+
+        $doc = (new HtmlParser())->parse($path);
+        $sections = $doc->getSections();
+
+        $this->assertCount(2, $sections);
+        $this->assertSame('main', $sections[0]->getName());
+        $this->assertSame('s1', $sections[1]->getName());
+
+        $tables = array_values(array_filter(
+            $sections[0]->getElements(),
+            fn ($e) => $e instanceof Table
+        ));
+
+        $this->assertCount(1, $tables);
+        $this->assertCount(2, $tables[0]->getRows());
+    }
+
+    public function test_table_inside_unhandled_wrapper_is_kept(): void
+    {
+        foreach (['aside', 'blockquote', 'form', 'details'] as $wrapper) {
+            $path = $this->writeHtml(
+                "<html><body><{$wrapper}>"
+                . '<table><tr><th>A</th></tr><tr><td>1</td></tr></table>'
+                . "</{$wrapper}></body></html>"
+            );
+
+            $doc = (new HtmlParser())->parse($path);
+            $tables = array_values(array_filter(
+                $doc->getSections()[0]->getElements(),
+                fn ($e) => $e instanceof Table
+            ));
+
+            $this->assertCount(1, $tables, "<{$wrapper}> swallowed its table");
+            $this->assertCount(2, $tables[0]->getRows());
+        }
+    }
+
+    /**
+     * @return ListBlock[]
+     */
+    private function parseLists(string $body): array
+    {
+        $path = $this->writeHtml('<html><body>' . $body . '</body></html>');
+        $doc = (new HtmlParser())->parse($path);
+        $elements = $doc->getSections()[0]->getElements();
+
+        return array_values(array_filter($elements, fn ($e) => $e instanceof ListBlock));
+    }
+
+    public function test_parse_bullet_list(): void
+    {
+        $lists = $this->parseLists('<ul><li>Premier</li><li>Deuxième</li></ul>');
+
+        $this->assertCount(1, $lists);
+        $this->assertTrue($lists[0]->isBullet());
+
+        $items = $lists[0]->getItems();
+        $this->assertCount(2, $items);
+        $this->assertSame('Premier', $items[0]->getPlainText());
+        $this->assertSame('Deuxième', $items[1]->getPlainText());
+    }
+
+    public function test_parse_ordered_list(): void
+    {
+        $lists = $this->parseLists('<ol><li>Étape 1</li><li>Étape 2</li></ol>');
+
+        $this->assertCount(1, $lists);
+        $this->assertTrue($lists[0]->isOrdered());
+        $this->assertSame(1, $lists[0]->getStart());
+        $this->assertCount(2, $lists[0]->getItems());
+    }
+
+    public function test_parse_ordered_list_honours_start_attribute(): void
+    {
+        $lists = $this->parseLists('<ol start="3"><li>Troisième</li></ol>');
+
+        $this->assertSame(3, $lists[0]->getStart());
+    }
+
+    public function test_parse_ordered_list_ignores_invalid_start_attribute(): void
+    {
+        $lists = $this->parseLists('<ol start="abc"><li>Premier</li></ol>');
+
+        $this->assertSame(1, $lists[0]->getStart());
+    }
+
+    public function test_parse_list_item_keeps_inline_styles(): void
+    {
+        $lists = $this->parseLists('<ul><li>Texte <strong>gras</strong></li></ul>');
+
+        $runs = $lists[0]->getItems()[0]->getRuns();
+
+        $this->assertCount(2, $runs);
+        $this->assertSame('gras', $runs[1]->getText());
+        $this->assertTrue($runs[1]->getStyle()->isBold());
+    }
+
+    public function test_parse_list_item_wrapped_in_paragraph(): void
+    {
+        // Shape emitted by rich-text editors such as TipTap / ProseMirror.
+        $lists = $this->parseLists('<ul><li><p>Premier</p></li></ul>');
+
+        $this->assertSame('Premier', $lists[0]->getItems()[0]->getPlainText());
+    }
+
+    public function test_parse_nested_list(): void
+    {
+        $lists = $this->parseLists('
+            <ul>
+                <li>Premier<ol><li>Imbriqué</li></ol></li>
+                <li>Deuxième</li>
+            </ul>
+        ');
+
+        $this->assertCount(1, $lists);
+
+        $items = $lists[0]->getItems();
+        $this->assertCount(2, $items);
+        $this->assertTrue($items[0]->hasChildren());
+        $this->assertFalse($items[1]->hasChildren());
+
+        $nested = $items[0]->getBlocks()[0];
+        $this->assertInstanceOf(ListBlock::class, $nested);
+        $this->assertTrue($nested->isOrdered());
+        $this->assertSame('Imbriqué', $nested->getItems()[0]->getPlainText());
+    }
+
+    public function test_parse_nested_list_declared_as_sibling(): void
+    {
+        // Word HTML exports nest by putting the child list after the <li>.
+        $lists = $this->parseLists('<ul><li>Premier</li><ul><li>Imbriqué</li></ul></ul>');
+
+        $items = $lists[0]->getItems();
+        $this->assertCount(1, $items);
+        $this->assertSame('Premier', $items[0]->getPlainText());
+
+        $nested = $items[0]->getBlocks()[0];
+        $this->assertInstanceOf(ListBlock::class, $nested);
+        $this->assertSame('Imbriqué', $nested->getItems()[0]->getPlainText());
+    }
+
+    public function test_parse_list_inside_container(): void
+    {
+        $lists = $this->parseLists('<div><ul><li>Premier</li></ul></div>');
+
+        $this->assertCount(1, $lists);
+        $this->assertSame('Premier', $lists[0]->getItems()[0]->getPlainText());
+    }
+
+    public function test_parse_empty_list_is_skipped(): void
+    {
+        $this->assertSame([], $this->parseLists('<ul></ul>'));
+    }
+
+    /**
+     * @return Paragraph[]
+     */
+    private function parseParagraphs(string $body): array
+    {
+        $path = $this->writeHtml('<html><body>' . $body . '</body></html>');
+        $doc = (new HtmlParser())->parse($path);
+        $elements = $doc->getSections()[0]->getElements();
+
+        return array_values(array_filter($elements, fn ($e) => $e instanceof Paragraph));
+    }
+
+    public function test_parse_link(): void
+    {
+        $paragraphs = $this->parseParagraphs('<p><a href="https://exemple.fr">Voir</a></p>');
+
+        $run = $paragraphs[0]->getRuns()[0];
+
+        $this->assertSame('Voir', $run->getText());
+        $this->assertNotNull($run->getLink());
+        $this->assertSame('https://exemple.fr', $run->getLink()->getUrl());
+        $this->assertSame('https://exemple.fr', $run->getLink()->getHref());
+        $this->assertTrue($run->getLink()->isExternal());
+    }
+
+    public function test_parse_link_with_title(): void
+    {
+        $paragraphs = $this->parseParagraphs('<p><a href="https://exemple.fr" title="Accueil">Voir</a></p>');
+
+        $this->assertSame('Accueil', $paragraphs[0]->getRuns()[0]->getLink()->getTitle());
+    }
+
+    public function test_parse_anchor_link(): void
+    {
+        $paragraphs = $this->parseParagraphs('<p><a href="#intro">Introduction</a></p>');
+
+        $link = $paragraphs[0]->getRuns()[0]->getLink();
+
+        $this->assertSame('', $link->getUrl());
+        $this->assertSame('intro', $link->getAnchor());
+        $this->assertSame('#intro', $link->getHref());
+        $this->assertFalse($link->isExternal());
+    }
+
+    public function test_parse_link_without_href_is_not_a_link(): void
+    {
+        $paragraphs = $this->parseParagraphs('<p><a name="ancre">Texte</a></p>');
+
+        $this->assertNull($paragraphs[0]->getRuns()[0]->getLink());
+    }
+
+    public function test_parse_link_keeps_nested_inline_styles(): void
+    {
+        $paragraphs = $this->parseParagraphs('<p><a href="https://exemple.fr"><strong>Gras</strong></a></p>');
+
+        $run = $paragraphs[0]->getRuns()[0];
+
+        $this->assertSame('Gras', $run->getText());
+        $this->assertTrue($run->getStyle()->isBold());
+        $this->assertSame('https://exemple.fr', $run->getLink()->getUrl());
+    }
+
+    public function test_parse_link_inside_list_item(): void
+    {
+        $lists = $this->parseLists('<ul><li><a href="https://exemple.fr">Voir</a></li></ul>');
+
+        $run = $lists[0]->getItems()[0]->getRuns()[0];
+
+        $this->assertSame('Voir', $run->getText());
+        $this->assertSame('https://exemple.fr', $run->getLink()->getUrl());
+    }
+
+    public function test_parse_link_inside_table_cell(): void
+    {
+        $path = $this->writeHtml('
+            <html><body>
+                <table><tr><td><a href="https://exemple.fr">Voir</a></td></tr></table>
+            </body></html>
+        ');
+
+        $doc = (new HtmlParser())->parse($path);
+        $elements = $doc->getSections()[0]->getElements();
+        $tables = array_values(array_filter($elements, fn ($e) => $e instanceof Table));
+
+        $cell = $tables[0]->getRows()[0]->getCells()[0];
+        $run = $cell->getElements()[0]->getRuns()[0];
+
+        $this->assertSame('https://exemple.fr', $run->getLink()->getUrl());
+    }
+
+    public function test_parse_text_without_link_has_no_link(): void
+    {
+        $paragraphs = $this->parseParagraphs('<p>Texte simple</p>');
+
+        $this->assertNull($paragraphs[0]->getRuns()[0]->getLink());
     }
 
     public function test_parse_figure_with_img(): void

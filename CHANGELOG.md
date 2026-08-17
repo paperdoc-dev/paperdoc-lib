@@ -10,6 +10,133 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 > Changes merged into `main` but not yet tagged.
 
+
+
+## [1.1.0] — 2026-08-17
+
+> **Internationalisation release.** The library rendered and re-read
+> non-Latin text correctly in every format except two — PDF and DOC,
+> both of which encoded text as Windows-1252 and turned Cyrillic,
+> Greek, Arabic, Hebrew, CJK and Thai into `?`. That gap is closed,
+> along with the OLE2 container defects that made `.doc`/`.xls`/`.ppt`
+> unreadable, and a set of parser bugs that silently dropped or
+> corrupted content.
+
+### Added
+
+- **TrueType/OpenType font embedding for PDF** —
+  `PdfRenderer::registerTrueTypeFont($alias, $path, $fontIndex = 0)`
+  makes a font available as a `TextStyle` font family. Text set in it
+  is written as glyph ids through a `Type0` / `Identity-H` font, which
+  lifts the Latin-1 ceiling of the 14 standard fonts. Accepts `.ttf`,
+  `.otf` (CFF outlines, embedded as `CIDFontType0` / `FontFile3`) and
+  `.ttc` collections (`$fontIndex` picks the face). A `ToUnicode` CMap
+  is emitted so the text stays selectable and extractable.
+  **The library ships no font data** — the caller supplies the file and
+  is responsible for its embedding licence.
+- **Glyph subsetting.** Only the glyphs actually used are embedded,
+  with composite components pulled in. A Latin page drops from 423 KB
+  to ~9 KB, a CJK page from 4 MB to ~4 KB. CFF outlines are embedded
+  whole (subsetting them would mean rewriting the CFF charstrings).
+- **Unicode bidirectional algorithm** (`Paperdoc\Support\Text\Bidi`) —
+  rules P2–P3, W1–W7, N0–N2, I1–I2 and L1–L4. PDF places glyphs where
+  it is told, so without reordering an Arabic or Hebrew line came out
+  backwards. Verified against `fribidi`: 21 of 21 mixed-script cases
+  byte-identical.
+- **Arabic contextual shaping**
+  (`Paperdoc\Support\Text\ArabicShaper`) — isolated/initial/medial/final
+  presentation forms and lam-alef ligatures, applied in logical order
+  before reordering. Without it the letters render disconnected.
+- **`Paperdoc\Support\TextDirection`** — detects whether text is
+  predominantly right-to-left (8 RTL scripts).
+- **Line breaking for scripts without word spaces.** `wrapText()` now
+  breaks inside an over-long run on grapheme-cluster boundaries, so
+  Japanese, Chinese and Thai paragraphs — and very long URLs — no
+  longer overflow the page on a single line.
+
+### Changed
+
+- **`.doc` text is written as uncompressed UTF-16LE** instead of
+  Windows-1252, matching what `PptRenderer` and `XlsRenderer` already
+  did. Every script now survives a `.doc` round-trip. *The bytes in the
+  file change: code reading the raw stream for ASCII will need
+  updating.*
+- **HTML output declares its direction** — `<html lang="…" dir="ltr">`
+  or `dir="rtl"`, letting the browser run the bidi algorithm.
+- **DOCX marks right-to-left content** with `<w:bidi/>` on the
+  paragraph and `<w:rtl/>` on the runs.
+- PDF text is shaped and reordered on the way out. Text with no
+  right-to-left character is passed through untouched.
+
+### Fixed
+
+- **`Ole2Writer` produced malformed containers.** The header omitted
+  the 16-byte CLSID at offset 8, making it 496 bytes instead of 512 and
+  shifting every field; and streams under 4096 bytes were stored in
+  normal sectors instead of the mini-stream that [MS-CFB] requires.
+  Consequence: a `.doc` written by the library exhausted memory when
+  read back, and `.xls`/`.ppt` came back **empty with no error**.
+- **`Ole2Reader` could be made to exhaust memory.** `readStream()`
+  followed the FAT chain with no cycle guard and an unbounded size for
+  the directory and mini-FAT, so a 1.5 KB file with a self-referencing
+  FAT entry killed the process with an unrecoverable fatal error.
+- **`DocParser` read a `FibRgCswNew` that Word 97 files do not have**
+  (it exists only from `nFib` 0x0101), consuming the start of the text
+  and pushing the text offset outside the stream. It also rejected
+  `fcClx = 0`, a perfectly valid offset into the table stream.
+- **`PdfParser` decoded WinAnsi text as ISO-8859-1**, destroying the 27
+  printable characters in the 0x80–0x9F range — `€ • – — " " … œ ™` and
+  the rest became invisible C1 controls.
+- **`PdfParser` discarded every non-Latin page.** `isGarbageText()`
+  counted only `[a-zA-Z]` as readable, so a document entirely in
+  Russian, Japanese, Greek or Arabic came back empty.
+- **`PdfParser` only detected UTF-16BE for ASCII text**, since it
+  counted null high bytes. Now keyed on the dominant high byte, which
+  covers Cyrillic, Greek, Hebrew, Arabic and Thai without any false
+  positive on single-byte text.
+- **`MarkdownParser` corrupted tables containing an escaped pipe.**
+  `MarkdownRenderer` correctly writes `\|`, but the parser split on
+  every `|`, splitting the cell in two and shifting the whole row.
+- **`HtmlParser` dropped content outside `<section>`.** As soon as one
+  `<section>` existed anywhere, only sections were parsed — a table
+  before the first one vanished entirely.
+- **`HtmlParser` flattened unhandled wrappers.** `<aside>`,
+  `<blockquote>`, `<form>`, `<details>`… collapsed their whole subtree
+  to text, turning a nested table into a single run.
+- **`HtmlParser` fell back to ISO-8859-1 when the body used the word
+  "encoding".** The charset check scanned the whole file; it now looks
+  only at the prologue, and understands `<meta charset>`,
+  `<meta http-equiv>` and the XML declaration.
+- **`decodePdfString()` trimmed each `TJ` literal**, deleting the
+  word spaces carried by `( )` fragments and running whole sentences
+  together.
+- The PDF `/W` width array assumed consecutive CIDs, which breaks for a
+  font embedded with its original glyph ids.
+
+### Tests
+
+- `InternationalisationTest` — 6 formats × 8 scripts round-trip, charset
+  detection, garbage filter, UTF-16BE detection, direction, DOCX bidi
+  markers.
+- `BidiTest` — reordering and shaping, expectations verified against
+  `fribidi`.
+- `EmbeddedFontTest` — metrics, cmap subtable merging, subset size,
+  composite glyphs, `.ttc` collections, the public renderer path.
+- `Ole2WriterTest` / `Ole2ReaderTest` — 512-byte header, mini-stream
+  round-trip, mixed stream sizes, cyclic FAT with a memory ceiling.
+
+### Known limitations
+
+- CFF (`.otf`) fonts are embedded whole; only TrueType outlines are
+  subsetted.
+- Variable fonts (`CFF2`) are rejected with an explicit message — a
+  static instance is required.
+- Explicit bidi embedding controls (LRE, RLE, LRO, RLO, PDF, LRI, RLI,
+  FSI, PDI) are treated as boundary-neutral rather than pushed on a
+  stack.
+- `BidiClass` ranges are derived rather than exhaustive; unlisted
+  characters fall back to `L`/`ON` as the standard prescribes.
+
 ---
 
 ## [1.0.0] — 2026-07-15

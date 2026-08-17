@@ -68,7 +68,7 @@ class AllFormatsGenerationTest extends TestCase
             'csv'      => $this->assertCsvOutput($content),
             'md', 'markdown' => $this->assertMarkdownOutput($content),
             'docx'     => $this->assertDocxOutput($path, $content),
-            'doc'      => $this->assertOle2Output($content, 'Rapport Paperdoc'),
+            'doc'      => $this->assertDocOutput($content, 'Rapport Paperdoc'),
             'xlsx'     => $this->assertXlsxOutput($path),
             'xls'      => $this->assertXlsOutput($path, $content),
             'pptx'     => $this->assertPptxOutput($path),
@@ -286,6 +286,20 @@ class AllFormatsGenerationTest extends TestCase
     {
         $this->assertStringStartsWith("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", $content);
         $this->assertStringContainsString($expectedText, $content);
+    }
+
+    /**
+     * Le texte du .doc est stocké en UTF-16LE non compressé, comme celui
+     * du .xls et du .ppt — c'est ce qui permet d'écrire autre chose que
+     * du latin-1.
+     */
+    private function assertDocOutput(string $content, string $expectedText): void
+    {
+        $this->assertStringStartsWith("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", $content);
+        $this->assertStringContainsString(
+            mb_convert_encoding($expectedText, 'UTF-16LE', 'UTF-8'),
+            $content,
+        );
     }
 
     private function assertXlsOutput(string $path, string $content): void

@@ -24,6 +24,7 @@ use Paperdoc\Document\{
 };
 use Paperdoc\Document\Style\{PageSetup, RunningElement};
 use Paperdoc\Enum\{Alignment, VerticalAlignment};
+use Paperdoc\Support\TextDirection;
 
 class HtmlRenderer extends AbstractRenderer
 {
@@ -136,9 +137,14 @@ class HtmlRenderer extends AbstractRenderer
         $langAttr   = htmlspecialchars($language !== '' ? $language : 'en');
         $metaTags   = $this->buildHeadMetaTags($properties);
 
+        // Déclarer le sens laisse le navigateur appliquer l'algorithme
+        // bidirectionnel Unicode : ponctuation, chiffres et mots latins
+        // insérés dans de l'arabe ou de l'hébreu se placent correctement.
+        $dirAttr = TextDirection::detect(strip_tags($body));
+
         return <<<HTML
         <!DOCTYPE html>
-        <html lang="{$langAttr}">
+        <html lang="{$langAttr}" dir="{$dirAttr}">
         <head>
             <meta charset="{$charset}">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">{$metaTags}

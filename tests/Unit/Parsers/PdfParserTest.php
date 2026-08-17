@@ -239,6 +239,64 @@ class PdfParserTest extends TestCase
         $this->assertStringContainsString('roundtrip', $texts);
     }
 
+    public function test_tj_array_keeps_word_spaces(): void
+    {
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Font << /F1 5 0 R >> /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 200 >>
+        stream
+        BT
+        /F1 12 Tf
+        1 0 0 1 72 770 Tm
+        [(C)5(o)-8(m)7(m)7(e)-8(r)7(ce)-8(l)5(y )17(a)-8(l)5(r)7(e)-8(a)13(d)-8(y )17(e)-8(xi)5(st)-4(s )17(a)-8(s )17(a)-8( )-4(w)5(o)-8(r)7(ki)5(n)13(g)-8( )17(p)-8(l)5(a)-8(t)17(f)-4(o)-8(r)7(m)7(.)17( )-4(Th)-6(e)13( )-4(p)13(o)-8(i)5(n)-8(t)-4( )17(o)13(f)-4( )-4(sa)-8(l)5(e)13( )-4(a)13(n)-8(d)13( )] TJ
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+        endobj
+        trailer
+        << /Root 1 0 R >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/tj-spaces.pdf';
+        file_put_contents($path, $pdf);
+
+        $parsed = $this->parser->parse($path);
+        $texts = $this->collectText($parsed);
+
+        $this->assertStringContainsString('Commercely already exists as a working platform.', $texts);
+        $this->assertStringContainsString('The point of sale and', $texts);
+    }
+
+    public function test_winansi_high_range_survives_round_trip(): void
+    {
+        // 0x80–0x9F est imprimable en WinAnsi (l'encodage que PdfEngine
+        // déclare) mais vide de sens en ISO-8859-1.
+        $source = 'Le tarif — dit “premium” — passe à 30 € par cœur de calcul…';
+
+        $doc = DocumentManager::create('pdf', 'WinAnsi');
+        $section = \Paperdoc\Document\Section::make('main');
+        $section->addText($source);
+        $doc->addSection($section);
+
+        $path = $this->tmpDir . '/winansi.pdf';
+        DocumentManager::save($doc, $path);
+
+        $this->assertStringContainsString($source, $this->collectText($this->parser->parse($path)));
+    }
+
     public function test_format_is_pdf(): void
     {
         $doc = DocumentManager::create('pdf', 'Format');
