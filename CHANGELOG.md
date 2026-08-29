@@ -10,6 +10,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 > Changes merged into `main` but not yet tagged.
 
+## [1.1.2] — 2026-08-29
+
+### Fixed
+- **PdfParser** — stricter table detection to avoid false tables from multi-column prose and TOC layouts.
+- **PdfParser** — extract text highlights from background fill rectangles and `/Highlight` annotations into `TextStyle`.
 
 
 ## [1.1.0] — 2026-08-17
