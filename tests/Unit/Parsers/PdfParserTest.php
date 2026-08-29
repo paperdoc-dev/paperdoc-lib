@@ -7,6 +7,7 @@ namespace Paperdoc\Tests\Unit\Parsers;
 use PHPUnit\Framework\TestCase;
 use Paperdoc\Contracts\ParserInterface;
 use Paperdoc\Document\Paragraph;
+use Paperdoc\Document\Style\TextStyle;
 use Paperdoc\Parsers\PdfParser;
 use Paperdoc\Support\DocumentManager;
 
@@ -309,6 +310,124 @@ class PdfParserTest extends TestCase
 
         $parsed = $this->parser->parse($pdfPath);
         $this->assertSame('pdf', $parsed->getFormat());
+    }
+
+    public function test_multi_column_prose_is_not_detected_as_table(): void
+    {
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Font << /F1 5 0 R >> /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 900 >>
+        stream
+        BT
+        /F1 12 Tf
+        72 770 Td
+        (realisation) Tj
+        ET
+        BT
+        /F1 12 Tf
+        160 770 Td
+        (d) Tj
+        ET
+        BT
+        /F1 12 Tf
+        190 770 Td
+        (es) Tj
+        ET
+        BT
+        /F1 12 Tf
+        230 770 Td
+        (taches) Tj
+        ET
+        BT
+        /F1 12 Tf
+        72 750 Td
+        (realisation) Tj
+        ET
+        BT
+        /F1 12 Tf
+        160 750 Td
+        (d) Tj
+        ET
+        BT
+        /F1 12 Tf
+        190 750 Td
+        (es) Tj
+        ET
+        BT
+        /F1 12 Tf
+        230 750 Td
+        (taches) Tj
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+        endobj
+        trailer
+        << /Root 1 0 R >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/prose-columns.pdf';
+        file_put_contents($path, $pdf);
+
+        $parsed = $this->parser->parse($path);
+        $tables = [];
+
+        foreach ($parsed->getSections() as $section) {
+            foreach ($section->getElements() as $el) {
+                if ($el instanceof \Paperdoc\Document\Table) {
+                    $tables[] = $el;
+                }
+            }
+        }
+
+        $this->assertCount(0, $tables);
+        $this->assertStringContainsString('realisation', $this->collectText($parsed));
+        $this->assertStringContainsString('taches', $this->collectText($parsed));
+    }
+
+    public function test_highlight_is_preserved_when_parsing_generated_pdf(): void
+    {
+        $doc = DocumentManager::create('pdf', 'Highlight Parse');
+        $section = \Paperdoc\Document\Section::make('main');
+        $section->addText('Texte surligne', TextStyle::make()->setHighlight('#FFF3B0'));
+        $doc->addSection($section);
+
+        $pdfPath = $this->tmpDir . '/highlight-parse.pdf';
+        DocumentManager::save($doc, $pdfPath);
+
+        $parsed = $this->parser->parse($pdfPath);
+        $highlight = null;
+
+        foreach ($parsed->getSections() as $section) {
+            foreach ($section->getElements() as $el) {
+                if (! $el instanceof Paragraph) {
+                    continue;
+                }
+
+                foreach ($el->getRuns() as $run) {
+                    $style = $run->getStyle();
+
+                    if ($style?->getHighlight() !== null) {
+                        $highlight = $style->getHighlight();
+                    }
+                }
+            }
+        }
+
+        $this->assertNotNull($highlight, 'Expected a highlight style on parsed text');
+        $this->assertStringStartsWith('#FFF', strtoupper($highlight));
     }
 
     private function collectText(\Paperdoc\Contracts\DocumentInterface $doc): string

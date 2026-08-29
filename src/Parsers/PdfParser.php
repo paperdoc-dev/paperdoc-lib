@@ -6,6 +6,7 @@ namespace Paperdoc\Parsers;
 
 use Paperdoc\Contracts\{DocumentInterface, ParserInterface};
 use Paperdoc\Document\{Document, Image, Paragraph, Section, Table, TableCell, TableRow, TextRun};
+use Paperdoc\Document\Style\TextStyle;
 
 /**
  * Parser PDF natif — extraction de texte sans dépendance tierce.
@@ -75,9 +76,10 @@ class PdfParser extends AbstractParser implements ParserInterface
             $fontMap = $this->resolvePageFontMap($pageObjNum);
             $streams = $this->getAllPageStreams($pageObjNum);
             $allLines = [];
+            $highlightRects = $this->extractHighlightAnnotations($pageObjNum);
 
             foreach ($streams as $streamData) {
-                $lines = $this->extractTextLines($streamData, $fontMap);
+                $lines = $this->extractTextLines($streamData, $fontMap, $highlightRects);
                 array_push($allLines, ...$lines);
             }
 
@@ -576,15 +578,18 @@ class PdfParser extends AbstractParser implements ParserInterface
 
     /**
      * @param  array<string, array<string, string>> $fontMap font name → CMap
-     * @return array<int, array{text: string, x: float, y: float}>
+     * @param  array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}> $highlightRects
+     * @return array<int, array{text: string, x: float, y: float, highlight?: string}>
      */
-    private function extractTextLines(string $stream, array $fontMap = []): array
+    private function extractTextLines(string $stream, array $fontMap = [], array &$highlightRects = []): array
     {
         $lines = [];
         $ctmStack = [self::CTM_IDENTITY];
         $streamOps = preg_split('/\r?\n/', $stream) ?: [];
         $inBT = false;
         $btContent = '';
+        $fillColor = null;
+        $pendingRect = null;
 
         foreach ($streamOps as $opLine) {
             $opLine = trim($opLine);
@@ -595,11 +600,18 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             if (! $inBT) {
                 $this->processGraphicsOps($opLine, $ctmStack);
+                $this->processHighlightOps(
+                    $opLine,
+                    $ctmStack,
+                    $fillColor,
+                    $pendingRect,
+                    $highlightRects,
+                );
 
                 $ctm = $ctmStack[count($ctmStack) - 1];
 
                 if (preg_match('/\bBT\b(.*?)\bET\b/s', $opLine, $singleLine)) {
-                    $this->parseTextBlockWithCtm($singleLine[1], $ctm, $lines, $fontMap);
+                    $this->parseTextBlockWithCtm($singleLine[1], $ctm, $lines, $fontMap, $highlightRects);
                 } elseif (preg_match('/\bBT\b(.*)$/s', $opLine, $btMatch)) {
                     $inBT = true;
                     $btContent = $btMatch[1] . "\n";
@@ -609,7 +621,7 @@ class PdfParser extends AbstractParser implements ParserInterface
                     $btContent .= $etMatch[1] . "\n";
                     $inBT = false;
                     $ctm = $ctmStack[count($ctmStack) - 1];
-                    $this->parseTextBlockWithCtm($btContent, $ctm, $lines, $fontMap);
+                    $this->parseTextBlockWithCtm($btContent, $ctm, $lines, $fontMap, $highlightRects);
                 } else {
                     $btContent .= $opLine . "\n";
                 }
@@ -648,6 +660,154 @@ class PdfParser extends AbstractParser implements ParserInterface
     }
 
     /**
+     * Tracks fill colour and filled rectangles that act as text highlights.
+     *
+     * @param array<int, array{a: float, b: float, c: float, d: float, e: float, f: float}> $ctmStack
+     * @param array{x: float, y: float, w: float, h: float}|null $pendingRect
+     * @param array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}> $highlightRects
+     */
+    private function processHighlightOps(
+        string $opLine,
+        array $ctmStack,
+        ?string &$fillColor,
+        ?array &$pendingRect,
+        array &$highlightRects,
+    ): void {
+        if (preg_match_all('/([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+rg\b/', $opLine, $rgMatches, PREG_SET_ORDER)) {
+            foreach ($rgMatches as $m) {
+                $fillColor = $this->rgbComponentsToHex((float) $m[1], (float) $m[2], (float) $m[3]);
+            }
+        }
+
+        if (preg_match_all('/([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+re\b/', $opLine, $reMatches, PREG_SET_ORDER)) {
+            foreach ($reMatches as $m) {
+                $pendingRect = [
+                    'x' => (float) $m[1],
+                    'y' => (float) $m[2],
+                    'w' => (float) $m[3],
+                    'h' => (float) $m[4],
+                ];
+            }
+        }
+
+        if ($pendingRect !== null && preg_match('/(?:^|\s)(f\*|f|F|B\*|B|b\*|b)(?:\s|$)/', $opLine)) {
+            $ctm = $ctmStack[count($ctmStack) - 1];
+            [$x1, $y1] = $this->transformPoint($pendingRect['x'], $pendingRect['y'], $ctm);
+            [$x2, $y2] = $this->transformPoint(
+                $pendingRect['x'] + $pendingRect['w'],
+                $pendingRect['y'] + $pendingRect['h'],
+                $ctm,
+            );
+
+            if ($fillColor !== null) {
+                $highlightRects[] = [
+                    'xMin' => min($x1, $x2),
+                    'xMax' => max($x1, $x2),
+                    'yMin' => min($y1, $y2),
+                    'yMax' => max($y1, $y2),
+                    'color' => $fillColor,
+                ];
+            }
+
+            $pendingRect = null;
+        }
+    }
+
+    /**
+     * @param array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}> $highlightRects
+     */
+    private function findHighlightAt(float $x, float $y, array $highlightRects): ?string
+    {
+        foreach ($highlightRects as $rect) {
+            if ($x >= $rect['xMin'] - 3.0
+                && $x <= $rect['xMax'] + 3.0
+                && $y >= $rect['yMin'] - 3.0
+                && $y <= $rect['yMax'] + 3.0) {
+                return $rect['color'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}>
+     */
+    private function extractHighlightAnnotations(int $pageObjNum): array
+    {
+        $obj = $this->objects[$pageObjNum] ?? null;
+
+        if ($obj === null || ! preg_match('/\/Annots\s*\[([^\]]+)\]/', $obj, $m)) {
+            return [];
+        }
+
+        preg_match_all('/(\d+)\s+\d+\s+R/', $m[1], $refs);
+        $rects = [];
+
+        foreach ($refs[1] as $refNum) {
+            $annot = $this->getRawObject((int) $refNum);
+
+            if ($annot === null || ! preg_match('/\/Subtype\s*\/Highlight\b/', $annot)) {
+                continue;
+            }
+
+            $color = '#FFFF00';
+
+            if (preg_match('/\/C\s*\[([\d.\s]+)\]/', $annot, $cm)) {
+                $parts = preg_split('/\s+/', trim($cm[1])) ?: [];
+
+                if (count($parts) >= 3) {
+                    $color = $this->rgbComponentsToHex((float) $parts[0], (float) $parts[1], (float) $parts[2]);
+                }
+            }
+
+            if (preg_match('/\/QuadPoints\s*\[([^\]]+)\]/', $annot, $qm)) {
+                $points = array_map('floatval', preg_split('/\s+/', trim($qm[1])) ?: []);
+
+                for ($i = 0; $i + 7 < count($points); $i += 8) {
+                    $xs = [$points[$i], $points[$i + 2], $points[$i + 4], $points[$i + 6]];
+                    $ys = [$points[$i + 1], $points[$i + 3], $points[$i + 5], $points[$i + 7]];
+                    $rects[] = [
+                        'xMin' => min($xs),
+                        'xMax' => max($xs),
+                        'yMin' => min($ys),
+                        'yMax' => max($ys),
+                        'color' => $color,
+                    ];
+                }
+
+                continue;
+            }
+
+            if (preg_match('/\/Rect\s*\[([\d.\s\-]+)\]/', $annot, $rm)) {
+                $parts = array_map('floatval', preg_split('/\s+/', trim($rm[1])) ?: []);
+
+                if (count($parts) >= 4) {
+                    $rects[] = [
+                        'xMin' => min($parts[0], $parts[2]),
+                        'xMax' => max($parts[0], $parts[2]),
+                        'yMin' => min($parts[1], $parts[3]),
+                        'yMax' => max($parts[1], $parts[3]),
+                        'color' => $color,
+                    ];
+                }
+            }
+        }
+
+        return $rects;
+    }
+
+    private function rgbComponentsToHex(float $r, float $g, float $b): string
+    {
+        return sprintf(
+            '#%02X%02X%02X',
+            (int) round(max(0.0, min(1.0, $r)) * 255),
+            (int) round(max(0.0, min(1.0, $g)) * 255),
+            (int) round(max(0.0, min(1.0, $b)) * 255),
+        );
+    }
+
+    /**
      * PDF matrix multiplication: Result = A × B
      *
      * @param  array{a: float, b: float, c: float, d: float, e: float, f: float} $a
@@ -682,11 +842,17 @@ class PdfParser extends AbstractParser implements ParserInterface
 
     /**
      * @param array{a: float, b: float, c: float, d: float, e: float, f: float} $ctm
-     * @param array<int, array{text: string, x: float, y: float}>               $lines
-     * @param array<string, array<string, string>>                               $fontMap
+     * @param array<int, array{text: string, x: float, y: float, highlight?: string}> $lines
+     * @param array<string, array<string, string>> $fontMap
+     * @param array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}> $highlightRects
      */
-    private function parseTextBlockWithCtm(string $block, array $ctm, array &$lines, array $fontMap = []): void
-    {
+    private function parseTextBlockWithCtm(
+        string $block,
+        array $ctm,
+        array &$lines,
+        array $fontMap = [],
+        array $highlightRects = [],
+    ): void {
         $localX = 0.0;
         $localY = 0.0;
         $currentFont = '';
@@ -716,44 +882,47 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             [$pageX, $pageY] = $this->transformPoint($localX, $localY, $ctm);
             $cmap = $fontMap[$currentFont] ?? [];
+            $highlight = $this->findHighlightAt($pageX, $pageY, $highlightRects);
+
+            $appendSegment = function (string $text) use (&$lines, $pageX, $pageY, $highlight): void {
+                if ($text === '') {
+                    return;
+                }
+
+                $segment = [
+                    'text' => $text,
+                    'x' => round($pageX, 1),
+                    'y' => round($pageY, 1),
+                ];
+
+                if ($highlight !== null) {
+                    $segment['highlight'] = $highlight;
+                }
+
+                $lines[] = $segment;
+            };
 
             if (preg_match_all('/\[([^\]]*)\]\s*TJ\b/s', $bLine, $tjMatches)) {
                 foreach ($tjMatches[1] as $tjContent) {
-                    $text = $this->extractTJText($tjContent, $cmap);
-
-                    if ($text !== '') {
-                        $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
-                    }
+                    $appendSegment($this->extractTJText($tjContent, $cmap));
                 }
             }
 
             if (preg_match_all('/\(([^)]*)\)\s*Tj\b/s', $bLine, $tjSimple)) {
                 foreach ($tjSimple[1] as $str) {
-                    $text = $this->decodePdfString($str);
-
-                    if ($text !== '') {
-                        $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
-                    }
+                    $appendSegment($this->decodePdfString($str));
                 }
             }
 
             if (preg_match_all('/<([0-9A-Fa-f]+)>\s*Tj\b/', $bLine, $hexTj)) {
                 foreach ($hexTj[1] as $hex) {
-                    $text = $this->decodeHexViaCMap($hex, $cmap);
-
-                    if ($text !== '') {
-                        $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
-                    }
+                    $appendSegment($this->decodeHexViaCMap($hex, $cmap));
                 }
             }
 
             if (preg_match_all("/\(([^)]*)\)\s*'/s", $bLine, $quoteMatches)) {
                 foreach ($quoteMatches[1] as $str) {
-                    $text = $this->decodePdfString($str);
-
-                    if ($text !== '') {
-                        $lines[] = ['text' => $text, 'x' => round($pageX, 1), 'y' => round($pageY, 1)];
-                    }
+                    $appendSegment($this->decodePdfString($str));
                 }
             }
         }
@@ -798,11 +967,82 @@ class PdfParser extends AbstractParser implements ParserInterface
             $text = $this->collapseCidSpacing($text);
 
             if ($text !== '' && ! $this->isGarbageText($text)) {
-                $section->addText($text);
+                $this->addTextGroupAsParagraph($group, $section);
             }
 
             $i++;
         }
+    }
+
+    /**
+     * @param array<int, array{text: string, x: float, y: float, highlight?: string}> $group
+     */
+    private function addTextGroupAsParagraph(array $group, Section $section): void
+    {
+        usort($group, fn ($a, $b) => $a['x'] <=> $b['x']);
+
+        /** @var array<int, array{0: string, 1: ?TextStyle}> $runs */
+        $runs = [];
+        $currentText = '';
+        $currentStyle = null;
+
+        foreach ($group as $seg) {
+            $text = trim($this->collapseCidSpacing($seg['text']));
+
+            if ($text === '' || $this->isGarbageText($text)) {
+                continue;
+            }
+
+            $style = isset($seg['highlight'])
+                ? TextStyle::make()->setHighlight($seg['highlight'])
+                : null;
+
+            if ($currentText !== '' && $this->textStylesEquivalent($currentStyle, $style)) {
+                $currentText .= ' ' . $text;
+            } else {
+                if ($currentText !== '') {
+                    $runs[] = [$currentText, $currentStyle];
+                }
+
+                $currentText = $text;
+                $currentStyle = $style;
+            }
+        }
+
+        if ($currentText !== '') {
+            $runs[] = [$currentText, $currentStyle];
+        }
+
+        if ($runs === []) {
+            return;
+        }
+
+        if (count($runs) === 1 && $runs[0][1] === null) {
+            $section->addText($runs[0][0]);
+
+            return;
+        }
+
+        $paragraph = new Paragraph();
+
+        foreach ($runs as [$text, $style]) {
+            $paragraph->addRun(new TextRun($text, $style));
+        }
+
+        $section->addElement($paragraph);
+    }
+
+    private function textStylesEquivalent(?TextStyle $a, ?TextStyle $b): bool
+    {
+        if ($a === null && $b === null) {
+            return true;
+        }
+
+        if ($a === null || $b === null) {
+            return false;
+        }
+
+        return $a->getHighlight() === $b->getHighlight();
     }
 
     /* =============================================================
@@ -813,10 +1053,10 @@ class PdfParser extends AbstractParser implements ParserInterface
      * Groups segments on the same Y-line into X-position clusters.
      * Segments separated by more than $gap points start a new column.
      *
-     * @param array<int, array{text: string, x: float, y: float}> $segments
-     * @return array<int, array<int, array{text: string, x: float, y: float}>>
+     * @param array<int, array{text: string, x: float, y: float, highlight?: string}> $segments
+     * @return array<int, array<int, array{text: string, x: float, y: float, highlight?: string}>>
      */
-    private function clusterSegmentsByX(array $segments, float $gap = 40.0): array
+    private function clusterSegmentsByX(array $segments, float $gap = 65.0): array
     {
         if (empty($segments)) {
             return [];
@@ -842,14 +1082,17 @@ class PdfParser extends AbstractParser implements ParserInterface
     }
 
     /**
-     * Validates that clusters form a plausible table row —
-     * no single gap between adjacent columns exceeds 250pt.
+     * Validates that clusters form a plausible table row.
      *
-     * @param array<int, array<int, array{text: string, x: float, y: float}>> $clusters
+     * @param array<int, array<int, array{text: string, x: float, y: float, highlight?: string}>> $clusters
      */
     private function looksLikeTableClusters(array $clusters): bool
     {
         if (count($clusters) < 3) {
+            return false;
+        }
+
+        if ($this->clustersLookLikeProseFragments($clusters) || $this->looksLikeTocRow($clusters)) {
             return false;
         }
 
@@ -862,7 +1105,123 @@ class PdfParser extends AbstractParser implements ParserInterface
             }
         }
 
-        return true;
+        $cellTexts = array_map(
+            fn ($c) => trim(implode(' ', array_column($c, 'text'))),
+            $clusters,
+        );
+
+        $shortLabels = array_filter($cellTexts, fn ($t) => $t !== '' && mb_strlen($t) <= 20);
+
+        return count($shortLabels) >= (int) ceil(count($cellTexts) * 0.6);
+    }
+
+    /**
+     * @param array<int, array<int, array{text: string, x: float, y: float, highlight?: string}>> $clusters
+     */
+    private function clustersLookLikeProseFragments(array $clusters): bool
+    {
+        $texts = array_map(
+            fn ($c) => trim(implode(' ', array_column($c, 'text'))),
+            $clusters,
+        );
+
+        for ($i = 0, $n = count($texts) - 1; $i < $n; $i++) {
+            if ($texts[$i] === '' || $texts[$i + 1] === '') {
+                continue;
+            }
+
+            $lastChar = mb_substr($texts[$i], -1);
+            $firstChar = mb_substr($texts[$i + 1], 0, 1);
+
+            if (preg_match('/\p{Ll}/u', $lastChar) && preg_match('/\p{Ll}/u', $firstChar)) {
+                return true;
+            }
+        }
+
+        $shortFragments = array_filter(
+            $texts,
+            fn ($t) => $t !== '' && mb_strlen($t) <= 4 && preg_match('/\p{L}/u', $t) === 1,
+        );
+
+        if (count($shortFragments) >= 2) {
+            return true;
+        }
+
+        $joined = implode(' ', $texts);
+
+        if (preg_match('/[.!?;:]/u', $joined) && preg_match('/\s+\p{L}{4,}\s+/u', $joined) === 1) {
+            return true;
+        }
+
+        $wordCount = preg_match_all('/\p{L}{3,}/u', $joined);
+
+        return $wordCount >= 6 && count($clusters) <= 4;
+    }
+
+    /**
+     * @param array<int, array<int, array{text: string, x: float, y: float, highlight?: string}>> $clusters
+     */
+    private function looksLikeTocRow(array $clusters): bool
+    {
+        $full = implode(' ', array_map(
+            fn ($c) => trim(implode(' ', array_column($c, 'text'))),
+            $clusters,
+        ));
+
+        return preg_match('/\.{3,}/', $full) === 1
+            || preg_match('/\d+\s*$/', trim($full)) === 1;
+    }
+
+    /**
+     * @param string[][] $rows
+     */
+    private function isPlausibleTableData(array $rows): bool
+    {
+        if (count($rows) < 2) {
+            return false;
+        }
+
+        $numCols = count($rows[0]);
+        $numericOrShort = 0;
+        $total = 0;
+
+        foreach ($rows as $row) {
+            if (count($row) !== $numCols) {
+                return false;
+            }
+
+            foreach ($row as $cell) {
+                $cell = trim($cell);
+
+                if ($cell === '') {
+                    continue;
+                }
+
+                $total++;
+
+                if (preg_match('/^[\d.,€$£%\s+\-]+$/u', $cell) === 1 || mb_strlen($cell) <= 18) {
+                    $numericOrShort++;
+                }
+            }
+        }
+
+        if ($total > 0 && ($numericOrShort / $total) >= 0.45) {
+            return true;
+        }
+
+        foreach ($rows[0] as $header) {
+            $header = trim($header);
+
+            if ($header === '') {
+                continue;
+            }
+
+            if (mb_strlen($header) > 28 || preg_match('/[.!?;:]/u', $header) === 1) {
+                return false;
+            }
+        }
+
+        return count($rows) >= 3;
     }
 
     /**
@@ -902,11 +1261,9 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             $matchCount = $this->countColumnMatches($groupXPositions, $colPositions);
 
-            $minRequired = $numGroupClusters === 1
-                ? 1
-                : max(2, (int) ceil($numGroupClusters * 0.6));
+            $minRequired = max(2, (int) ceil($numGroupClusters * 0.8));
 
-            if ($matchCount < $minRequired) {
+            if ($matchCount < $minRequired || $numGroupClusters === 1) {
                 break;
             }
 
@@ -931,7 +1288,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
         $tableRowCells[] = $currentRow;
 
-        if (count($tableRowCells) < 2) {
+        if (count($tableRowCells) < 2 || ! $this->isPlausibleTableData($tableRowCells)) {
             return null;
         }
 
