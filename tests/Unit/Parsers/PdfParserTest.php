@@ -430,6 +430,140 @@ class PdfParserTest extends TestCase
         $this->assertStringStartsWith('#FFF', strtoupper($highlight));
     }
 
+    public function test_word_export_tj_kerning_does_not_split_words(): void
+    {
+        // Pattern extracted from Word-generated PDFs: large negative TJ kerning
+        // values adjust glyph spacing but must not insert word breaks.
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Font << /F1 5 0 R >> /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 500 >>
+        stream
+        BT
+        /F1 12 Tf
+        1 0 0 1 90 480.91 Tm
+        [(L')-8(objecti)] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 133.94 480.91 Tm
+        [(f )-296(de)4( )-299(c)-5(e)4(tt)-3(e)4( )-299(a)4(ppl)-11(ica)6(ti)-3(on )-299(e)4(st )-302(de)4( )-299(four)6(nis )-302(a)4(ux)-9( )-299(c)4(li)-3(e)4(nts )-302(une)4( )-299(sim)-4(pl)8(ific)3(a)4(ti)-3(on )-299(de)4( )-299(g)-4(esti)] TJ
+        ET
+        BT
+        1 0 0 1 529.66 480.91 Tm
+        [(on)] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 90 460 Tm
+        [(managem)4(ent )-299(of )-302(the)] TJ
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+        endobj
+        trailer
+        << /Root 1 0 R >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/word-tj-kerning.pdf';
+        file_put_contents($path, $pdf);
+
+        $texts = $this->collectText($this->parser->parse($path));
+
+        $this->assertStringContainsString('objectif', $texts);
+        $this->assertStringContainsString('gestion', $texts);
+        $this->assertStringContainsString('management', $texts);
+        $this->assertStringNotContainsString('objecti f', $texts);
+        $this->assertStringNotContainsString('gesti on', $texts);
+        $this->assertStringNotContainsString('managem ent', $texts);
+    }
+
+    public function test_tj_trailing_spaces_preserve_word_boundaries(): void
+    {
+        // Word encodes inter-word spaces inside TJ literals: (s ), (et ), ( B)
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Font << /F1 5 0 R >> /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 600 >>
+        stream
+        BT
+        /F1 12 Tf
+        1 0 0 1 90 526.63 Tm
+        [(frère)4(s )] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 121.3 526.63 Tm
+        [(N)-8(a)4(d)4(i)-3(r )-299(B)-5(e)4(rrouane )-302(et )] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 219.5 526.63 Tm
+        [(A)-5(i)-3(m)-4(e)-5(n)-8(e)4( B)] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 266.2 526.63 Tm
+        [(ahri)] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 424.3 526.63 Tm
+        [(eam Open M)] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 486.9 526.63 Tm
+        [(ind)] TJ
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 502.3 526.63 Tm
+        [(s)] TJ
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+        endobj
+        trailer
+        << /Root 1 0 R >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/tj-trailing-spaces.pdf';
+        file_put_contents($path, $pdf);
+
+        $texts = $this->collectText($this->parser->parse($path));
+
+        $this->assertStringContainsString('frères Nadir Berrouane et Aimene Bahri', $texts);
+        $this->assertStringContainsString('Open Minds', $texts);
+        $this->assertStringNotContainsString('frèresNadir', $texts);
+        $this->assertStringNotContainsString('M ind', $texts);
+        $this->assertStringNotContainsString('B ahri', $texts);
+    }
+
     private function collectText(\Paperdoc\Contracts\DocumentInterface $doc): string
     {
         $text = '';

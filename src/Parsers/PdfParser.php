@@ -856,6 +856,8 @@ class PdfParser extends AbstractParser implements ParserInterface
         $localX = 0.0;
         $localY = 0.0;
         $currentFont = '';
+        $currentFontSize = 12.0;
+        $scaleX = $this->ctmHorizontalScale($ctm);
 
         $blockLines = preg_split('/\r?\n/', $block) ?: [];
 
@@ -866,8 +868,9 @@ class PdfParser extends AbstractParser implements ParserInterface
                 continue;
             }
 
-            if (preg_match('/\/(\w+)\s+[\d.]+\s+Tf\b/', $bLine, $fm)) {
+            if (preg_match('/\/(\w+)\s+([\d.]+)\s+Tf\b/', $bLine, $fm)) {
                 $currentFont = $fm[1];
+                $currentFontSize = (float) $fm[2];
             }
 
             if (preg_match('/([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+([\d.\-]+)\s+Tm\b/', $bLine, $m)) {
@@ -884,7 +887,14 @@ class PdfParser extends AbstractParser implements ParserInterface
             $cmap = $fontMap[$currentFont] ?? [];
             $highlight = $this->findHighlightAt($pageX, $pageY, $highlightRects);
 
-            $appendSegment = function (string $text) use (&$lines, $pageX, $pageY, $highlight): void {
+            $appendSegment = function (string $text) use (
+                &$lines,
+                $pageX,
+                $pageY,
+                $highlight,
+                $currentFontSize,
+                $scaleX,
+            ): void {
                 if ($text === '') {
                     return;
                 }
@@ -893,6 +903,8 @@ class PdfParser extends AbstractParser implements ParserInterface
                     'text' => $text,
                     'x' => round($pageX, 1),
                     'y' => round($pageY, 1),
+                    'fontSize' => $currentFontSize,
+                    'scaleX' => $scaleX,
                 ];
 
                 if ($highlight !== null) {
@@ -910,7 +922,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             if (preg_match_all('/\(([^)]*)\)\s*Tj\b/s', $bLine, $tjSimple)) {
                 foreach ($tjSimple[1] as $str) {
-                    $appendSegment($this->decodePdfString($str));
+                    $appendSegment($this->decodePdfString($str, false));
                 }
             }
 
@@ -922,7 +934,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
             if (preg_match_all("/\(([^)]*)\)\s*'/s", $bLine, $quoteMatches)) {
                 foreach ($quoteMatches[1] as $str) {
-                    $appendSegment($this->decodePdfString($str));
+                    $appendSegment($this->decodePdfString($str, false));
                 }
             }
         }
@@ -963,8 +975,7 @@ class PdfParser extends AbstractParser implements ParserInterface
                 }
             }
 
-            $text = trim(implode(' ', array_column($group, 'text')));
-            $text = $this->collapseCidSpacing($text);
+            $text = $this->joinSegmentsGeometrically($group);
 
             if ($text !== '' && ! $this->isGarbageText($text)) {
                 $this->addTextGroupAsParagraph($group, $section);
@@ -975,7 +986,7 @@ class PdfParser extends AbstractParser implements ParserInterface
     }
 
     /**
-     * @param array<int, array{text: string, x: float, y: float, highlight?: string}> $group
+     * @param array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float, highlight?: string}> $group
      */
     private function addTextGroupAsParagraph(array $group, Section $section): void
     {
@@ -983,13 +994,26 @@ class PdfParser extends AbstractParser implements ParserInterface
 
         /** @var array<int, array{0: string, 1: ?TextStyle}> $runs */
         $runs = [];
-        $currentText = '';
-        $currentStyle = null;
+        /** @var array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float, highlight?: string}> $buffer */
+        $buffer = [];
+        $bufferStyle = null;
+
+        $flushBuffer = function () use (&$buffer, &$bufferStyle, &$runs): void {
+            if ($buffer === []) {
+                return;
+            }
+
+            $text = $this->joinSegmentsGeometrically($buffer);
+
+            if ($text !== '') {
+                $runs[] = [$text, $bufferStyle];
+            }
+
+            $buffer = [];
+        };
 
         foreach ($group as $seg) {
-            $text = trim($this->collapseCidSpacing($seg['text']));
-
-            if ($text === '' || $this->isGarbageText($text)) {
+            if ($seg['text'] === '' || $this->isGarbageText($seg['text'])) {
                 continue;
             }
 
@@ -997,21 +1021,15 @@ class PdfParser extends AbstractParser implements ParserInterface
                 ? TextStyle::make()->setHighlight($seg['highlight'])
                 : null;
 
-            if ($currentText !== '' && $this->textStylesEquivalent($currentStyle, $style)) {
-                $currentText .= ' ' . $text;
-            } else {
-                if ($currentText !== '') {
-                    $runs[] = [$currentText, $currentStyle];
-                }
-
-                $currentText = $text;
-                $currentStyle = $style;
+            if ($buffer !== [] && ! $this->textStylesEquivalent($bufferStyle, $style)) {
+                $flushBuffer();
             }
+
+            $buffer[] = $seg;
+            $bufferStyle = $style;
         }
 
-        if ($currentText !== '') {
-            $runs[] = [$currentText, $currentStyle];
-        }
+        $flushBuffer();
 
         if ($runs === []) {
             return;
@@ -1043,6 +1061,56 @@ class PdfParser extends AbstractParser implements ParserInterface
         }
 
         return $a->getHighlight() === $b->getHighlight();
+    }
+
+    /**
+     * Horizontal scale factor from the current transformation matrix.
+     *
+     * @param array{a: float, b: float, c: float, d: float, e: float, f: float} $ctm
+     */
+    private function ctmHorizontalScale(array $ctm): float
+    {
+        return sqrt(($ctm['a'] * $ctm['a']) + ($ctm['b'] * $ctm['b']));
+    }
+
+    /**
+     * Joins positioned text segments in reading order.
+     *
+     * Word PDFs encode inter-word spaces as literal space characters inside
+     * Tj/TJ strings (e.g. "(s )", "(et )"). Those must be preserved — never
+     * trimmed per segment. Segments are concatenated as-is; geometry is not
+     * used to invent spaces.
+     *
+     * @param array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float, highlight?: string}> $segments
+     */
+    private function joinSegmentsGeometrically(array $segments): string
+    {
+        if ($segments === []) {
+            return '';
+        }
+
+        $sorted = $segments;
+        usort($sorted, fn ($a, $b) => $a['x'] <=> $b['x']);
+
+        $result = '';
+
+        foreach ($sorted as $seg) {
+            if ($seg['text'] !== '') {
+                $result .= $seg['text'];
+            }
+        }
+
+        $result = $this->collapseCidSpacing($result);
+
+        return trim(preg_replace('/\s{2,}/u', ' ', $result) ?? $result);
+    }
+
+    /**
+     * @param array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float}> $cluster
+     */
+    private function clusterPlainText(array $cluster): string
+    {
+        return $this->joinSegmentsGeometrically($cluster);
     }
 
     /* =============================================================
@@ -1106,7 +1174,7 @@ class PdfParser extends AbstractParser implements ParserInterface
         }
 
         $cellTexts = array_map(
-            fn ($c) => trim(implode(' ', array_column($c, 'text'))),
+            fn ($c) => $this->clusterPlainText($c),
             $clusters,
         );
 
@@ -1121,7 +1189,7 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function clustersLookLikeProseFragments(array $clusters): bool
     {
         $texts = array_map(
-            fn ($c) => trim(implode(' ', array_column($c, 'text'))),
+            fn ($c) => $this->clusterPlainText($c),
             $clusters,
         );
 
@@ -1164,7 +1232,7 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function looksLikeTocRow(array $clusters): bool
     {
         $full = implode(' ', array_map(
-            fn ($c) => trim(implode(' ', array_column($c, 'text'))),
+            fn ($c) => $this->clusterPlainText($c),
             $clusters,
         ));
 
@@ -1350,7 +1418,8 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function assignSegmentsToColumns(array $segments, array $colPositions): array
     {
         $numCols = count($colPositions);
-        $cells = array_fill(0, $numCols, '');
+        /** @var array<int, array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float}>> $columnSegments */
+        $columnSegments = array_fill(0, $numCols, []);
 
         foreach ($segments as $seg) {
             $bestCol = 0;
@@ -1365,9 +1434,13 @@ class PdfParser extends AbstractParser implements ParserInterface
                 }
             }
 
-            $cells[$bestCol] = $cells[$bestCol] !== ''
-                ? $cells[$bestCol] . ' ' . $seg['text']
-                : $seg['text'];
+            $columnSegments[$bestCol][] = $seg;
+        }
+
+        $cells = [];
+
+        for ($c = 0; $c < $numCols; $c++) {
+            $cells[] = $this->joinSegmentsGeometrically($columnSegments[$c]);
         }
 
         return $cells;
@@ -1746,14 +1819,12 @@ class PdfParser extends AbstractParser implements ParserInterface
             } elseif ($hex !== '') {
                 $text .= $this->decodeHexViaCMap($hex, $cmap, false);
             } elseif ($kernToken !== null) {
-                $kern = (int) $kernToken;
-                if ($kern < -100) {
-                    $text .= ' ';
-                }
+                // Numeric TJ entries adjust inter-glyph positioning only.
+                // Word spaces are encoded as literal strings such as "( )".
             }
         }
 
-        return trim($text);
+        return $text;
     }
 
     /**

@@ -10,6 +10,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 > Changes merged into `main` but not yet tagged.
 
+## [1.1.3] — 2026-08-29
+
+### Fixed
+
+- **PdfParser** — preserve literal spaces inside `Tj`/`TJ` strings (e.g. Word `(s )`, `(et )`) instead of trimming them away per segment.
+- **PdfParser** — stop treating negative TJ kerning values as word breaks; numeric entries only adjust glyph positioning per the PDF spec.
+- **PdfParser** — join same-line text segments by concatenation in X order without injecting extra spaces, fixing split-word artefacts such as `objecti f`, `B ahri`, and `M inds` across fonts and languages.
+
 ## [1.1.2] — 2026-08-29
 
 ### Fixed
