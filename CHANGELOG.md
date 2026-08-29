@@ -10,6 +10,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 > Changes merged into `main` but not yet tagged.
 
+## [1.1.5] — 2026-08-29
+
+### Fixed
+
+- **PdfParser** — map font size, bold, italic, and font family from PDF `/Tf` operators and font descriptors into `TextStyle` runs.
+- **PdfParser** — carry the active font across separate `BT`/`ET` blocks and multiple page content streams so Identity-H hex `TJ` strings decode with the correct ToUnicode CMap.
+- **PdfParser** — parse PDF literal strings with escaped parentheses (`\(` / `\)`) in `Tj`/`TJ` operators.
+
 ## [1.1.4] — 2026-08-29
 
 ### Fixed

@@ -35,6 +35,9 @@ class PdfParser extends AbstractParser implements ParserInterface
     /** @var array<int, array<string, string>> font obj num → glyph→unicode map */
     private array $fontCMaps = [];
 
+    /** @var array<int, array{family: string, bold: bool, italic: bool}> font obj num → metadata */
+    private array $fontMetaByObjNum = [];
+
     public function supports(string $extension): bool
     {
         return strtolower($extension) === 'pdf';
@@ -64,6 +67,7 @@ class PdfParser extends AbstractParser implements ParserInterface
 
         $this->parseObjects();
         $this->buildFontCMaps();
+        $this->buildFontMetadata();
         $this->extractMetadata($document);
 
         $pages = $this->findPages();
@@ -74,17 +78,27 @@ class PdfParser extends AbstractParser implements ParserInterface
             $section = new Section("page-{$sectionIndex}");
 
             $fontMap = $this->resolvePageFontMap($pageObjNum);
+            $fontMeta = $this->resolvePageFontMeta($pageObjNum);
             $streams = $this->getAllPageStreams($pageObjNum);
             $allLines = [];
             $highlightRects = $this->extractHighlightAnnotations($pageObjNum);
+            $currentFont = '';
+            $currentFontSize = 12.0;
 
             foreach ($streams as $streamData) {
-                $lines = $this->extractTextLines($streamData, $fontMap, $highlightRects);
+                $lines = $this->extractTextLines(
+                    $streamData,
+                    $fontMap,
+                    $highlightRects,
+                    $fontMeta,
+                    $currentFont,
+                    $currentFontSize,
+                );
                 array_push($allLines, ...$lines);
             }
 
             if (! empty($allLines)) {
-                $this->sortAndBuildElements($allLines, $section);
+                $this->sortAndBuildElements($allLines, $section, $fontMeta);
             }
 
             $this->extractPageImages($pageObjNum, $section);
@@ -95,6 +109,7 @@ class PdfParser extends AbstractParser implements ParserInterface
         $this->objects = [];
         $this->rawContent = '';
         $this->fontCMaps = [];
+        $this->fontMetaByObjNum = [];
 
         return $document;
     }
@@ -345,6 +360,79 @@ class PdfParser extends AbstractParser implements ParserInterface
         return $fontMap;
     }
 
+    private function buildFontMetadata(): void
+    {
+        $this->fontMetaByObjNum = [];
+
+        foreach ($this->objects as $objNum => $data) {
+            if (! preg_match('/\/Type\s*\/Font\b/', $data)) {
+                continue;
+            }
+
+            $baseFont = '';
+
+            if (preg_match('/\/BaseFont\s*\/([^\/\s>\[]+)/', $data, $m)) {
+                $baseFont = str_replace('#20', ' ', $m[1]);
+            }
+
+            if ($baseFont === '') {
+                continue;
+            }
+
+            if (preg_match('/^[A-Z]{6}\+/', $baseFont)) {
+                $baseFont = substr($baseFont, 7);
+            }
+
+            $bold = preg_match('/Bold/i', $baseFont) === 1;
+            $italic = preg_match('/Italic|Oblique/i', $baseFont) === 1;
+            $family = preg_replace('/,(BoldItalic|Bold|Italic|Regular|MT)$/i', '', $baseFont) ?? $baseFont;
+            $family = preg_replace('/,(Bold|Italic)$/i', '', $family) ?? $family;
+
+            $this->fontMetaByObjNum[$objNum] = [
+                'family' => $family,
+                'bold'   => $bold,
+                'italic' => $italic,
+            ];
+        }
+    }
+
+    /**
+     * @return array<string, array{family: string, bold: bool, italic: bool}>
+     */
+    private function resolvePageFontMeta(int $pageObjNum): array
+    {
+        $meta = [];
+        $fontDicts = [];
+        $obj = $this->objects[$pageObjNum] ?? '';
+
+        if (preg_match('/\/Font\s*<<([^>]+)>>/s', $obj, $m)) {
+            $fontDicts[] = $m[1];
+        }
+
+        if (preg_match('/\/Resources\s+(\d+)\s+\d+\s+R/', $obj, $resRef)) {
+            $resObj = $this->getRawObject((int) $resRef[1]) ?? '';
+
+            if (preg_match('/\/Font\s*<<([^>]+)>>/s', $resObj, $m)) {
+                $fontDicts[] = $m[1];
+            }
+        }
+
+        foreach ($fontDicts as $dict) {
+            preg_match_all('/\/(\w+)\s+(\d+)\s+\d+\s+R/', $dict, $refs);
+
+            foreach ($refs[1] as $i => $name) {
+                $objNum = (int) $refs[2][$i];
+                $meta[$name] = $this->fontMetaByObjNum[$objNum] ?? [
+                    'family' => 'Helvetica',
+                    'bold'   => false,
+                    'italic' => false,
+                ];
+            }
+        }
+
+        return $meta;
+    }
+
     /**
      * @param array<string, string> $cmap glyph hex → UTF-8 character
      */
@@ -579,10 +667,17 @@ class PdfParser extends AbstractParser implements ParserInterface
     /**
      * @param  array<string, array<string, string>> $fontMap font name → CMap
      * @param  array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}> $highlightRects
-     * @return array<int, array{text: string, x: float, y: float, highlight?: string}>
+     * @param  array<string, array{family: string, bold: bool, italic: bool}> $fontMeta
+     * @return array<int, array{text: string, x: float, y: float, font?: string, fontSize?: float, scaleX?: float, highlight?: string}>
      */
-    private function extractTextLines(string $stream, array $fontMap = [], array &$highlightRects = []): array
-    {
+    private function extractTextLines(
+        string $stream,
+        array $fontMap = [],
+        array &$highlightRects = [],
+        array $fontMeta = [],
+        string &$currentFont = '',
+        float &$currentFontSize = 12.0,
+    ): array {
         $lines = [];
         $ctmStack = [self::CTM_IDENTITY];
         $streamOps = preg_split('/\r?\n/', $stream) ?: [];
@@ -611,7 +706,16 @@ class PdfParser extends AbstractParser implements ParserInterface
                 $ctm = $ctmStack[count($ctmStack) - 1];
 
                 if (preg_match('/\bBT\b(.*?)\bET\b/s', $opLine, $singleLine)) {
-                    $this->parseTextBlockWithCtm($singleLine[1], $ctm, $lines, $fontMap, $highlightRects);
+                    $this->parseTextBlockWithCtm(
+                        $singleLine[1],
+                        $ctm,
+                        $lines,
+                        $fontMap,
+                        $highlightRects,
+                        $fontMeta,
+                        $currentFont,
+                        $currentFontSize,
+                    );
                 } elseif (preg_match('/\bBT\b(.*)$/s', $opLine, $btMatch)) {
                     $inBT = true;
                     $btContent = $btMatch[1] . "\n";
@@ -621,7 +725,16 @@ class PdfParser extends AbstractParser implements ParserInterface
                     $btContent .= $etMatch[1] . "\n";
                     $inBT = false;
                     $ctm = $ctmStack[count($ctmStack) - 1];
-                    $this->parseTextBlockWithCtm($btContent, $ctm, $lines, $fontMap, $highlightRects);
+                    $this->parseTextBlockWithCtm(
+                        $btContent,
+                        $ctm,
+                        $lines,
+                        $fontMap,
+                        $highlightRects,
+                        $fontMeta,
+                        $currentFont,
+                        $currentFontSize,
+                    );
                 } else {
                     $btContent .= $opLine . "\n";
                 }
@@ -842,9 +955,10 @@ class PdfParser extends AbstractParser implements ParserInterface
 
     /**
      * @param array{a: float, b: float, c: float, d: float, e: float, f: float} $ctm
-     * @param array<int, array{text: string, x: float, y: float, highlight?: string}> $lines
+     * @param array<int, array{text: string, x: float, y: float, font?: string, fontSize?: float, scaleX?: float, highlight?: string}> $lines
      * @param array<string, array<string, string>> $fontMap
      * @param array<int, array{xMin: float, xMax: float, yMin: float, yMax: float, color: string}> $highlightRects
+     * @param array<string, array{family: string, bold: bool, italic: bool}> $fontMeta
      */
     private function parseTextBlockWithCtm(
         string $block,
@@ -852,11 +966,12 @@ class PdfParser extends AbstractParser implements ParserInterface
         array &$lines,
         array $fontMap = [],
         array $highlightRects = [],
+        array $fontMeta = [],
+        string &$currentFont = '',
+        float &$currentFontSize = 12.0,
     ): void {
         $localX = 0.0;
         $localY = 0.0;
-        $currentFont = '';
-        $currentFontSize = 12.0;
         $scaleX = $this->ctmHorizontalScale($ctm);
 
         $blockLines = preg_split('/\r?\n/', $block) ?: [];
@@ -892,6 +1007,7 @@ class PdfParser extends AbstractParser implements ParserInterface
                 $pageX,
                 $pageY,
                 $highlight,
+                $currentFont,
                 $currentFontSize,
                 $scaleX,
             ): void {
@@ -907,6 +1023,10 @@ class PdfParser extends AbstractParser implements ParserInterface
                     'scaleX' => $scaleX,
                 ];
 
+                if ($currentFont !== '') {
+                    $segment['font'] = $currentFont;
+                }
+
                 if ($highlight !== null) {
                     $segment['highlight'] = $highlight;
                 }
@@ -920,10 +1040,8 @@ class PdfParser extends AbstractParser implements ParserInterface
                 }
             }
 
-            if (preg_match_all('/\(([^)]*)\)\s*Tj\b/s', $bLine, $tjSimple)) {
-                foreach ($tjSimple[1] as $str) {
-                    $appendSegment($this->decodePdfString($str, false));
-                }
+            foreach ($this->extractPdfLiteralsBeforeOperator($bLine, 'Tj') as $str) {
+                $appendSegment($this->decodePdfString($str, false));
             }
 
             if (preg_match_all('/<([0-9A-Fa-f]+)>\s*Tj\b/', $bLine, $hexTj)) {
@@ -932,18 +1050,17 @@ class PdfParser extends AbstractParser implements ParserInterface
                 }
             }
 
-            if (preg_match_all("/\(([^)]*)\)\s*'/s", $bLine, $quoteMatches)) {
-                foreach ($quoteMatches[1] as $str) {
-                    $appendSegment($this->decodePdfString($str, false));
-                }
+            foreach ($this->extractPdfLiteralsBeforeOperator($bLine, "'") as $str) {
+                $appendSegment($this->decodePdfString($str, false));
             }
         }
     }
 
     /**
-     * @param array<int, array{text: string, x: float, y: float}> $lines
+     * @param array<int, array{text: string, x: float, y: float, font?: string, fontSize?: float, scaleX?: float, highlight?: string}> $lines
+     * @param array<string, array{family: string, bold: bool, italic: bool}> $fontMeta
      */
-    private function sortAndBuildElements(array $lines, Section $section): void
+    private function sortAndBuildElements(array $lines, Section $section, array $fontMeta = []): void
     {
         usort($lines, function ($a, $b) {
             $yDiff = $b['y'] - $a['y'];
@@ -978,7 +1095,7 @@ class PdfParser extends AbstractParser implements ParserInterface
             $text = $this->joinSegmentsGeometrically($group);
 
             if ($text !== '' && ! $this->isGarbageText($text)) {
-                $this->addTextGroupAsParagraph($group, $section);
+                $this->addTextGroupAsParagraph($group, $section, $fontMeta);
             }
 
             $i++;
@@ -986,15 +1103,16 @@ class PdfParser extends AbstractParser implements ParserInterface
     }
 
     /**
-     * @param array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float, highlight?: string}> $group
+     * @param array<int, array{text: string, x: float, y: float, font?: string, fontSize?: float, scaleX?: float, highlight?: string}> $group
+     * @param array<string, array{family: string, bold: bool, italic: bool}> $fontMeta
      */
-    private function addTextGroupAsParagraph(array $group, Section $section): void
+    private function addTextGroupAsParagraph(array $group, Section $section, array $fontMeta = []): void
     {
         usort($group, fn ($a, $b) => $a['x'] <=> $b['x']);
 
         /** @var array<int, array{0: string, 1: ?TextStyle}> $runs */
         $runs = [];
-        /** @var array<int, array{text: string, x: float, y: float, fontSize?: float, scaleX?: float, highlight?: string}> $buffer */
+        /** @var array<int, array{text: string, x: float, y: float, font?: string, fontSize?: float, scaleX?: float, highlight?: string}> $buffer */
         $buffer = [];
         $bufferStyle = null;
 
@@ -1017,9 +1135,7 @@ class PdfParser extends AbstractParser implements ParserInterface
                 continue;
             }
 
-            $style = isset($seg['highlight'])
-                ? TextStyle::make()->setHighlight($seg['highlight'])
-                : null;
+            $style = $this->buildSegmentStyle($seg, $fontMeta);
 
             if ($buffer !== [] && ! $this->textStylesEquivalent($bufferStyle, $style)) {
                 $flushBuffer();
@@ -1050,6 +1166,55 @@ class PdfParser extends AbstractParser implements ParserInterface
         $section->addElement($paragraph);
     }
 
+    /**
+     * @param array{text: string, x?: float, y?: float, font?: string, fontSize?: float, scaleX?: float, highlight?: string} $seg
+     * @param array<string, array{family: string, bold: bool, italic: bool}> $fontMeta
+     */
+    private function buildSegmentStyle(array $seg, array $fontMeta): ?TextStyle
+    {
+        $fontKey = $seg['font'] ?? '';
+        $meta = $fontMeta[$fontKey] ?? null;
+        $fontSize = (float) ($seg['fontSize'] ?? 12.0);
+        $highlight = $seg['highlight'] ?? null;
+        $bold = $meta['bold'] ?? false;
+        $italic = $meta['italic'] ?? false;
+        $family = $meta['family'] ?? 'Helvetica';
+
+        $isDefault = abs($fontSize - 12.0) < 0.05
+            && ! $bold
+            && ! $italic
+            && $highlight === null
+            && ($family === 'Helvetica' || $family === '');
+
+        if ($isDefault) {
+            return null;
+        }
+
+        $style = TextStyle::make();
+
+        if (abs($fontSize - 12.0) >= 0.05) {
+            $style->setFontSize($fontSize);
+        }
+
+        if ($bold) {
+            $style->setBold();
+        }
+
+        if ($italic) {
+            $style->setItalic();
+        }
+
+        if ($family !== '' && $family !== 'Helvetica') {
+            $style->setFontFamily($family);
+        }
+
+        if ($highlight !== null) {
+            $style->setHighlight($highlight);
+        }
+
+        return $style;
+    }
+
     private function textStylesEquivalent(?TextStyle $a, ?TextStyle $b): bool
     {
         if ($a === null && $b === null) {
@@ -1060,7 +1225,11 @@ class PdfParser extends AbstractParser implements ParserInterface
             return false;
         }
 
-        return $a->getHighlight() === $b->getHighlight();
+        return $a->getHighlight() === $b->getHighlight()
+            && abs($a->getFontSize() - $b->getFontSize()) < 0.05
+            && $a->isBold() === $b->isBold()
+            && $a->isItalic() === $b->isItalic()
+            && $a->getFontFamily() === $b->getFontFamily();
     }
 
     /**
@@ -1806,25 +1975,129 @@ class PdfParser extends AbstractParser implements ParserInterface
     private function extractTJText(string $content, array $cmap = []): string
     {
         $text = '';
+        $offset = 0;
+        $len = strlen($content);
 
-        preg_match_all('/\(([^)]*)\)|<([0-9A-Fa-f]+)>|(-?\d+)/', $content, $parts, PREG_SET_ORDER);
+        while ($offset < $len) {
+            if ($content[$offset] === '(') {
+                $literal = $this->readPdfLiteralContent($content, $offset);
 
-        foreach ($parts as $part) {
-            $literal = $part[1] ?? '';
-            $hex = $part[2] ?? '';
-            $kernToken = $part[3] ?? null;
+                if ($literal === null) {
+                    break;
+                }
 
-            if ($literal !== '') {
-                $text .= $this->decodePdfString($literal, false);
-            } elseif ($hex !== '') {
-                $text .= $this->decodeHexViaCMap($hex, $cmap, false);
-            } elseif ($kernToken !== null) {
-                // Numeric TJ entries adjust inter-glyph positioning only.
-                // Word spaces are encoded as literal strings such as "( )".
+                [$raw, $offset] = $literal;
+                $text .= $this->decodePdfString($raw, false);
+
+                continue;
             }
+
+            if ($content[$offset] === '<' && preg_match('/<([0-9A-Fa-f]+)>/A', $content, $m, 0, $offset)) {
+                $text .= $this->decodeHexViaCMap($m[1], $cmap, false);
+                $offset += strlen($m[0]);
+
+                continue;
+            }
+
+            if (preg_match('/(-?\d+)/A', $content, $m, 0, $offset)) {
+                // Numeric TJ entries adjust inter-glyph positioning only.
+                $offset += strlen($m[0]);
+
+                continue;
+            }
+
+            $offset++;
         }
 
         return $text;
+    }
+
+    /**
+     * Extracts PDF literal strings immediately followed by an operator (Tj, ', etc.).
+     *
+     * @return string[]
+     */
+    private function extractPdfLiteralsBeforeOperator(string $line, string $operator): array
+    {
+        $results = [];
+        $offset = 0;
+        $len = strlen($line);
+        $operatorPattern = '/^\s*' . preg_quote($operator, '/') . '\b/';
+
+        while ($offset < $len) {
+            $pos = strpos($line, '(', $offset);
+
+            if ($pos === false) {
+                break;
+            }
+
+            $literal = $this->readPdfLiteralContent($line, $pos);
+
+            if ($literal === null) {
+                break;
+            }
+
+            [$raw, $endPos] = $literal;
+            $after = substr($line, $endPos);
+
+            if (preg_match($operatorPattern, $after) === 1) {
+                $results[] = $raw;
+            }
+
+            $offset = $endPos;
+        }
+
+        return $results;
+    }
+
+    /**
+     * Reads a PDF literal string starting at an opening parenthesis.
+     *
+     * @return array{0: string, 1: int}|null [raw content without outer parens, position after closing paren]
+     */
+    private function readPdfLiteralContent(string $text, int $start): ?array
+    {
+        if (($text[$start] ?? '') !== '(') {
+            return null;
+        }
+
+        $i = $start + 1;
+        $len = strlen($text);
+        $depth = 1;
+        $buf = '';
+
+        while ($i < $len && $depth > 0) {
+            $c = $text[$i];
+
+            if ($c === '\\') {
+                $buf .= $c;
+                $i++;
+
+                if ($i < $len) {
+                    $buf .= $text[$i];
+                    $i++;
+                }
+
+                continue;
+            }
+
+            if ($c === '(') {
+                $depth++;
+                $buf .= $c;
+            } elseif ($c === ')') {
+                $depth--;
+
+                if ($depth > 0) {
+                    $buf .= $c;
+                }
+            } else {
+                $buf .= $c;
+            }
+
+            $i++;
+        }
+
+        return $depth === 0 ? [$buf, $i] : null;
     }
 
     /**

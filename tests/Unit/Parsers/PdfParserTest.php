@@ -632,6 +632,229 @@ class PdfParserTest extends TestCase
         $this->assertSame($height, $info[1]);
     }
 
+    public function test_font_size_bold_and_family_are_preserved(): void
+    {
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]
+           /Resources << /Font << /F1 5 0 R /F2 7 0 R >> >>
+           /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 180 >>
+        stream
+        BT
+        /F2 20 Tf
+        1 0 0 1 50 150 Tm
+        (Title Bold) Tj
+        ET
+        BT
+        /F1 12 Tf
+        1 0 0 1 50 120 Tm
+        (Body text) Tj
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+        endobj
+        7 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+        endobj
+        xref
+        0 8
+        trailer
+        << /Root 1 0 R /Size 8 >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/font-styles.pdf';
+        file_put_contents($path, $pdf);
+
+        $parsed = $this->parser->parse($path);
+        $runs = [];
+
+        foreach ($parsed->getSections()[0]->getElements() as $element) {
+            if ($element instanceof Paragraph) {
+                foreach ($element->getRuns() as $run) {
+                    $runs[] = $run;
+                }
+            }
+        }
+
+        $this->assertGreaterThanOrEqual(2, count($runs));
+
+        $titleRun = null;
+        $bodyRun = null;
+
+        foreach ($runs as $run) {
+            if (str_contains($run->getText(), 'Title Bold')) {
+                $titleRun = $run;
+            }
+
+            if (str_contains($run->getText(), 'Body text')) {
+                $bodyRun = $run;
+            }
+        }
+
+        $this->assertNotNull($titleRun);
+        $this->assertNotNull($bodyRun);
+        $this->assertSame(20.0, $titleRun->getStyle()?->getFontSize());
+        $this->assertTrue($titleRun->getStyle()?->isBold());
+        $this->assertNull($bodyRun->getStyle());
+    }
+
+    public function test_escaped_closing_paren_in_tj_string(): void
+    {
+        $pdf = <<<'PDF'
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]
+           /Resources << /Font << /F1 5 0 R >> >>
+           /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 160 >>
+        stream
+        BT
+        /F1 12 Tf
+        1 0 0 1 50 120 Tm
+        (depart\)) Tj
+        ET
+        BT
+        1 0 0 1 50 100 Tm
+        (TIC\)) Tj
+        ET
+        endstream
+        endobj
+        5 0 obj
+        << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+        endobj
+        xref
+        0 6
+        trailer
+        << /Root 1 0 R /Size 6 >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/escaped-paren.pdf';
+        file_put_contents($path, $pdf);
+
+        $text = $this->collectText($this->parser->parse($path));
+
+        $this->assertStringContainsString('depart)', $text);
+        $this->assertStringContainsString('TIC)', $text);
+        $this->assertStringNotContainsString('depart\\', $text);
+    }
+
+    public function test_font_state_persists_across_bt_blocks_for_hex_tj(): void
+    {
+        $cmap = <<<'CMAP'
+        /CIDInit /ProcSet findresource begin
+        12 dict begin
+        begincmap
+        /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+        /CMapName /Test def
+        /CMapType 2 def
+        1 begincodespacerange
+        <0000> <FFFF>
+        endcodespacerange
+        1 beginbfchar
+        <0044> <0064>
+        endbfchar
+        endcmap
+        CMapName currentdict /CMap defineresource pop
+        end
+        end
+        CMAP;
+
+        $cmapLen = strlen($cmap);
+
+        $pdf = <<<PDF
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]
+           /Resources << /Font << /F3 6 0 R >> >>
+           /Contents 4 0 R >>
+        endobj
+        4 0 obj
+        << /Length 120 >>
+        stream
+        BT
+        /F3 12 Tf
+        1 0 0 1 50 120 Tm
+        [<0044>] TJ
+        ET
+        BT
+        1 0 0 1 50 100 Tm
+        [<0044>] TJ
+        ET
+        endstream
+        endobj
+        6 0 obj
+        << /Type /Font /Subtype /Type0 /BaseFont /Times-Roman /Encoding /Identity-H
+           /DescendantFonts [7 0 R] /ToUnicode 8 0 R >>
+        endobj
+        7 0 obj
+        << /Type /Font /Subtype /CIDFontType2 /BaseFont /Times-Roman /CIDToGIDMap /Identity >>
+        endobj
+        8 0 obj
+        << /Length {$cmapLen} >>
+        stream
+        {$cmap}
+        endstream
+        endobj
+        xref
+        0 9
+        trailer
+        << /Root 1 0 R /Size 9 >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/font-carry-hex.pdf';
+        file_put_contents($path, $pdf);
+
+        $text = $this->collectText($this->parser->parse($path));
+
+        $this->assertSame("d\nd\n", $text);
+    }
+
+    public function test_word_export_mixed_bt_blocks_decode_identity_h_text(): void
+    {
+        $pdfPath = '/home/akramzerarka/Téléchargements/ATT00209.pdf';
+
+        if (! is_readable($pdfPath)) {
+            $this->markTestSkipped('ATT00209.pdf fixture not available');
+        }
+
+        $parsed = $this->parser->parse($pdfPath);
+        $text = $this->collectText($parsed);
+
+        $this->assertStringContainsString('La convergence des données', $text);
+        $this->assertStringContainsString('la transformation numérique', $text);
+        $this->assertStringNotContainsString('ODWUDQV', $text);
+        $this->assertStringNotContainsString('qUL', $text);
+    }
+
     private function collectText(\Paperdoc\Contracts\DocumentInterface $doc): string
     {
         $text = '';
