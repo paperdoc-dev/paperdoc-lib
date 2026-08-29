@@ -564,6 +564,74 @@ class PdfParserTest extends TestCase
         $this->assertStringNotContainsString('B ahri', $texts);
     }
 
+    public function test_flatedecode_image_png_ihdr_uses_32bit_dimensions(): void
+    {
+        $width = 4;
+        $height = 2;
+        $pixels = '';
+        for ($i = 0; $i < $width * $height * 3; $i++) {
+            $pixels .= chr(255);
+        }
+
+        $stream = gzcompress($pixels);
+        $streamLen = strlen($stream);
+
+        $pdf = <<<PDF
+        %PDF-1.4
+        1 0 obj
+        << /Type /Catalog /Pages 2 0 R >>
+        endobj
+        2 0 obj
+        << /Type /Pages /Kids [3 0 R] /Count 1 >>
+        endobj
+        3 0 obj
+        << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]
+           /Resources << /XObject << /Im1 4 0 R >> >>
+           /Contents 5 0 R >>
+        endobj
+        4 0 obj
+        << /Type /XObject /Subtype /Image /Width {$width} /Height {$height}
+           /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {$streamLen} >>
+        stream
+        {$stream}
+        endstream
+        endobj
+        5 0 obj
+        << /Length 44 >>
+        stream
+        q 100 0 0 50 50 100 cm /Im1 Do Q
+        endstream
+        endobj
+        xref
+        0 6
+        trailer
+        << /Root 1 0 R /Size 6 >>
+        %%EOF
+        PDF;
+
+        $path = $this->tmpDir . '/flatedecode-image.pdf';
+        file_put_contents($path, $pdf);
+
+        $doc = $this->parser->parse($path);
+        $elements = $doc->getSections()[0]->getElements();
+        $image = null;
+
+        foreach ($elements as $element) {
+            if ($element instanceof \Paperdoc\Document\Image) {
+                $image = $element;
+                break;
+            }
+        }
+
+        $this->assertNotNull($image);
+        $this->assertSame($width, $image->getWidth());
+        $this->assertSame($height, $image->getHeight());
+
+        $info = getimagesizefromstring($image->getData());
+        $this->assertSame($width, $info[0]);
+        $this->assertSame($height, $info[1]);
+    }
+
     private function collectText(\Paperdoc\Contracts\DocumentInterface $doc): string
     {
         $text = '';

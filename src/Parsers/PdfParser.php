@@ -1644,10 +1644,10 @@ class PdfParser extends AbstractParser implements ParserInterface
 
         echo "\x89PNG\r\n\x1a\n";
 
-        $ihdr = pack('Nnn', $width, $height, 0)
-              . chr($bpc & 0xFF) . chr($colorType & 0xFF) . chr(0) . chr(0) . chr(0);
-        $ihdr = pack('N', 13) . 'IHDR' . $ihdr;
-        $ihdr .= pack('N', crc32('IHDR' . substr($ihdr, 8)));
+        $ihdrData = pack('NN', $width, $height)
+            . chr($bpc & 0xFF) . chr($colorType & 0xFF) . chr(0) . chr(0) . chr(0);
+        $ihdr = pack('N', 13) . 'IHDR' . $ihdrData;
+        $ihdr .= pack('N', crc32('IHDR' . $ihdrData));
         echo $ihdr;
 
         $rawRows = '';
